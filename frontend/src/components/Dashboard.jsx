@@ -8,25 +8,28 @@ const Dashboard = () => {
   const [strategies, setStrategies] = useState([]);
   const [selectedStrategy, setSelectedStrategy] = useState(null);
 
-  useEffect(() => {
-    loadStrategies();
-  }, []);
-
   const loadStrategies = async () => {
     try {
       const res = await getStrategies();
       setStrategies(res.data);
-    } catch (error) {
+    } catch {
       message.error('Failed to load strategies');
     }
   };
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      loadStrategies();
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
 
   const handleStart = async (id) => {
     try {
       await startMonitor(id);
       message.success('Monitoring started');
       loadStrategies();
-    } catch (error) {
+    } catch {
       message.error('Failed to start');
     }
   };
@@ -36,7 +39,7 @@ const Dashboard = () => {
       await stopMonitor(id);
       message.success('Monitoring stopped');
       loadStrategies();
-    } catch (error) {
+    } catch {
       message.error('Failed to stop');
     }
   };

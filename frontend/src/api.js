@@ -13,4 +13,12 @@ export const updateAlert = (id, data) => api.put(`/alerts/${id}`, data);
 export const getMinuteData = (symbol, period = '1', options = {}) =>
   api.get(`/data/minute`, { params: { symbol, period, provider: 'em', ...options } });
 
+// Alert Rules APIs
+export const getAlertRules = (params = {}) => api.get('/alert_rules/', { params });
+export const createAlertRule = (data) => api.post('/alert_rules/', data);
+export const updateAlertRule = (id, data) => api.put(`/alert_rules/${id}`, data);
+export const deleteAlertRule = (id) => api.delete(`/alert_rules/${id}`);
+export const batchCreateAlertRules = (payload) => api.post('/alert_rules/batch', payload);
+export const batchDeleteAlertRules = (payload) => api.delete('/alert_rules/batch', { data: payload });
+
 export default api;

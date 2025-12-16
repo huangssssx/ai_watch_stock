@@ -7,14 +7,6 @@ const Alerts = ({ strategyId }) => {
   const [alerts, setAlerts] = useState([]);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    if (strategyId) {
-      loadAlerts();
-      const interval = setInterval(loadAlerts, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [strategyId]);
-
   const loadAlerts = async () => {
     try {
       const res = await getAlerts(strategyId);
@@ -23,6 +15,17 @@ const Alerts = ({ strategyId }) => {
       console.error(error);
     }
   };
+
+  useEffect(() => {
+    if (strategyId) {
+      const t = setTimeout(loadAlerts, 0);
+      const interval = setInterval(loadAlerts, 5000);
+      return () => {
+        clearTimeout(t);
+        clearInterval(interval);
+      };
+    }
+  }, [strategyId]);
 
   const columns = [
     {

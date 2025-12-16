@@ -3,8 +3,9 @@ import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import { Layout, Menu } from 'antd';
 import Dashboard from './components/Dashboard';
 import StrategyEditor from './components/StrategyEditor';
-import { DesktopOutlined, PlusCircleOutlined } from '@ant-design/icons';
+import { DesktopOutlined, PlusCircleOutlined, AlertOutlined } from '@ant-design/icons';
 import ChartPage from './components/ChartPage';
+import AlertRulesPage from './components/AlertRulesPage';
 
 const { Header, Content, Footer } = Layout;
 
@@ -31,6 +32,11 @@ const App = () => {
                 icon: <PlusCircleOutlined />,
                 label: <Link to="/create">New Strategy</Link>,
               },
+              {
+                key: '3',
+                icon: <AlertOutlined />,
+                label: <Link to="/alert-rules">规则管理</Link>,
+              },
             ]}
           />
         </Header>
@@ -41,6 +47,7 @@ const App = () => {
               <Route path="/create" element={<StrategyEditor />} />
               <Route path="/edit/:id" element={<StrategyEditor />} />
               <Route path="/chart/:id" element={<ChartPage />} />
+              <Route path="/alert-rules" element={<AlertRulesPage />} />
             </Routes>
           </div>
         </Content>

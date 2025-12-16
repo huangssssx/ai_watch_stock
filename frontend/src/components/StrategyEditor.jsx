@@ -40,7 +40,7 @@ const StrategyEditor = () => {
         symbol: res.data.symbol,
         content: JSON.stringify(res.data.content, null, 2)
       });
-    } catch (error) {
+    } catch {
       message.error('Failed to load strategy');
     }
   };
@@ -62,8 +62,8 @@ const StrategyEditor = () => {
         message.success('Strategy created');
       }
       navigate('/');
-    } catch (error) {
-      message.error('Error saving strategy: ' + error.message);
+    } catch {
+      message.error('Error saving strategy');
     } finally {
       setLoading(false);
     }

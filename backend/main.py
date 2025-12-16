@@ -214,19 +214,9 @@ def update_alert_rule(rule_id: int, payload: dict, db: Session = Depends(get_db)
     db.refresh(r)
     return {"id": r.id}
 
-@app.delete("/alert_rules/{rule_id}")
-def delete_alert_rule(rule_id: int, db: Session = Depends(get_db)):
-    r = db.query(models.AlertRule).filter(models.AlertRule.id == rule_id).first()
-    if not r:
-        raise HTTPException(status_code=404, detail="AlertRule not found")
-    db.delete(r)
-    db.commit()
-    return {"deleted": True}
-
 @app.post("/alert_rules/batch")
 def batch_create_alert_rules(payload: dict, db: Session = Depends(get_db)):
     created_ids: List[int] = []
-    # Preferred: JSON array under 'rules'
     rules = payload.get("rules")
     if isinstance(rules, list):
         for rd in rules:
@@ -245,7 +235,6 @@ def batch_create_alert_rules(payload: dict, db: Session = Depends(get_db)):
             db.refresh(r)
             created_ids.append(r.id)
         return {"created": created_ids}
-    # Fallback: parse 'paste' content (JSON array or line-based)
     paste = payload.get("paste", "")
     items: List[Dict] = []
     if isinstance(paste, str) and paste.strip():
@@ -261,7 +250,6 @@ def batch_create_alert_rules(payload: dict, db: Session = Depends(get_db)):
                     symbol = parts[0]
                     op = parts[1]
                     thr = parts[2]
-                    # Optional period and message
                     period = "1"
                     msg = ""
                     if len(parts) >= 4 and parts[3].isdigit():
@@ -323,6 +311,15 @@ def batch_delete_alert_rules(payload: dict, db: Session = Depends(get_db)):
     q.delete(synchronize_session=False)
     db.commit()
     return {"deleted": count}
+
+@app.delete("/alert_rules/{rule_id}")
+def delete_alert_rule(rule_id: int, db: Session = Depends(get_db)):
+    r = db.query(models.AlertRule).filter(models.AlertRule.id == rule_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="AlertRule not found")
+    db.delete(r)
+    db.commit()
+    return {"deleted": True}
 
 def _normalize_symbol(symbol: str) -> str:
     s = (symbol or "").lower()

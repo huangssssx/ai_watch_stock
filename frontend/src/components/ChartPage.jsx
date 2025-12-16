@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import EChart from './EChart';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { Card, Select, Modal, Form, Input, message, Button } from 'antd';
@@ -15,27 +15,16 @@ const ChartPage = () => {
   const [editingAlert, setEditingAlert] = useState(null);
   const [form] = Form.useForm();
 
-  useEffect(() => {
-    loadStrategy();
-  }, [id]);
-
-  useEffect(() => {
-    if (strategy?.symbol) {
-      loadKline(strategy.symbol, period);
-      loadAlerts();
-    }
-  }, [strategy, period]);
-
-  const loadStrategy = async () => {
+  const loadStrategy = useCallback(async () => {
     try {
       const res = await getStrategy(id);
       setStrategy(res.data);
-    } catch (e) {
+    } catch {
       message.error('加载策略失败');
     }
-  };
+  }, [id]);
 
-  const loadAlerts = async () => {
+  const loadAlerts = useCallback(async () => {
     try {
       const res = await getAlerts(id);
       setAlerts(res.data || []);
@@ -44,22 +33,39 @@ const ChartPage = () => {
         const target = (res.data || []).find(a => String(a.id) === String(focusId));
         if (target) setEditingAlert(target);
       }
-    } catch (e) {
+    } catch {
       // ignore
     }
-  };
+  }, [id, searchParams]);
 
-  const loadKline = async (symbol, p) => {
+  const loadKline = useCallback(async (symbol, p) => {
     try {
       const today = new Date();
       const ds = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
       const res = await getMinuteData(symbol, p, { date: ds, today_only: true });
       const rows = res.data?.data || res.data || [];
       setKdata(rows);
-    } catch (e) {
+    } catch {
       message.error('加载当日K线失败');
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      loadStrategy();
+    }, 0);
+    return () => clearTimeout(t);
+  }, [loadStrategy]);
+
+  useEffect(() => {
+    if (strategy?.symbol) {
+      const t = setTimeout(() => {
+        loadKline(strategy.symbol, period);
+        loadAlerts();
+      }, 0);
+      return () => clearTimeout(t);
+    }
+  }, [strategy, period, loadKline, loadAlerts]);
 
   const candleSeries = useMemo(() => {
     // Normalize columns: Chinese or English
@@ -81,8 +87,6 @@ const ChartPage = () => {
       const ts = a.timestamp ? new Date(a.timestamp) : null;
       let idx = -1;
       if (ts) {
-        const tsStr = ts.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
-        // try match by hour:minute substring
         idx = xs.findIndex(s => String(s).includes(ts.toTimeString().slice(0,5)));
       }
       if (idx < 0) idx = xs.length - 1;
@@ -148,7 +152,7 @@ const ChartPage = () => {
       message.success('告警已更新');
       setEditingAlert(null);
       loadAlerts();
-    } catch (e) {
+    } catch {
       message.error('更新失败');
     }
   };

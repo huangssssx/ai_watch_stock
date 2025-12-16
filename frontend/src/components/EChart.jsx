@@ -28,7 +28,7 @@ const EChart = ({ option, style, onEvents }) => {
           chartRef.current.dispose();
           chartRef.current = null;
         }
-      } catch (e) {
+      } catch {
         // swallow dispose errors
       }
     };
@@ -44,4 +44,3 @@ const EChart = ({ option, style, onEvents }) => {
 };
 
 export default EChart;
-
