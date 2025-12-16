@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
-from backend.database import SessionLocal, engine, Base
-from backend import models
+from database import SessionLocal, engine, Base
+from models import AlertRule, AlertEvent, AlertNotification
 from datetime import datetime
 import logging
 from fastapi.middleware.cors import CORSMiddleware
@@ -82,7 +82,7 @@ def alert_notification_to_dict(n):
 
 @app.post("/alert_rules/")
 def create_alert_rule(rule: dict, db: Session = Depends(get_db)):
-    r = models.AlertRule(
+    r = AlertRule(
         name=rule.get("name", "Rule"),
         symbol=rule.get("symbol", ""),
         period=rule.get("period", "1"),
@@ -99,7 +99,7 @@ def create_alert_rule(rule: dict, db: Session = Depends(get_db)):
 
 @app.get("/alert_rules/")
 def list_alert_rules(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
-    items = db.query(models.AlertRule).offset(skip).limit(limit).all()
+    items = db.query(AlertRule).offset(skip).limit(limit).all()
     return [
         {
             "id": r.id,
@@ -119,7 +119,7 @@ def list_alert_rules(skip: int = 0, limit: int = 50, db: Session = Depends(get_d
 
 @app.put("/alert_rules/{rule_id}")
 def update_alert_rule(rule_id: int, payload: dict, db: Session = Depends(get_db)):
-    r = db.query(models.AlertRule).filter(models.AlertRule.id == rule_id).first()
+    r = db.query(AlertRule).filter(AlertRule.id == rule_id).first()
     if not r:
         raise HTTPException(status_code=404, detail="AlertRule not found")
     for k in ["name","symbol","period","provider","condition","message","level","enabled"]:
@@ -135,7 +135,7 @@ def batch_create_alert_rules(payload: dict, db: Session = Depends(get_db)):
     rules = payload.get("rules")
     if isinstance(rules, list):
         for rd in rules:
-            r = models.AlertRule(
+            r = AlertRule(
                 name=rd.get("name", "Rule"),
                 symbol=rd.get("symbol", ""),
                 period=str(rd.get("period", "1")),
@@ -195,7 +195,7 @@ def batch_create_alert_rules(payload: dict, db: Session = Depends(get_db)):
     if not items:
         raise HTTPException(status_code=400, detail="No rules provided")
     for rd in items:
-        r = models.AlertRule(
+        r = AlertRule(
             name=rd.get("name", "Rule"),
             symbol=rd.get("symbol", ""),
             period=str(rd.get("period", "1")),
@@ -216,12 +216,12 @@ def batch_delete_alert_rules(payload: dict, db: Session = Depends(get_db)):
     ids = payload.get("ids") if isinstance(payload, dict) else None
     delete_all = bool(payload.get("all")) if isinstance(payload, dict) else False
     if delete_all:
-        count = db.query(models.AlertRule).delete(synchronize_session=False)
+        count = db.query(AlertRule).delete(synchronize_session=False)
         db.commit()
         return {"deleted": count}
     if not ids or not isinstance(ids, list):
         raise HTTPException(status_code=400, detail="ids list required")
-    q = db.query(models.AlertRule).filter(models.AlertRule.id.in_(ids))
+    q = db.query(AlertRule).filter(AlertRule.id.in_(ids))
     count = q.count()
     q.delete(synchronize_session=False)
     db.commit()
@@ -229,7 +229,7 @@ def batch_delete_alert_rules(payload: dict, db: Session = Depends(get_db)):
 
 @app.delete("/alert_rules/{rule_id}")
 def delete_alert_rule(rule_id: int, db: Session = Depends(get_db)):
-    r = db.query(models.AlertRule).filter(models.AlertRule.id == rule_id).first()
+    r = db.query(AlertRule).filter(AlertRule.id == rule_id).first()
     if not r:
         raise HTTPException(status_code=404, detail="AlertRule not found")
     db.delete(r)
@@ -242,10 +242,10 @@ def list_alert_events(
     limit: int = 100,
     db: Session = Depends(get_db),
 ):
-    q = db.query(models.AlertEvent)
+    q = db.query(AlertEvent)
     if since_id and since_id > 0:
-        q = q.filter(models.AlertEvent.id > since_id)
-    items = q.order_by(models.AlertEvent.id.desc()).limit(limit).all()
+        q = q.filter(AlertEvent.id > since_id)
+    items = q.order_by(AlertEvent.id.desc()).limit(limit).all()
     return [alert_event_to_dict(a) for a in items]
 
 @app.delete("/alerts/batch")
@@ -253,12 +253,12 @@ def batch_delete_alert_events(payload: dict, db: Session = Depends(get_db)):
     ids = payload.get("ids") if isinstance(payload, dict) else None
     delete_all = bool(payload.get("all")) if isinstance(payload, dict) else False
     if delete_all:
-        count = db.query(models.AlertEvent).delete(synchronize_session=False)
+        count = db.query(AlertEvent).delete(synchronize_session=False)
         db.commit()
         return {"deleted": count}
     if not ids or not isinstance(ids, list):
         raise HTTPException(status_code=400, detail="ids list required")
-    q = db.query(models.AlertEvent).filter(models.AlertEvent.id.in_(ids))
+    q = db.query(AlertEvent).filter(AlertEvent.id.in_(ids))
     count = q.count()
     q.delete(synchronize_session=False)
     db.commit()
@@ -271,15 +271,15 @@ def list_alert_notifications(
     include_cleared: bool = False,
     db: Session = Depends(get_db),
 ):
-    q = db.query(models.AlertNotification)
+    q = db.query(AlertNotification)
     if not include_cleared:
-        q = q.filter(models.AlertNotification.is_cleared == False)
-    items = q.order_by(models.AlertNotification.id.desc()).offset(skip).limit(limit).all()
+        q = q.filter(AlertNotification.is_cleared == False)
+    items = q.order_by(AlertNotification.id.desc()).offset(skip).limit(limit).all()
     return [alert_notification_to_dict(n) for n in items]
 
 @app.put("/alert_notifications/{notif_id}")
 def update_alert_notification(notif_id: int, payload: dict, db: Session = Depends(get_db)):
-    n = db.query(models.AlertNotification).filter(models.AlertNotification.id == notif_id).first()
+    n = db.query(AlertNotification).filter(AlertNotification.id == notif_id).first()
     if not n:
         raise HTTPException(status_code=404, detail="AlertNotification not found")
     for k in ["last_notified_at", "is_cleared"]:
@@ -300,12 +300,24 @@ def update_alert_notification(notif_id: int, payload: dict, db: Session = Depend
 
 @app.post("/alert_notifications/clear_all")
 def clear_all_alert_notifications(db: Session = Depends(get_db)):
-    q = db.query(models.AlertNotification).filter(models.AlertNotification.is_cleared == False)
+    q = db.query(AlertNotification).filter(AlertNotification.is_cleared == False)
     count = q.count()
     for n in q.all():
         n.is_cleared = True
     db.commit()
     return {"cleared": count}
+
+@app.get("/health")
+def health(db: Session = Depends(get_db)):
+    rules_enabled = db.query(AlertRule).filter(AlertRule.enabled == True).count()
+    notif_unread = db.query(AlertNotification).filter(AlertNotification.is_cleared == False).count()
+    return {
+        "status": "ok",
+        "time": datetime.utcnow().isoformat(),
+        "scheduler_running": scheduler is not None,
+        "rules_enabled_count": rules_enabled,
+        "notifications_unread_count": notif_unread,
+    }
 
 def _normalize_symbol(symbol: str) -> str:
     s = (symbol or "").lower()
@@ -366,7 +378,7 @@ def check_alert_rules_once():
     db = SessionLocal()
     try:
         ds = datetime.now().strftime("%Y%m%d")
-        rules = db.query(models.AlertRule).filter(models.AlertRule.enabled == True).all()
+        rules = db.query(AlertRule).filter(AlertRule.enabled == True).all()
         logger.info(f"AlertRule tick: rules={len(rules)}")
         for r in rules:
             latest = fetch_minute_latest_em(r.symbol, r.period, ds)
@@ -374,7 +386,7 @@ def check_alert_rules_once():
             r.last_checked_at = datetime.utcnow()
             if latest and eval_condition(r.condition or "", latest):
                 msg = f"[Rule {r.name}] {r.message}"
-                evt = models.AlertEvent(
+                evt = AlertEvent(
                     rule_id=r.id,
                     symbol=r.symbol,
                     message=msg,
@@ -382,7 +394,7 @@ def check_alert_rules_once():
                     timestamp=datetime.utcnow()
                 )
                 db.add(evt)
-                notif = models.AlertNotification(
+                notif = AlertNotification(
                     rule_id=r.id,
                     message=msg,
                     level=r.level,
