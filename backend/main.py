@@ -11,6 +11,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import json
 from sqlalchemy import text
+import os
+import smtplib
+from email.mime.text import MIMEText
+from email.utils import formataddr
+import re
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -382,6 +390,7 @@ def check_alert_rules_once():
                     is_cleared=False,
                 )
                 db.add(notif)
+                _send_alert_email(f"规则告警 {r.symbol}", msg)
                 r.last_triggered_at = datetime.utcnow()
                 # Auto-close rule after first trigger
                 r.enabled = False
@@ -389,6 +398,43 @@ def check_alert_rules_once():
             db.commit()
     finally:
         db.close()
+
+def _parse_recipients(s: str) -> List[str]:
+    if not s:
+        return []
+    return [x.strip() for x in re.split(r"[;,]", s) if x.strip()]
+
+def _send_alert_email(subject: str, body: str):
+    to_env = os.environ.get("ALERT_EMAIL_TO", "").strip()
+    recipients = _parse_recipients(to_env)
+    if not recipients:
+        return
+    host = os.environ.get("SMTP_HOST", "").strip()
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    user = os.environ.get("SMTP_USER", "").strip()
+    password = os.environ.get("SMTP_PASS", "").strip()
+    use_ssl = os.environ.get("SMTP_SSL", "false").strip().lower() in ("1", "true", "yes")
+    sender = os.environ.get("EMAIL_FROM", user or "").strip()
+    if not host or not user or not password or not sender:
+        logger.warning("Alert email not sent: SMTP config incomplete")
+        return
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["From"] = formataddr(("AI Watch Stock", sender))
+    msg["To"] = ", ".join(recipients)
+    msg["Subject"] = subject
+    try:
+        if use_ssl or port == 465:
+            server = smtplib.SMTP_SSL(host, port, timeout=10)
+        else:
+            server = smtplib.SMTP(host, port, timeout=10)
+            server.ehlo()
+            server.starttls()
+        server.login(user, password)
+        server.sendmail(sender, recipients, msg.as_string())
+        server.quit()
+        logger.info(f"Alert email sent to {recipients}")
+    except Exception as e:
+        logger.error(f"Send alert email failed: {e}")
 
 @app.on_event("startup")
 def on_startup():
