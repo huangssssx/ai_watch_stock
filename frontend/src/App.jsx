@@ -1,10 +1,7 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Link, Navigate } from 'react-router-dom';
 import { Layout, Menu } from 'antd';
-import Dashboard from './components/Dashboard';
-import StrategyEditor from './components/StrategyEditor';
-import { DesktopOutlined, PlusCircleOutlined, AlertOutlined } from '@ant-design/icons';
-import ChartPage from './components/ChartPage';
+import { AlertOutlined } from '@ant-design/icons';
 import AlertRulesPage from './components/AlertRulesPage';
 
 const { Header, Content, Footer } = Layout;
@@ -24,16 +21,6 @@ const App = () => {
             items={[
               {
                 key: '1',
-                icon: <DesktopOutlined />,
-                label: <Link to="/">Dashboard</Link>,
-              },
-              {
-                key: '2',
-                icon: <PlusCircleOutlined />,
-                label: <Link to="/create">New Strategy</Link>,
-              },
-              {
-                key: '3',
                 icon: <AlertOutlined />,
                 label: <Link to="/alert-rules">规则管理</Link>,
               },
@@ -43,11 +30,9 @@ const App = () => {
         <Content style={{ padding: '0 50px', marginTop: 20 }}>
           <div className="site-layout-content" style={{ background: '#fff', padding: 24, minHeight: 280 }}>
             <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/create" element={<StrategyEditor />} />
-              <Route path="/edit/:id" element={<StrategyEditor />} />
-              <Route path="/chart/:id" element={<ChartPage />} />
+              <Route path="/" element={<Navigate to="/alert-rules" replace />} />
               <Route path="/alert-rules" element={<AlertRulesPage />} />
+              <Route path="*" element={<Navigate to="/alert-rules" replace />} />
             </Routes>
           </div>
         </Content>

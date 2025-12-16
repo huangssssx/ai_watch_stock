@@ -1,25 +1,6 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, Boolean
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean
 from backend.database import Base
 from datetime import datetime
-
-class Strategy(Base):
-    __tablename__ = "strategies"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100))
-    symbol = Column(String(20))
-    content = Column(JSON)  # The Strategy DSL
-    status = Column(String(20), default="stopped") # stopped, running
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-class AlertLog(Base):
-    __tablename__ = "alert_logs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    strategy_id = Column(Integer)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    message = Column(Text)
-    level = Column(String(20), default="INFO")
 
 class AlertRule(Base):
     __tablename__ = "alert_rules"
@@ -36,3 +17,25 @@ class AlertRule(Base):
     last_checked_at = Column(DateTime)
     last_triggered_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class AlertEvent(Base):
+    __tablename__ = "alert_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rule_id = Column(Integer)
+    symbol = Column(String(20))
+    message = Column(Text)
+    level = Column(String(20), default="WARNING")
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class AlertNotification(Base):
+    __tablename__ = "alert_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rule_id = Column(Integer)
+    message = Column(Text)
+    level = Column(String(20), default="WARNING")
+    triggered_at = Column(DateTime, default=datetime.utcnow)
+    last_notified_at = Column(DateTime, nullable=True)
+    is_cleared = Column(Boolean, default=False)

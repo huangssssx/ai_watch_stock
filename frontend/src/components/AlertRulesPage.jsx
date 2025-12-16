@@ -1,6 +1,15 @@
-import React, { useEffect, useState } from 'react';
-import { Card, Table, Button, Space, Tag, Switch, Modal, Form, Input, Select, InputNumber, message } from 'antd';
-import { getAlertRules, updateAlertRule, deleteAlertRule, batchCreateAlertRules, batchDeleteAlertRules } from '../api';
+import React, { useEffect, useState, useCallback } from 'react';
+import { Card, Table, Button, Space, Tag, Switch, Modal, Form, Input, Select, InputNumber, message, Divider, notification } from 'antd';
+import { 
+  getAlertRules, 
+  updateAlertRule, 
+  deleteAlertRule, 
+  batchCreateAlertRules, 
+  batchDeleteAlertRules,
+  getAlertNotifications,
+  updateAlertNotification,
+  clearAllAlertNotifications
+} from '../api';
 
 const typeOptions = [
   { value: '跌到', label: '跌到' },
@@ -14,10 +23,37 @@ const AlertRulesPage = () => {
   const [pasteText, setPasteText] = useState('');
   const [editing, setEditing] = useState(null);
   const [form] = Form.useForm();
+  const [notifications, setNotifications] = useState([]);
+
+  const loadNotifications = useCallback(async () => {
+    try {
+      const res = await getAlertNotifications({ include_cleared: false });
+      const list = Array.isArray(res.data) ? res.data : [];
+      setNotifications(list);
+      const newItems = list.filter(n => !n.is_cleared && !n.last_notified_at);
+      newItems.forEach(n => {
+        const type = (n.level || 'WARNING').toLowerCase();
+        notification[type === 'error' ? 'error' : (type === 'info' ? 'info' : 'warning')]({
+          message: '规则告警',
+          description: n.message,
+          duration: 0
+        });
+        updateAlertNotification(n.id, { last_notified_at: new Date().toISOString() }).catch(() => {});
+      });
+    } catch {
+      message.error('加载告警通知失败');
+    }
+  }, []);
 
   useEffect(() => {
     loadRules();
-  }, []);
+    loadNotifications();
+    const interval = setInterval(() => {
+      loadRules();
+      loadNotifications();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [loadNotifications]);
 
   const loadRules = async () => {
     setLoading(true);
@@ -28,6 +64,18 @@ const AlertRulesPage = () => {
       message.error('加载规则失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  
+
+  const handleClearNotifications = async () => {
+    try {
+      await clearAllAlertNotifications();
+      message.success('提醒列表已清空');
+      loadNotifications();
+    } catch {
+      message.error('清空提醒列表失败');
     }
   };
 
@@ -221,6 +269,38 @@ const AlertRulesPage = () => {
         }}
         pagination={{ pageSize: 20 }}
       />
+
+      <Divider />
+
+      <Card
+        title="提醒列表"
+        extra={
+          <Space>
+            <Button danger onClick={handleClearNotifications}>清空提醒列表</Button>
+            <Button onClick={loadNotifications}>刷新提醒</Button>
+          </Space>
+        }
+        style={{ marginTop: 16 }}
+      >
+        <Table
+          dataSource={notifications}
+          rowKey="id"
+          size="small"
+          pagination={{ pageSize: 10 }}
+          columns={[
+            { title: 'ID', dataIndex: 'id', width: 80 },
+            { title: '规则ID', dataIndex: 'rule_id', width: 100 },
+            { title: '消息', dataIndex: 'message' },
+            { 
+              title: '级别', 
+              dataIndex: 'level', 
+              width: 120,
+              render: (level) => <Tag color={level === 'ERROR' ? 'volcano' : (level === 'WARNING' ? 'red' : 'default')}>{level}</Tag>
+            },
+            { title: '触发时间', dataIndex: 'triggered_at', width: 200 },
+          ]}
+        />
+      </Card>
 
       <Modal
         title={`编辑规则 #${editing?.id || ''}`}
