@@ -460,7 +460,7 @@ def _resolve_dynamic_params(params: dict):
 def run_indicator_collection(collection_id: int, payload: dict, db: Session = Depends(get_db)):
     """
     Run all indicators in a collection with provided dynamic parameters (symbol, etc.)
-    Payload: { "symbol": "600498", "start_date": "...", "end_date": "...", "adjust": "..." }
+    Payload: { "symbol": "600498", "market": "sh", "start_date": "...", "end_date": "...", "adjust": "..." }
     """
     col = db.query(IndicatorCollection).filter(IndicatorCollection.id == collection_id).first()
     if not col:
@@ -473,6 +473,14 @@ def run_indicator_collection(collection_id: int, payload: dict, db: Session = De
     indicators = db.query(IndicatorConfig).filter(IndicatorConfig.id.in_(ids)).all()
     
     results = {}
+
+    base_symbol = (payload.get("symbol") or "").strip()
+    market_override = (payload.get("market") or "").strip()
+    if not market_override and base_symbol:
+        try:
+            market_override = _infer_market(base_symbol)
+        except Exception as e:
+            logger.warning(f"Failed to infer market from symbol={base_symbol}: {e}")
     
     for ind in indicators:
         try:
@@ -483,17 +491,22 @@ def run_indicator_collection(collection_id: int, payload: dict, db: Session = De
             
             # 2. Apply overrides (only if provided in payload)
             for k, v in payload.items():
-                if not v: continue # Skip empty overrides
-                
-                # Direct match
+                if not v:
+                    continue
                 if k in params:
                     params[k] = v
-                
-                # Heuristic for symbol/stock/code
-                if k == "symbol":
-                    if "stock" in params: params["stock"] = v
-                    if "code" in params: params["code"] = v
-                    if "symbol" in params: params["symbol"] = v
+
+            # 3. Unified symbol override: symbol/stock/code
+            if base_symbol:
+                for key in ("symbol", "stock", "code"):
+                    if key in params:
+                        params[key] = base_symbol
+
+            # 4. Unified market override: market/exchange (if present)
+            if market_override:
+                for key in ("market", "exchange"):
+                    if key in params:
+                        params[key] = market_override
             
             # Call Proxy
             # We use internal requests to alaya.zone directly to save overhead of self-calling proxy endpoint

@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Card, Table, Button, Space, Modal, Form, Input, message, Tabs, Select, DatePicker, Transfer, Typography } from 'antd';
+import { useEffect, useState } from 'react';
+import { Card, Table, Button, Space, Modal, Form, Input, message, Tabs, Select, DatePicker, Transfer, Typography, Tag } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { 
   getIndicatorConfigs, 
@@ -13,7 +13,6 @@ import {
   deleteIndicatorCollection,
   runIndicatorCollection
 } from '../api';
-import dayjs from 'dayjs';
 
 const { TextArea } = Input;
 const { Option } = Select;
@@ -41,6 +40,9 @@ const IndicatorPage = () => {
   const [resultLoading, setResultLoading] = useState(false);
   const [resultVisible, setResultVisible] = useState(false);
   const [currentRunningName, setCurrentRunningName] = useState('');
+  const [exportModalVisible, setExportModalVisible] = useState(false);
+  const [exportText, setExportText] = useState('');
+  const [copyLoading, setCopyLoading] = useState(false);
   
   // --- Collection Run Modal State ---
   const [runModalVisible, setRunModalVisible] = useState(false);
@@ -57,7 +59,7 @@ const IndicatorPage = () => {
     try {
       const res = await getIndicatorConfigs();
       setConfigs(res.data || []);
-    } catch (err) {
+    } catch {
       message.error('加载指标失败');
     } finally {
       setConfigLoading(false);
@@ -69,7 +71,7 @@ const IndicatorPage = () => {
     try {
       const res = await getIndicatorCollections();
       setCollections(res.data || []);
-    } catch (err) {
+    } catch {
       message.error('加载集合失败');
     } finally {
       setCollectionLoading(false);
@@ -105,7 +107,7 @@ const IndicatorPage = () => {
       await deleteIndicatorConfig(id);
       message.success('删除成功');
       loadConfigs();
-    } catch (err) {
+    } catch {
       message.error('删除失败');
     }
   };
@@ -116,7 +118,7 @@ const IndicatorPage = () => {
       let paramsObj = {};
       try {
         paramsObj = JSON.parse(values.params);
-      } catch (e) {
+      } catch {
         message.error('参数格式错误，必须是有效的 JSON');
         return;
       }
@@ -193,7 +195,7 @@ const IndicatorPage = () => {
       await deleteIndicatorCollection(id);
       message.success('删除成功');
       loadCollections();
-    } catch (err) {
+    } catch {
       message.error('删除失败');
     }
   };
@@ -262,6 +264,81 @@ const IndicatorPage = () => {
 
   // --- Render Helpers ---
 
+  const buildExportText = (data, title) => {
+    const formatData = (d) => {
+      if (d && typeof d === 'object' && d.error) {
+        const detailText = d.detail === undefined ? '' : String(d.detail);
+        return `错误信息: ${String(d.error)}\n详情: ${detailText}`;
+      }
+      if (Array.isArray(d) || (d && typeof d === 'object')) return JSON.stringify(d, null, 2);
+      return String(d);
+    };
+
+    if (!data) return '';
+
+    const isCollectionResult =
+      !Array.isArray(data) &&
+      data !== null &&
+      typeof data === 'object' &&
+      Object.keys(data).some((k) => typeof data[k] === 'object');
+
+    if (isCollectionResult) {
+      const keys = Object.keys(data);
+      return keys
+        .map((k) => `【${k}】\n${formatData(data[k])}`)
+        .join('\n\n');
+    }
+
+    return `【${title || '结果'}】\n${formatData(data)}`;
+  };
+
+  const copyToClipboard = async (text) => {
+    if (!text) return false;
+    let copied = false;
+    if (navigator?.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+    }
+    if (copied) return true;
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.top = '0';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return ok;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleOpenExport = () => {
+    const text = buildExportText(result, currentRunningName);
+    setExportText(text);
+    setExportModalVisible(true);
+  };
+
+  const handleCopyExport = async () => {
+    setCopyLoading(true);
+    try {
+      const ok = await copyToClipboard(exportText);
+      if (ok) message.success('已复制到剪贴板');
+      else message.error('复制失败，请手动复制');
+    } finally {
+      setCopyLoading(false);
+    }
+  };
+
   const renderResult = () => {
     if (!result) return <div style={{ color: '#999', textAlign: 'center', padding: 20 }}>暂无数据</div>;
     
@@ -285,11 +362,15 @@ const IndicatorPage = () => {
     // Handle error case nicely
     if (data && data.error) {
         let detail = data.detail;
-        try {
-            // Try to parse nested JSON in detail if it exists
-            const parsed = JSON.parse(detail);
-            if (parsed.detail) detail = parsed.detail;
-        } catch (e) {}
+        let parsed = null;
+        if (typeof detail === 'string') {
+            try {
+                parsed = JSON.parse(detail);
+            } catch {
+                parsed = null;
+            }
+        }
+        if (parsed && typeof parsed === 'object' && parsed.detail) detail = parsed.detail;
         
         return (
             <div style={{ padding: 20, background: '#fff1f0', border: '1px solid #ffa39e', borderRadius: 4 }}>
@@ -298,7 +379,7 @@ const IndicatorPage = () => {
                 <div><strong>详情:</strong> <code style={{ color: '#cf1322' }}>{String(detail)}</code></div>
                 <div style={{ marginTop: 16, color: '#666' }}>
                     建议检查：
-                    <ul>
+                    <ul style={{ margin: '8px 0 0 20px', padding: 0 }}>
                         <li>指标参数是否正确（如分钟线不能用 daily 周期）</li>
                         <li>日期格式是否符合接口要求</li>
                         <li>股票代码是否有效</li>
@@ -321,7 +402,7 @@ const IndicatorPage = () => {
               return text;
           }
         }));
-        return <Table dataSource={data} columns={resultColumns} scroll={{ x: 'max-content', y: 400 }} pagination={{ pageSize: 20 }} rowKey={(r, i) => i} size="small" />;
+        return <Table dataSource={data} columns={resultColumns} scroll={{ x: 'max-content', y: 400 }} pagination={{ pageSize: 20 }} rowKey={(_, i) => i} size="small" />;
     } else if (typeof data === 'object') {
         return (
             <pre style={{ maxHeight: '400px', overflow: 'auto', background: '#f5f5f5', padding: 16, borderRadius: 4 }}>
@@ -351,9 +432,30 @@ const IndicatorPage = () => {
     },
   ];
 
+  const configIdToName = (configs || []).reduce((acc, c) => {
+    acc[c.id] = c.name;
+    return acc;
+  }, {});
+
   const collectionColumns = [
     { title: 'ID', dataIndex: 'id', width: 60 },
     { title: '名称', dataIndex: 'name', width: 150 },
+    {
+      title: '指标标签',
+      dataIndex: 'indicator_ids',
+      width: 380,
+      render: (ids) => {
+        const list = Array.isArray(ids) ? ids : [];
+        if (list.length === 0) return <span style={{ color: '#999' }}>无</span>;
+        return (
+          <Space size={[0, 8]} wrap>
+            {list.map((id) => (
+              <Tag key={id}>{configIdToName[id] || `#${id}`}</Tag>
+            ))}
+          </Space>
+        );
+      },
+    },
     { title: '包含指标数', dataIndex: 'indicator_ids', width: 120, render: (ids) => ids?.length || 0 },
     { title: '描述', dataIndex: 'description', ellipsis: true },
     {
@@ -419,7 +521,12 @@ const IndicatorPage = () => {
         <Card 
           style={{ marginTop: 24 }} 
           title={`查询结果: ${currentRunningName}`}
-          extra={<Button onClick={() => setResultVisible(false)}>关闭结果</Button>}
+          extra={
+            <Space>
+              <Button disabled={!result} onClick={handleOpenExport}>导出</Button>
+              <Button onClick={() => setResultVisible(false)}>关闭结果</Button>
+            </Space>
+          }
           loading={resultLoading}
         >
           {renderResult()}
@@ -514,6 +621,24 @@ const IndicatorPage = () => {
                 </Select>
             </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`导出结果: ${currentRunningName}`}
+        open={exportModalVisible}
+        onCancel={() => setExportModalVisible(false)}
+        footer={[
+          <Button key="copy" loading={copyLoading} onClick={handleCopyExport} disabled={!exportText}>
+            复制
+          </Button>,
+          <Button key="close" type="primary" onClick={() => setExportModalVisible(false)}>
+            关闭
+          </Button>,
+        ]}
+        width={800}
+        maskClosable={false}
+      >
+        <Input.TextArea value={exportText} rows={18} readOnly style={{ fontFamily: 'monospace' }} />
       </Modal>
     </div>
   );
