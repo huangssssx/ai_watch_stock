@@ -227,12 +227,12 @@ const IndicatorPage = () => {
     setRunCollectionId(record.id);
     setCurrentRunningName(record.name);
     runForm.resetFields();
-    // Default values: Only Symbol is strictly required. Dates are optional overrides.
+    const params = record.last_run_params || {};
     runForm.setFieldsValue({
-        symbol: '600498',
+        symbol: params.symbol || '600498',
         start_date: null,
         end_date: null,
-        adjust: null
+        adjust: params.adjust !== undefined ? params.adjust : null
     });
     setRunModalVisible(true);
   };
@@ -242,8 +242,8 @@ const IndicatorPage = () => {
         const values = await runForm.validateFields();
         const payload = {
             symbol: values.symbol,
-            start_date: values.start_date ? values.start_date.format('YYYYMMDD') : '',
-            end_date: values.end_date ? values.end_date.format('YYYYMMDD') : '',
+            start_date: values.start_date ? values.start_date.format('YYYYMMDD') : null,
+            end_date: values.end_date ? values.end_date.format('YYYYMMDD') : null,
             adjust: values.adjust
         };
 
@@ -253,7 +253,16 @@ const IndicatorPage = () => {
         setResult(null);
 
         const res = await runIndicatorCollection(runCollectionId, payload);
-        setResult(res.data.results); // The backend returns { results: { "Name": data } }
+        setResult(res.data.results);
+        setCollections(prev =>
+          Array.isArray(prev)
+            ? prev.map(c =>
+                c.id === runCollectionId
+                  ? { ...c, last_run_params: payload }
+                  : c
+              )
+            : prev
+        );
         message.success('集合运行完成');
     } catch (err) {
         message.error('运行失败: ' + err.message);

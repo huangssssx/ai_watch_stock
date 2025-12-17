@@ -57,4 +57,5 @@ class IndicatorCollection(Base):
     name = Column(String(100))
     description = Column(Text, nullable=True)
     indicator_ids = Column(Text)  # JSON list of integers, e.g. "[1, 2, 5]"
+    last_run_params = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

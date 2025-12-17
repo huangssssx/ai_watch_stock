@@ -38,8 +38,23 @@ def _drop_legacy_tables():
     except Exception as e:
         logger.warning(f"Drop legacy tables failed: {e}")
 
+
+def _ensure_indicator_collection_last_run_params():
+    try:
+        with engine.begin() as conn:
+            url = str(engine.url)
+            if "sqlite" in url:
+                rows = conn.execute(text("PRAGMA table_info('indicator_collections')")).fetchall()
+                columns = [r[1] for r in rows]
+                if "last_run_params" not in columns:
+                    conn.execute(text("ALTER TABLE indicator_collections ADD COLUMN last_run_params TEXT"))
+    except Exception as e:
+        logger.warning(f"Ensure indicator_collections.last_run_params failed: {e}")
+
+
 _drop_legacy_tables()
 Base.metadata.create_all(bind=engine)
+_ensure_indicator_collection_last_run_params()
 
 app = FastAPI(title="AI Watch Stock")
 
@@ -378,6 +393,7 @@ def list_indicator_collections(db: Session = Depends(get_db)):
             "name": i.name,
             "description": i.description,
             "indicator_ids": json.loads(i.indicator_ids) if i.indicator_ids else [],
+            "last_run_params": json.loads(i.last_run_params) if i.last_run_params else {},
             "created_at": i.created_at.isoformat() if i.created_at else None,
         })
     return res
@@ -388,6 +404,7 @@ def create_indicator_collection(payload: dict, db: Session = Depends(get_db)):
         name=payload.get("name", "New Collection"),
         description=payload.get("description", ""),
         indicator_ids=json.dumps(payload.get("indicator_ids", [])),
+        last_run_params=json.dumps(payload.get("last_run_params", {})),
     )
     db.add(c)
     db.commit()
@@ -406,6 +423,8 @@ def update_indicator_collection(collection_id: int, payload: dict, db: Session =
         c.description = payload["description"]
     if "indicator_ids" in payload:
         c.indicator_ids = json.dumps(payload["indicator_ids"])
+    if "last_run_params" in payload:
+        c.last_run_params = json.dumps(payload["last_run_params"] or {})
         
     db.commit()
     return {"id": c.id}
@@ -465,6 +484,11 @@ def run_indicator_collection(collection_id: int, payload: dict, db: Session = De
     col = db.query(IndicatorCollection).filter(IndicatorCollection.id == collection_id).first()
     if not col:
         raise HTTPException(status_code=404, detail="IndicatorCollection not found")
+    try:
+        col.last_run_params = json.dumps(payload or {})
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Persist collection last_run_params failed: {e}")
     
     ids = json.loads(col.indicator_ids) if col.indicator_ids else []
     if not ids:
