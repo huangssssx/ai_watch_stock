@@ -289,12 +289,15 @@ const AlertRulesPage = () => {
         loading={loading}
         columns={columns}
         dataSource={rules}
+        style={{ width: '100%' }}
         rowKey="id"
+        size="small"
         rowSelection={{
           selectedRowKeys,
           onChange: setSelectedRowKeys,
         }}
         pagination={{ pageSize: 20 }}
+        scroll={{ x: 'max-content' }}
       />
 
       <Divider />

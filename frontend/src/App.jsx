@@ -4,13 +4,14 @@ import { Layout, Menu } from 'antd';
 import { AlertOutlined, LineChartOutlined } from '@ant-design/icons';
 import AlertRulesPage from './components/AlertRulesPage';
 import IndicatorPage from './components/IndicatorPage';
+import './App.css';
 
 const { Header, Content, Footer } = Layout;
 
 const App = () => {
   return (
     <Router>
-      <Layout className="layout" style={{ minHeight: '100vh' }}>
+      <Layout className="layout" style={{ minHeight: '100vh', boxSizing: 'border-box',width:"100%"}}>
         <Header>
           <div className="logo" style={{ float: 'left', color: 'white', fontSize: '20px', marginRight: '20px' }}>
             AI Watch Stock
@@ -33,8 +34,8 @@ const App = () => {
             ]}
           />
         </Header>
-        <Content style={{ padding: '0 50px', marginTop: 20 }}>
-          <div className="site-layout-content" style={{ background: '#fff', padding: 24, minHeight: 280 }}>
+        <Content style={{ padding: '0 24px', marginTop: 20 ,boxSizing: 'border-box'}}>
+          <div className="site-layout-content" style={{ background: '#fff', padding: 24, minHeight: 280 ,boxSizing: 'border-box'}}>
             <Routes>
               <Route path="/" element={<Navigate to="/alert-rules" replace />} />
               <Route path="/alert-rules" element={<AlertRulesPage />} />

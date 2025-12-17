@@ -25,4 +25,11 @@ export const deleteIndicatorConfig = (id) => api.delete(`/indicator_configs/${id
 export const proxyAkshareGet = (apiName, params) => api.get(`/proxy/akshare/${apiName}`, { params });
 export const proxyAksharePost = (data) => api.post('/proxy/akshare/proxy', data);
 
+// Indicator Collections APIs
+export const getIndicatorCollections = () => api.get('/indicator_collections/');
+export const createIndicatorCollection = (data) => api.post('/indicator_collections/', data);
+export const updateIndicatorCollection = (id, data) => api.put(`/indicator_collections/${id}`, data);
+export const deleteIndicatorCollection = (id) => api.delete(`/indicator_collections/${id}`);
+export const runIndicatorCollection = (id, params) => api.post(`/indicator_collections/${id}/run`, params);
+
 export default api;

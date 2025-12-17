@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine, Base
-from models import AlertRule, AlertEvent, AlertNotification, IndicatorConfig
+from models import AlertRule, AlertEvent, AlertNotification, IndicatorConfig, IndicatorCollection
 from datetime import datetime
 import logging
 from fastapi.middleware.cors import CORSMiddleware
@@ -365,6 +365,170 @@ def delete_indicator_config(config_id: int, db: Session = Depends(get_db)):
     db.delete(c)
     db.commit()
     return {"deleted": True}
+
+# --- Indicator Collections ---
+
+@app.get("/indicator_collections/")
+def list_indicator_collections(db: Session = Depends(get_db)):
+    items = db.query(IndicatorCollection).order_by(IndicatorCollection.id.desc()).all()
+    res = []
+    for i in items:
+        res.append({
+            "id": i.id,
+            "name": i.name,
+            "description": i.description,
+            "indicator_ids": json.loads(i.indicator_ids) if i.indicator_ids else [],
+            "created_at": i.created_at.isoformat() if i.created_at else None,
+        })
+    return res
+
+@app.post("/indicator_collections/")
+def create_indicator_collection(payload: dict, db: Session = Depends(get_db)):
+    c = IndicatorCollection(
+        name=payload.get("name", "New Collection"),
+        description=payload.get("description", ""),
+        indicator_ids=json.dumps(payload.get("indicator_ids", [])),
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return {"id": c.id}
+
+@app.put("/indicator_collections/{collection_id}")
+def update_indicator_collection(collection_id: int, payload: dict, db: Session = Depends(get_db)):
+    c = db.query(IndicatorCollection).filter(IndicatorCollection.id == collection_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="IndicatorCollection not found")
+    
+    if "name" in payload:
+        c.name = payload["name"]
+    if "description" in payload:
+        c.description = payload["description"]
+    if "indicator_ids" in payload:
+        c.indicator_ids = json.dumps(payload["indicator_ids"])
+        
+    db.commit()
+    return {"id": c.id}
+
+@app.delete("/indicator_collections/{collection_id}")
+def delete_indicator_collection(collection_id: int, db: Session = Depends(get_db)):
+    c = db.query(IndicatorCollection).filter(IndicatorCollection.id == collection_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="IndicatorCollection not found")
+    db.delete(c)
+    db.commit()
+    return {"deleted": True}
+
+from datetime import datetime, timedelta
+
+def _resolve_dynamic_params(params: dict):
+    """
+    Resolve dynamic date variables in params.
+    Supported variables:
+    {{today}} -> YYYYMMDD
+    {{today-N}} -> YYYYMMDD (N days ago)
+    {{today+N}} -> YYYYMMDD (N days later)
+    """
+    now = datetime.now()
+    
+    for k, v in params.items():
+        if isinstance(v, str) and "{{" in v and "}}" in v:
+            try:
+                # Simple regex or string manipulation
+                if "{{today}}" in v:
+                    params[k] = v.replace("{{today}}", now.strftime("%Y%m%d"))
+                elif "{{today-" in v:
+                    # Extract N
+                    import re
+                    match = re.search(r"{{today-(\d+)}}", v)
+                    if match:
+                        days = int(match.group(1))
+                        target_date = now - timedelta(days=days)
+                        params[k] = v.replace(match.group(0), target_date.strftime("%Y%m%d"))
+                elif "{{today+" in v:
+                    import re
+                    match = re.search(r"{{today\+(\d+)}}", v)
+                    if match:
+                        days = int(match.group(1))
+                        target_date = now + timedelta(days=days)
+                        params[k] = v.replace(match.group(0), target_date.strftime("%Y%m%d"))
+            except Exception as e:
+                logger.warning(f"Failed to resolve dynamic param {k}={v}: {e}")
+    return params
+
+@app.post("/indicator_collections/{collection_id}/run")
+def run_indicator_collection(collection_id: int, payload: dict, db: Session = Depends(get_db)):
+    """
+    Run all indicators in a collection with provided dynamic parameters (symbol, etc.)
+    Payload: { "symbol": "600498", "start_date": "...", "end_date": "...", "adjust": "..." }
+    """
+    col = db.query(IndicatorCollection).filter(IndicatorCollection.id == collection_id).first()
+    if not col:
+        raise HTTPException(status_code=404, detail="IndicatorCollection not found")
+    
+    ids = json.loads(col.indicator_ids) if col.indicator_ids else []
+    if not ids:
+        return {"results": {}}
+    
+    indicators = db.query(IndicatorConfig).filter(IndicatorConfig.id.in_(ids)).all()
+    
+    results = {}
+    
+    for ind in indicators:
+        try:
+            params = json.loads(ind.params) if ind.params else {}
+            
+            # 1. Resolve dynamic date variables in original params first
+            params = _resolve_dynamic_params(params)
+            
+            # 2. Apply overrides (only if provided in payload)
+            for k, v in payload.items():
+                if not v: continue # Skip empty overrides
+                
+                # Direct match
+                if k in params:
+                    params[k] = v
+                
+                # Heuristic for symbol/stock/code
+                if k == "symbol":
+                    if "stock" in params: params["stock"] = v
+                    if "code" in params: params["code"] = v
+                    if "symbol" in params: params["symbol"] = v
+            
+            # Call Proxy
+            # We use internal requests to alaya.zone directly to save overhead of self-calling proxy endpoint
+            # But wait, our proxy logic handles error logging nicely.
+            # Let's just use requests directly to alaya.zone
+            
+            # Smart Adjustment for Minute Data Interfaces
+            if "_min_" in ind.api_name:
+                # 1. Fix period='daily' -> '1'
+                if params.get("period") == "daily":
+                    params["period"] = "1"
+                
+                # 2. Fix date format YYYYMMDD -> YYYY-MM-DD HH:MM:SS
+                # AkShare min interfaces often need specific start/end time format
+                if "start_date" in params and len(str(params["start_date"])) == 8:
+                    s = str(params["start_date"])
+                    params["start_date"] = f"{s[0:4]}-{s[4:6]}-{s[6:8]} 09:30:00"
+                
+                if "end_date" in params and len(str(params["end_date"])) == 8:
+                    s = str(params["end_date"])
+                    params["end_date"] = f"{s[0:4]}-{s[4:6]}-{s[6:8]} 15:00:00"
+
+            logger.info(f"Collection Run: {ind.name} ({ind.api_name}) params={params}")
+            resp = requests.get(f"http://alaya.zone:3001/akshare/{ind.api_name}", params=params, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                results[ind.name] = data.get("data", data)
+            else:
+                results[ind.name] = {"error": f"Status {resp.status_code}", "detail": resp.text}
+                
+        except Exception as e:
+            logger.error(f"Collection Run Error {ind.name}: {e}")
+            results[ind.name] = {"error": str(e)}
+            
+    return {"results": results}
 
 @app.get("/proxy/akshare/{api_name}")
 def proxy_akshare_get(api_name: str, request: Request):

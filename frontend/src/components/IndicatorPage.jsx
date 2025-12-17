@@ -1,68 +1,106 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Table, Button, Space, Modal, Form, Input, message, Divider, Typography, Drawer } from 'antd';
+import { Card, Table, Button, Space, Modal, Form, Input, message, Tabs, Select, DatePicker, Transfer, Typography } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { 
   getIndicatorConfigs, 
   createIndicatorConfig, 
   updateIndicatorConfig, 
   deleteIndicatorConfig,
-  proxyAkshareGet
+  proxyAkshareGet,
+  getIndicatorCollections,
+  createIndicatorCollection,
+  updateIndicatorCollection,
+  deleteIndicatorCollection,
+  runIndicatorCollection
 } from '../api';
+import dayjs from 'dayjs';
 
 const { TextArea } = Input;
-const { Title } = Typography;
+const { Option } = Select;
 
 const IndicatorPage = () => {
-  const [configs, setConfigs] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [modalVisible, setModalVisible] = useState(false);
-  const [editingConfig, setEditingConfig] = useState(null);
-  const [form] = Form.useForm();
+  const [activeTab, setActiveTab] = useState('1');
   
+  // --- Indicators State ---
+  const [configs, setConfigs] = useState([]);
+  const [configLoading, setConfigLoading] = useState(false);
+  const [configModalVisible, setConfigModalVisible] = useState(false);
+  const [editingConfig, setEditingConfig] = useState(null);
+  const [configForm] = Form.useForm();
+  
+  // --- Collections State ---
+  const [collections, setCollections] = useState([]);
+  const [collectionLoading, setCollectionLoading] = useState(false);
+  const [collectionModalVisible, setCollectionModalVisible] = useState(false);
+  const [editingCollection, setEditingCollection] = useState(null);
+  const [collectionForm] = Form.useForm();
+  const [targetKeys, setTargetKeys] = useState([]); // For Transfer component
+
+  // --- Run State ---
   const [result, setResult] = useState(null);
   const [resultLoading, setResultLoading] = useState(false);
-  const [resultVisible, setResultVisible] = useState(false); // Whether to show result area
+  const [resultVisible, setResultVisible] = useState(false);
   const [currentRunningName, setCurrentRunningName] = useState('');
+  
+  // --- Collection Run Modal State ---
+  const [runModalVisible, setRunModalVisible] = useState(false);
+  const [runCollectionId, setRunCollectionId] = useState(null);
+  const [runForm] = Form.useForm();
 
   useEffect(() => {
     loadConfigs();
+    loadCollections();
   }, []);
 
   const loadConfigs = async () => {
-    setLoading(true);
+    setConfigLoading(true);
     try {
       const res = await getIndicatorConfigs();
       setConfigs(res.data || []);
     } catch (err) {
-      message.error('加载配置失败');
+      message.error('加载指标失败');
     } finally {
-      setLoading(false);
+      setConfigLoading(false);
     }
   };
 
-  const handleCreate = () => {
+  const loadCollections = async () => {
+    setCollectionLoading(true);
+    try {
+      const res = await getIndicatorCollections();
+      setCollections(res.data || []);
+    } catch (err) {
+      message.error('加载集合失败');
+    } finally {
+      setCollectionLoading(false);
+    }
+  };
+
+  // --- Config Handlers ---
+
+  const handleCreateConfig = () => {
     setEditingConfig(null);
-    form.resetFields();
-    form.setFieldsValue({
+    configForm.resetFields();
+    configForm.setFieldsValue({
         name: '新指标',
         api_name: 'stock_zh_a_hist',
         params: '{\n  "symbol": "600498",\n  "period": "daily",\n  "start_date": "20250101",\n  "end_date": "20250201",\n  "adjust": "qfq"\n}'
     });
-    setModalVisible(true);
+    setConfigModalVisible(true);
   };
 
-  const handleEdit = (record) => {
+  const handleEditConfig = (record) => {
     setEditingConfig(record);
-    form.setFieldsValue({
+    configForm.setFieldsValue({
       name: record.name,
       api_name: record.api_name,
       description: record.description,
       params: JSON.stringify(record.params, null, 2)
     });
-    setModalVisible(true);
+    setConfigModalVisible(true);
   };
 
-  const handleDelete = async (id) => {
+  const handleDeleteConfig = async (id) => {
     try {
       await deleteIndicatorConfig(id);
       message.success('删除成功');
@@ -72,9 +110,9 @@ const IndicatorPage = () => {
     }
   };
 
-  const handleModalOk = async () => {
+  const handleConfigModalOk = async () => {
     try {
-      const values = await form.validateFields();
+      const values = await configForm.validateFields();
       let paramsObj = {};
       try {
         paramsObj = JSON.parse(values.params);
@@ -97,15 +135,14 @@ const IndicatorPage = () => {
         await createIndicatorConfig(payload);
         message.success('创建成功');
       }
-      setModalVisible(false);
+      setConfigModalVisible(false);
       loadConfigs();
     } catch (err) {
-      // Form validation error or API error
       if (err.message) message.error('保存失败: ' + err.message);
     }
   };
 
-  const handleRun = async (record) => {
+  const handleRunConfig = async (record) => {
     if (!record.api_name) {
       message.warning('该配置缺少 API Name');
       return;
@@ -117,7 +154,6 @@ const IndicatorPage = () => {
     setCurrentRunningName(record.name);
 
     try {
-      // record.params is already an object from API response
       const res = await proxyAkshareGet(record.api_name, record.params || {});
       if (res.data && res.data.code === 200) {
         setResult(res.data.data);
@@ -133,118 +169,251 @@ const IndicatorPage = () => {
     }
   };
 
-  const columns = [
-    {
-      title: 'ID',
-      dataIndex: 'id',
-      width: 80,
-    },
-    {
-      title: '名称',
-      dataIndex: 'name',
-      width: 200,
-    },
-    {
-      title: '接口名 (API)',
-      dataIndex: 'api_name',
-      width: 200,
-      render: (text) => <code style={{ background: '#f0f0f0', padding: '2px 4px', borderRadius: 4 }}>{text}</code>
-    },
-    {
-      title: '描述',
-      dataIndex: 'description',
-      ellipsis: true,
-    },
-    {
-      title: '参数预览',
-      dataIndex: 'params',
-      ellipsis: true,
-      render: (params) => JSON.stringify(params)
-    },
+  // --- Collection Handlers ---
+
+  const handleCreateCollection = () => {
+    setEditingCollection(null);
+    collectionForm.resetFields();
+    setTargetKeys([]);
+    setCollectionModalVisible(true);
+  };
+
+  const handleEditCollection = (record) => {
+    setEditingCollection(record);
+    collectionForm.setFieldsValue({
+      name: record.name,
+      description: record.description,
+    });
+    setTargetKeys(record.indicator_ids || []);
+    setCollectionModalVisible(true);
+  };
+
+  const handleDeleteCollection = async (id) => {
+    try {
+      await deleteIndicatorCollection(id);
+      message.success('删除成功');
+      loadCollections();
+    } catch (err) {
+      message.error('删除失败');
+    }
+  };
+
+  const handleCollectionModalOk = async () => {
+    try {
+      const values = await collectionForm.validateFields();
+      const payload = {
+        name: values.name,
+        description: values.description,
+        indicator_ids: targetKeys
+      };
+
+      if (editingCollection) {
+        await updateIndicatorCollection(editingCollection.id, payload);
+        message.success('更新成功');
+      } else {
+        await createIndicatorCollection(payload);
+        message.success('创建成功');
+      }
+      setCollectionModalVisible(false);
+      loadCollections();
+    } catch (err) {
+        if (err.message) message.error('保存失败: ' + err.message);
+    }
+  };
+
+  const handleOpenRunModal = (record) => {
+    setRunCollectionId(record.id);
+    setCurrentRunningName(record.name);
+    runForm.resetFields();
+    // Default values: Only Symbol is strictly required. Dates are optional overrides.
+    runForm.setFieldsValue({
+        symbol: '600498',
+        start_date: null,
+        end_date: null,
+        adjust: null
+    });
+    setRunModalVisible(true);
+  };
+
+  const handleRunCollection = async () => {
+    try {
+        const values = await runForm.validateFields();
+        const payload = {
+            symbol: values.symbol,
+            start_date: values.start_date ? values.start_date.format('YYYYMMDD') : '',
+            end_date: values.end_date ? values.end_date.format('YYYYMMDD') : '',
+            adjust: values.adjust
+        };
+
+        setRunModalVisible(false);
+        setResultLoading(true);
+        setResultVisible(true);
+        setResult(null);
+
+        const res = await runIndicatorCollection(runCollectionId, payload);
+        setResult(res.data.results); // The backend returns { results: { "Name": data } }
+        message.success('集合运行完成');
+    } catch (err) {
+        message.error('运行失败: ' + err.message);
+    } finally {
+        setResultLoading(false);
+    }
+  };
+
+  // --- Render Helpers ---
+
+  const renderResult = () => {
+    if (!result) return <div style={{ color: '#999', textAlign: 'center', padding: 20 }}>暂无数据</div>;
+    
+    // Check if it's a collection result (object with keys) or single result (array/object)
+    const isCollectionResult = !Array.isArray(result) && result !== null && typeof result === 'object' && Object.keys(result).some(k => typeof result[k] === 'object');
+    
+    if (isCollectionResult) {
+        return (
+            <Tabs defaultActiveKey={Object.keys(result)[0]} items={Object.keys(result).map(key => ({
+                key,
+                label: key,
+                children: renderSingleResult(result[key])
+            }))} />
+        );
+    } else {
+        return renderSingleResult(result);
+    }
+  };
+
+  const renderSingleResult = (data) => {
+    // Handle error case nicely
+    if (data && data.error) {
+        let detail = data.detail;
+        try {
+            // Try to parse nested JSON in detail if it exists
+            const parsed = JSON.parse(detail);
+            if (parsed.detail) detail = parsed.detail;
+        } catch (e) {}
+        
+        return (
+            <div style={{ padding: 20, background: '#fff1f0', border: '1px solid #ffa39e', borderRadius: 4 }}>
+                <Typography.Title level={5} type="danger">运行出错</Typography.Title>
+                <div style={{ marginBottom: 8 }}><strong>错误信息:</strong> {data.error}</div>
+                <div><strong>详情:</strong> <code style={{ color: '#cf1322' }}>{String(detail)}</code></div>
+                <div style={{ marginTop: 16, color: '#666' }}>
+                    建议检查：
+                    <ul>
+                        <li>指标参数是否正确（如分钟线不能用 daily 周期）</li>
+                        <li>日期格式是否符合接口要求</li>
+                        <li>股票代码是否有效</li>
+                    </ul>
+                </div>
+            </div>
+        );
+    }
+
+    if (Array.isArray(data) && data.length > 0) {
+        const first = data[0];
+        const resultColumns = Object.keys(first).map(key => ({
+          title: key,
+          dataIndex: key,
+          key: key,
+          ellipsis: true,
+          width: 150, 
+          render: (text) => {
+              if (typeof text === 'object' && text !== null) return JSON.stringify(text);
+              return text;
+          }
+        }));
+        return <Table dataSource={data} columns={resultColumns} scroll={{ x: 'max-content', y: 400 }} pagination={{ pageSize: 20 }} rowKey={(r, i) => i} size="small" />;
+    } else if (typeof data === 'object') {
+        return (
+            <pre style={{ maxHeight: '400px', overflow: 'auto', background: '#f5f5f5', padding: 16, borderRadius: 4 }}>
+              {JSON.stringify(data, null, 2)}
+            </pre>
+        );
+    }
+    return <div style={{ padding: 16 }}>{String(data)}</div>;
+  };
+
+  const configColumns = [
+    { title: 'ID', dataIndex: 'id', width: 60 },
+    { title: '名称', dataIndex: 'name', width: 150 },
+    { title: '接口名', dataIndex: 'api_name', width: 180, render: t => <code style={{background:'#f0f0f0'}}>{t}</code> },
+    { title: '描述', dataIndex: 'description', ellipsis: true },
     {
       title: '操作',
       key: 'action',
       width: 250,
       render: (_, record) => (
         <Space>
-          <Button 
-            type="primary" 
-            ghost 
-            icon={<PlayCircleOutlined />} 
-            onClick={() => handleRun(record)}
-          >
-            运行
-          </Button>
-          <Button 
-            icon={<EditOutlined />} 
-            onClick={() => handleEdit(record)}
-          >
-            编辑
-          </Button>
-          <Button 
-            danger 
-            icon={<DeleteOutlined />} 
-            onClick={() => Modal.confirm({
-              title: '确认删除',
-              content: `确定要删除指标 "${record.name}" 吗？`,
-              onOk: () => handleDelete(record.id)
-            })}
-          >
-            删除
-          </Button>
+          <Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => handleRunConfig(record)}>运行</Button>
+          <Button icon={<EditOutlined />} onClick={() => handleEditConfig(record)}>编辑</Button>
+          <Button danger icon={<DeleteOutlined />} onClick={() => Modal.confirm({ title: '确认删除', onOk: () => handleDeleteConfig(record.id) })}>删除</Button>
         </Space>
       ),
     },
   ];
 
-  // Helper to render result
-  const renderResult = () => {
-    if (!result) return <div style={{ color: '#999', textAlign: 'center', padding: 20 }}>暂无数据</div>;
-    
-    if (Array.isArray(result) && result.length > 0) {
-      const first = result[0];
-      const resultColumns = Object.keys(first).map(key => ({
-        title: key,
-        dataIndex: key,
-        key: key,
-        ellipsis: true,
-        width: 150, // default width
-        render: (text) => {
-            if (typeof text === 'object' && text !== null) return JSON.stringify(text);
-            return text;
-        }
-      }));
-      return <Table dataSource={result} columns={resultColumns} scroll={{ x: 'max-content', y: 500 }} pagination={{ pageSize: 50 }} rowKey={(r, i) => i} size="small" />;
-    }
-    
-    return (
-      <pre style={{ maxHeight: '500px', overflow: 'auto', background: '#f5f5f5', padding: 16, borderRadius: 4 }}>
-        {JSON.stringify(result, null, 2)}
-      </pre>
-    );
-  };
+  const collectionColumns = [
+    { title: 'ID', dataIndex: 'id', width: 60 },
+    { title: '名称', dataIndex: 'name', width: 150 },
+    { title: '包含指标数', dataIndex: 'indicator_ids', width: 120, render: (ids) => ids?.length || 0 },
+    { title: '描述', dataIndex: 'description', ellipsis: true },
+    {
+      title: '操作',
+      key: 'action',
+      width: 250,
+      render: (_, record) => (
+        <Space>
+          <Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => handleOpenRunModal(record)}>运行</Button>
+          <Button icon={<EditOutlined />} onClick={() => handleEditCollection(record)}>编辑</Button>
+          <Button danger icon={<DeleteOutlined />} onClick={() => Modal.confirm({ title: '确认删除', onOk: () => handleDeleteCollection(record.id) })}>删除</Button>
+        </Space>
+      ),
+    },
+  ];
 
   return (
-    <>
-      <Card
-        title="数据指标管理"
-        extra={
-          <Space>
-            <Button icon={<ReloadOutlined />} onClick={loadConfigs}>刷新</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-              新建指标
-            </Button>
-          </Space>
+    <div style={{ background: '#fff' }}>
+      <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
+        {
+            key: '1',
+            label: '原子指标',
+            children: (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                    <div style={{ textAlign: 'right', marginBottom: 16 }}>
+                        <Button icon={<ReloadOutlined />} onClick={loadConfigs} style={{ marginRight: 8 }}>刷新</Button>
+                        <Button type="primary" icon={<PlusOutlined />} onClick={handleCreateConfig}>新建指标</Button>
+                    </div>
+                    <Table 
+                        loading={configLoading} 
+                        columns={configColumns} 
+                        dataSource={configs} 
+                        rowKey="id" 
+                        pagination={{ pageSize: 10 }}
+                        scroll={{ x: 'max-content' }}
+                    />
+                </Space>
+            )
+        },
+        {
+            key: '2',
+            label: '指标集合',
+            children: (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                    <div style={{ textAlign: 'right', marginBottom: 16 }}>
+                        <Button icon={<ReloadOutlined />} onClick={loadCollections} style={{ marginRight: 8 }}>刷新</Button>
+                        <Button type="primary" icon={<PlusOutlined />} onClick={handleCreateCollection}>新建集合</Button>
+                    </div>
+                    <Table 
+                        loading={collectionLoading} 
+                        columns={collectionColumns} 
+                        dataSource={collections} 
+                        rowKey="id" 
+                        pagination={{ pageSize: 10 }}
+                        scroll={{ x: 'max-content' }}
+                    />
+                </Space>
+            )
         }
-      >
-        <Table
-          loading={loading}
-          columns={columns}
-          dataSource={configs}
-          rowKey="id"
-          pagination={{ pageSize: 10 }}
-        />
-      </Card>
+      ]} />
 
       {resultVisible && (
         <Card 
@@ -257,42 +426,96 @@ const IndicatorPage = () => {
         </Card>
       )}
 
+      {/* Config Modal */}
       <Modal
         title={editingConfig ? "编辑指标" : "新建指标"}
-        open={modalVisible}
-        onOk={handleModalOk}
-        onCancel={() => setModalVisible(false)}
+        open={configModalVisible}
+        onOk={handleConfigModalOk}
+        onCancel={() => setConfigModalVisible(false)}
         width={600}
         maskClosable={false}
       >
-        <Form
-          form={form}
-          layout="vertical"
-        >
-          <Form.Item name="name" label="指标名称" rules={[{ required: true, message: '请输入名称' }]}>
+        <Form form={configForm} layout="vertical">
+          <Form.Item name="name" label="指标名称" rules={[{ required: true }]}>
             <Input placeholder="例如：个股日线" />
           </Form.Item>
-          <Form.Item name="api_name" label="AkShare 接口名" rules={[{ required: true, message: '请输入接口名' }]}>
+          <Form.Item name="api_name" label="AkShare 接口名" rules={[{ required: true }]}>
             <Input placeholder="例如：stock_zh_a_hist" />
           </Form.Item>
           <Form.Item name="description" label="描述">
-            <Input.TextArea rows={2} placeholder="描述该指标的用途" />
+            <Input.TextArea rows={2} />
           </Form.Item>
-          <Form.Item 
-            name="params" 
-            label="请求参数 (JSON 格式)" 
-            rules={[{ required: true, message: '请输入参数JSON' }]}
-            help="请填写标准的 JSON 对象格式"
-          >
-            <TextArea 
-              rows={8} 
-              style={{ fontFamily: 'monospace' }} 
-              placeholder='{ "symbol": "600498", "period": "daily" }' 
+          <Form.Item name="params" label="参数模板 (JSON)" rules={[{ required: true }]}>
+            <TextArea rows={6} style={{ fontFamily: 'monospace' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* Collection Modal */}
+      <Modal
+        title={editingCollection ? "编辑集合" : "新建集合"}
+        open={collectionModalVisible}
+        onOk={handleCollectionModalOk}
+        onCancel={() => setCollectionModalVisible(false)}
+        width={700}
+        maskClosable={false}
+      >
+        <Form form={collectionForm} layout="vertical">
+          <Form.Item name="name" label="集合名称" rules={[{ required: true }]}>
+            <Input placeholder="例如：基本面分析集合" />
+          </Form.Item>
+          <Form.Item name="description" label="描述">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item label="选择指标">
+            <Transfer
+                dataSource={configs}
+                titles={['可选指标', '已选指标']}
+                targetKeys={targetKeys}
+                onChange={setTargetKeys}
+                render={item => item.name}
+                rowKey={item => item.id}
+                listStyle={{ width: 300, height: 300 }}
             />
           </Form.Item>
         </Form>
       </Modal>
-    </>
+
+      {/* Run Collection Modal */}
+      <Modal
+        title={`运行集合: ${currentRunningName}`}
+        open={runModalVisible}
+        onOk={handleRunCollection}
+        onCancel={() => setRunModalVisible(false)}
+        okText="运行"
+      >
+        <Form form={runForm} layout="vertical">
+            <Form.Item name="symbol" label="股票代码 (Symbol)" rules={[{ required: true }]} help="将自动替换所有指标中的 symbol/stock/code 参数">
+                <Input placeholder="例如：600498" />
+            </Form.Item>
+            
+            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
+                高级选项（选填，留空则使用指标自带配置）
+            </Typography.Text>
+
+            <div style={{ display: 'flex', gap: 16 }}>
+                <Form.Item name="start_date" label="开始日期" style={{ flex: 1 }}>
+                    <DatePicker format="YYYYMMDD" style={{ width: '100%' }} placeholder="覆盖原配置" />
+                </Form.Item>
+                <Form.Item name="end_date" label="结束日期" style={{ flex: 1 }}>
+                    <DatePicker format="YYYYMMDD" style={{ width: '100%' }} placeholder="覆盖原配置" />
+                </Form.Item>
+            </div>
+            <Form.Item name="adjust" label="复权方式">
+                <Select placeholder="覆盖原配置" allowClear>
+                    <Option value="qfq">前复权 (qfq)</Option>
+                    <Option value="hfq">后复权 (hfq)</Option>
+                    <Option value="">不复权</Option>
+                </Select>
+            </Form.Item>
+        </Form>
+      </Modal>
+    </div>
   );
 };
 

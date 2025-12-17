@@ -49,3 +49,12 @@ class IndicatorConfig(Base):
     params = Column(Text)  # JSON string
     description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class IndicatorCollection(Base):
+    __tablename__ = "indicator_collections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100))
+    description = Column(Text, nullable=True)
+    indicator_ids = Column(Text)  # JSON list of integers, e.g. "[1, 2, 5]"
+    created_at = Column(DateTime, default=datetime.utcnow)
