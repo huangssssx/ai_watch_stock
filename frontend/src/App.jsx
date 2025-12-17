@@ -1,8 +1,9 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, Navigate } from 'react-router-dom';
+import { HashRouter as Router, Routes, Route, Link, Navigate } from 'react-router-dom';
 import { Layout, Menu } from 'antd';
-import { AlertOutlined } from '@ant-design/icons';
+import { AlertOutlined, LineChartOutlined } from '@ant-design/icons';
 import AlertRulesPage from './components/AlertRulesPage';
+import IndicatorPage from './components/IndicatorPage';
 
 const { Header, Content, Footer } = Layout;
 
@@ -24,6 +25,11 @@ const App = () => {
                 icon: <AlertOutlined />,
                 label: <Link to="/alert-rules">规则管理</Link>,
               },
+              {
+                key: '2',
+                icon: <LineChartOutlined />,
+                label: <Link to="/indicators">数据指标</Link>,
+              },
             ]}
           />
         </Header>
@@ -32,6 +38,7 @@ const App = () => {
             <Routes>
               <Route path="/" element={<Navigate to="/alert-rules" replace />} />
               <Route path="/alert-rules" element={<AlertRulesPage />} />
+              <Route path="/indicators" element={<IndicatorPage />} />
               <Route path="*" element={<Navigate to="/alert-rules" replace />} />
             </Routes>
           </div>

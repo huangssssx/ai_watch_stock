@@ -15,4 +15,14 @@ export const getAlertNotifications = (params = {}) => api.get('/alert_notificati
 export const updateAlertNotification = (id, data) => api.put(`/alert_notifications/${id}`, data);
 export const clearAllAlertNotifications = () => api.post('/alert_notifications/clear_all');
 
+// Indicator Configs APIs
+export const getIndicatorConfigs = () => api.get('/indicator_configs/');
+export const createIndicatorConfig = (data) => api.post('/indicator_configs/', data);
+export const updateIndicatorConfig = (id, data) => api.put(`/indicator_configs/${id}`, data);
+export const deleteIndicatorConfig = (id) => api.delete(`/indicator_configs/${id}`);
+
+// Proxy API
+export const proxyAkshareGet = (apiName, params) => api.get(`/proxy/akshare/${apiName}`, { params });
+export const proxyAksharePost = (data) => api.post('/proxy/akshare/proxy', data);
+
 export default api;

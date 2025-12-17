@@ -24,6 +24,10 @@ const AlertRulesPage = () => {
   const [editing, setEditing] = useState(null);
   const [form] = Form.useForm();
   const [notifications, setNotifications] = useState([]);
+  const [pollInterval, setPollInterval] = useState(() => {
+    const saved = localStorage.getItem('alert_poll_interval');
+    return saved ? parseInt(saved, 10) : 60000;
+  });
 
   const loadNotifications = useCallback(async () => {
     try {
@@ -48,12 +52,13 @@ const AlertRulesPage = () => {
   useEffect(() => {
     loadRules();
     loadNotifications();
+    if (pollInterval <= 0) return;
     const interval = setInterval(() => {
       loadRules();
       loadNotifications();
-    }, 5000);
+    }, pollInterval);
     return () => clearInterval(interval);
-  }, [loadNotifications]);
+  }, [loadNotifications, pollInterval]);
 
   const loadRules = async () => {
     setLoading(true);
@@ -198,6 +203,12 @@ const AlertRulesPage = () => {
     }
   };
 
+  const handleIntervalChange = (value) => {
+    setPollInterval(value);
+    localStorage.setItem('alert_poll_interval', value);
+    message.success('轮询间隔已更新');
+  };
+
   const columns = [
     { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
     { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
@@ -239,6 +250,22 @@ const AlertRulesPage = () => {
       title="规则管理"
       extra={
         <Space>
+          <Space size={4}>
+            <span style={{ fontSize: '14px' }}>刷新间隔:</span>
+            <Select
+              value={pollInterval}
+              onChange={handleIntervalChange}
+              style={{ width: 100 }}
+              options={[
+                { value: 5000, label: '5秒' },
+                { value: 10000, label: '10秒' },
+                { value: 30000, label: '30秒' },
+                { value: 60000, label: '1分钟' },
+                { value: 300000, label: '5分钟' },
+              ]}
+            />
+          </Space>
+          <Divider type="vertical" />
           <Button danger onClick={handleDeleteAll}>删除全部</Button>
           <Button onClick={handleBatchDeleteSelected}>批量删除选中</Button>
           <Button type="primary" onClick={loadRules}>刷新</Button>

@@ -39,3 +39,13 @@ class AlertNotification(Base):
     triggered_at = Column(DateTime, default=datetime.utcnow)
     last_notified_at = Column(DateTime, nullable=True)
     is_cleared = Column(Boolean, default=False)
+
+class IndicatorConfig(Base):
+    __tablename__ = "indicator_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100))
+    api_name = Column(String(100))
+    params = Column(Text)  # JSON string
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

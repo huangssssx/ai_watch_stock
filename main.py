@@ -1,7 +1,7 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine, Base
-from models import AlertRule, AlertEvent, AlertNotification
+from models import AlertRule, AlertEvent, AlertNotification, IndicatorConfig
 from datetime import datetime
 import logging
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +24,11 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("API")
 
+import fcntl
+import sys
+import atexit
+
+# ... imports ...
 # Initialize DB
 def _drop_legacy_tables():
     try:
@@ -56,8 +61,7 @@ def get_db():
         db.close()
 
 scheduler: Optional[BackgroundScheduler] = None
-
-scheduler: Optional[BackgroundScheduler] = None
+scheduler_lock_file = None
 
 def alert_event_to_dict(a):
     return {
@@ -307,6 +311,82 @@ def clear_all_alert_notifications(db: Session = Depends(get_db)):
     db.commit()
     return {"cleared": count}
 
+@app.get("/indicator_configs/")
+def list_indicator_configs(db: Session = Depends(get_db)):
+    items = db.query(IndicatorConfig).order_by(IndicatorConfig.id.desc()).all()
+    res = []
+    for i in items:
+        res.append({
+            "id": i.id,
+            "name": i.name,
+            "api_name": i.api_name,
+            "params": json.loads(i.params) if i.params else {},
+            "description": i.description,
+            "created_at": i.created_at.isoformat() if i.created_at else None,
+        })
+    return res
+
+@app.post("/indicator_configs/")
+def create_indicator_config(payload: dict, db: Session = Depends(get_db)):
+    c = IndicatorConfig(
+        name=payload.get("name", "New Indicator"),
+        api_name=payload.get("api_name", ""),
+        params=json.dumps(payload.get("params", {})),
+        description=payload.get("description", ""),
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return {"id": c.id}
+
+@app.put("/indicator_configs/{config_id}")
+def update_indicator_config(config_id: int, payload: dict, db: Session = Depends(get_db)):
+    c = db.query(IndicatorConfig).filter(IndicatorConfig.id == config_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="IndicatorConfig not found")
+    
+    if "name" in payload:
+        c.name = payload["name"]
+    if "api_name" in payload:
+        c.api_name = payload["api_name"]
+    if "params" in payload:
+        c.params = json.dumps(payload["params"])
+    if "description" in payload:
+        c.description = payload["description"]
+        
+    db.commit()
+    return {"id": c.id}
+
+@app.delete("/indicator_configs/{config_id}")
+def delete_indicator_config(config_id: int, db: Session = Depends(get_db)):
+    c = db.query(IndicatorConfig).filter(IndicatorConfig.id == config_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="IndicatorConfig not found")
+    db.delete(c)
+    db.commit()
+    return {"deleted": True}
+
+@app.get("/proxy/akshare/{api_name}")
+def proxy_akshare_get(api_name: str, request: Request):
+    # Forward query params
+    params = dict(request.query_params)
+    try:
+        resp = requests.get(f"http://alaya.zone:3001/akshare/{api_name}", params=params, timeout=30)
+        return resp.json()
+    except Exception as e:
+        logger.error(f"Proxy GET failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/proxy/akshare/proxy")
+async def proxy_akshare_post(request: Request):
+    try:
+        body = await request.json()
+        resp = requests.post("http://alaya.zone:3001/akshare/proxy", json=body, timeout=30)
+        return resp.json()
+    except Exception as e:
+        logger.error(f"Proxy POST failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
     rules_enabled = db.query(AlertRule).filter(AlertRule.enabled == True).count()
@@ -450,17 +530,37 @@ def _send_alert_email(subject: str, body: str):
 
 @app.on_event("startup")
 def on_startup():
-    global scheduler
-    if scheduler is None:
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(check_alert_rules_once, IntervalTrigger(minutes=1))
-        scheduler.start()
-        logger.info("AlertRule scheduler started")
+    global scheduler, scheduler_lock_file
+    try:
+        scheduler_lock_file = open("scheduler.lock", "w")
+        fcntl.flock(scheduler_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        
+        if scheduler is None:
+            scheduler = BackgroundScheduler()
+            scheduler.add_job(check_alert_rules_once, IntervalTrigger(minutes=1))
+            scheduler.start()
+            logger.info("AlertRule scheduler started (lock acquired)")
+    except IOError:
+        logger.info("AlertRule scheduler not started (lock held by another worker)")
+        if scheduler_lock_file:
+            try:
+                scheduler_lock_file.close()
+            except Exception:
+                pass
+            scheduler_lock_file = None
 
 @app.on_event("shutdown")
 def on_shutdown():
-    global scheduler
+    global scheduler, scheduler_lock_file
     if scheduler:
         scheduler.shutdown(wait=False)
         scheduler = None
         logger.info("AlertRule scheduler stopped")
+    
+    if scheduler_lock_file:
+        try:
+            fcntl.flock(scheduler_lock_file, fcntl.LOCK_UN)
+            scheduler_lock_file.close()
+        except Exception:
+            pass
+        scheduler_lock_file = None
