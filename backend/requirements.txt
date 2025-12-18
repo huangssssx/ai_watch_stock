@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+apscheduler
+akshare
+openai
+python-dotenv
+requests
+aiosmtplib
+jinja2
+python-multipart
