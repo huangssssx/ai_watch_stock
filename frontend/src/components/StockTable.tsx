@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag } from 'antd';
 import type { Stock, AIConfig, StockTestRunResponse } from '../types';
 import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock } from '../api';
-import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
+import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined } from '@ant-design/icons';
 import StockConfigModal from './StockConfigModal.tsx';
+import LogsViewer from './LogsViewer.tsx';
 import type { ColumnsType } from 'antd/es/table';
 
 type StockCreateFormValues = {
@@ -25,6 +26,9 @@ const StockTable: React.FC = () => {
   const [testStock, setTestStock] = useState<Stock | null>(null);
   const [testResult, setTestResult] = useState<StockTestRunResponse | null>(null);
   
+  const [logsModalVisible, setLogsModalVisible] = useState(false);
+  const [logsStock, setLogsStock] = useState<Stock | null>(null);
+
   const [form] = Form.useForm();
 
   const fetchData = async () => {
@@ -128,6 +132,7 @@ const StockTable: React.FC = () => {
           <Button onClick={() => handleTestRun(record)} loading={testing && testStock?.id === record.id}>
             测试
           </Button>
+          <Button icon={<FileTextOutlined />} onClick={() => { setLogsStock(record); setLogsModalVisible(true); }} title="查看日志" />
           <Button icon={<SettingOutlined />} onClick={() => { setCurrentStock(record); setConfigModalVisible(true); }} />
           <Button danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />
         </div>
@@ -199,6 +204,20 @@ const StockTable: React.FC = () => {
         ) : (
           <div>{testing ? '测试中，请稍候…' : '暂无结果'}</div>
         )}
+      </Modal>
+
+      <Modal
+        title={`监控日志：${logsStock ? `${logsStock.symbol} ${logsStock.name || ''}` : ''}`}
+        open={logsModalVisible}
+        onCancel={() => {
+          setLogsModalVisible(false);
+          setLogsStock(null);
+        }}
+        footer={null}
+        width={1000}
+        destroyOnClose
+      >
+        {logsStock && <LogsViewer stockId={logsStock.id} />}
       </Modal>
 
       {currentStock && (

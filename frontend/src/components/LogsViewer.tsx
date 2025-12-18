@@ -5,7 +5,11 @@ import { getLogs, clearLogs } from '../api';
 import { ReloadOutlined, DeleteOutlined, SearchOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 
-const LogsViewer: React.FC = () => {
+interface Props {
+  stockId?: number;
+}
+
+const LogsViewer: React.FC<Props> = ({ stockId }) => {
   const [logs, setLogs] = useState<Log[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
@@ -15,9 +19,13 @@ const LogsViewer: React.FC = () => {
     setLoading(true);
     try {
       const res = await getLogs();
-      setLogs(res.data);
+      let data = res.data;
+      if (stockId) {
+        data = data.filter(l => l.stock_id === stockId);
+      }
+      setLogs(data);
       // Clear selection after refresh if items are gone
-      setSelectedRowKeys(keys => keys.filter(k => res.data.find(l => l.id === k)));
+      setSelectedRowKeys(keys => keys.filter(k => data.find(l => l.id === k)));
     } finally {
       setLoading(false);
     }
@@ -40,7 +48,7 @@ const LogsViewer: React.FC = () => {
     fetchLogs();
     const interval = setInterval(fetchLogs, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [stockId]);
 
   const filteredLogs = logs.filter(log => {
     if (!searchText) return true;
@@ -129,6 +137,19 @@ const LogsViewer: React.FC = () => {
       render: (text) => (
         <Tooltip title={<div style={{ whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>{text}</div>} placement="topLeft" overlayStyle={{ maxWidth: 600 }}>
           <span style={{ fontFamily: 'monospace', color: '#666' }}>{text}</span>
+        </Tooltip>
+      )
+    },
+    {
+      title: '发送内容',
+      dataIndex: 'raw_data',
+      key: 'raw_data',
+      ellipsis: {
+        showTitle: false,
+      },
+      render: (text) => (
+        <Tooltip title={<div style={{ whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>{text}</div>} placement="topLeft" overlayStyle={{ maxWidth: 600 }}>
+          <span style={{ fontFamily: 'monospace', color: '#666', cursor: 'pointer' }}>查看内容</span>
         </Tooltip>
       )
     }

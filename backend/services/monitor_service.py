@@ -94,7 +94,7 @@ def process_stock(stock_id: int):
         
         log_entry = Log(
             stock_id=stock.id,
-            raw_data=data_for_ai, # Store the actual data sent
+            raw_data=f"Prompt Template: {prompt}\n\nData Context:\n{data_for_ai}", # Store the actual data sent
             ai_response=raw_response,
             ai_analysis=analysis_json,
             is_alert=is_alert
