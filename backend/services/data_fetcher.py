@@ -11,10 +11,17 @@ class DataFetcher:
         """
         Replace placeholders in params with context values.
         Context usually contains: 'symbol', 'today'
-        Supported placeholders: {symbol}, {today}, {today-N}
+        Supported placeholders: 
+            {symbol}
+            {today}, {today-N} -> YYYYMMDD
+            {today_iso}, {today_iso-N} -> YYYY-MM-DD
+            {now} -> YYYY-MM-DD HH:MM:SS
+            {now_time} -> HH:MM:SS
         """
         resolved = {}
         today = datetime.date.today()
+        now = datetime.datetime.now()
+        import re
         
         for k, v in params.items():
             if isinstance(v, str):
@@ -22,19 +29,36 @@ class DataFetcher:
                 if "{symbol}" in v:
                     v = v.replace("{symbol}", context.get("symbol", ""))
                 
+                # Handle {now} (YYYY-MM-DD HH:MM:SS)
+                if "{now}" in v:
+                    v = v.replace("{now}", now.strftime("%Y-%m-%d %H:%M:%S"))
+                
+                # Handle {now_time} (HH:MM:SS)
+                if "{now_time}" in v:
+                    v = v.replace("{now_time}", now.strftime("%H:%M:%S"))
+
+                # Handle {today_iso} and {today_iso-N}
+                # Must handle ISO first to avoid {today} conflict if names overlap
+                if "{today_iso}" in v:
+                    v = v.replace("{today_iso}", today.strftime("%Y-%m-%d"))
+                
+                if "{today_iso-" in v:
+                    matches = re.findall(r"\{today_iso-(\d+)\}", v)
+                    for days_str in matches:
+                        days = int(days_str)
+                        target_date = today - datetime.timedelta(days=days)
+                        v = v.replace(f"{{today_iso-{days}}}", target_date.strftime("%Y-%m-%d"))
+
                 # Handle {today} and {today-N}
-                # Simple parsing logic
                 if "{today}" in v:
                     v = v.replace("{today}", today.strftime("%Y%m%d"))
                 
                 if "{today-" in v:
-                    # simplistic parser for {today-20}
-                    import re
-                    match = re.search(r"\{today-(\d+)\}", v)
-                    if match:
-                        days = int(match.group(1))
+                    matches = re.findall(r"\{today-(\d+)\}", v)
+                    for days_str in matches:
+                        days = int(days_str)
                         target_date = today - datetime.timedelta(days=days)
-                        v = v.replace(match.group(0), target_date.strftime("%Y%m%d"))
+                        v = v.replace(f"{{today-{days}}}", target_date.strftime("%Y%m%d"))
             
             resolved[k] = v
         return resolved
