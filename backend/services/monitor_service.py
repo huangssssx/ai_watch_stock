@@ -7,10 +7,12 @@ from services.ai_service import ai_service
 from services.alert_service import alert_service
 import datetime
 import json
+import time
 
 scheduler = BackgroundScheduler()
 
 def process_stock(stock_id: int):
+    start_time_perf = time.time()
     db: Session = SessionLocal()
     try:
         stock = db.query(Stock).filter(Stock.id == stock_id).first()
@@ -108,6 +110,9 @@ def process_stock(stock_id: int):
                 body=f"Stock: {stock.symbol} ({stock.name})\nMessage: {msg}\n\nTime: {datetime.datetime.now()}"
             )
             print(f"Alert sent for {stock.symbol}")
+        
+        duration = time.time() - start_time_perf
+        print(f"Finished processing {stock.symbol} in {duration:.2f}s")
 
     except Exception as e:
         print(f"Error processing stock {stock_id}: {e}")
@@ -117,6 +122,18 @@ def process_stock(stock_id: int):
 def start_scheduler():
     scheduler.start()
     print("Scheduler started")
+    
+    # Restore jobs from DB
+    db: Session = SessionLocal()
+    try:
+        stocks = db.query(Stock).filter(Stock.is_monitoring == True).all()
+        for stock in stocks:
+            update_stock_job(stock.id, stock.interval_seconds, True)
+        print(f"Restored {len(stocks)} monitoring jobs")
+    except Exception as e:
+        print(f"Error restoring jobs: {e}")
+    finally:
+        db.close()
 
 def update_stock_job(stock_id: int, interval: int, is_monitoring: bool):
     job_id = f"stock_{stock_id}"
@@ -133,7 +150,9 @@ def update_stock_job(stock_id: int, interval: int, is_monitoring: bool):
             seconds=interval, 
             args=[stock_id], 
             id=job_id,
-            replace_existing=True
+            replace_existing=True,
+            max_instances=3,
+            misfire_grace_time=120
         )
         print(f"Job added/updated for stock {stock_id} with interval {interval}s")
     else:
