@@ -51,10 +51,85 @@ def _ensure_indicator_collection_last_run_params():
     except Exception as e:
         logger.warning(f"Ensure indicator_collections.last_run_params failed: {e}")
 
+_stock_name_cache: Dict[str, str] = {}
+_stock_name_cache_updated_at: Optional[datetime] = None
+
+
+def _ensure_alert_rules_stock_name():
+    try:
+        with engine.begin() as conn:
+            url = str(engine.url)
+            if "sqlite" in url:
+                rows = conn.execute(text("PRAGMA table_info('alert_rules')")).fetchall()
+                columns = [r[1] for r in rows]
+                if "stock_name" not in columns:
+                    conn.execute(text("ALTER TABLE alert_rules ADD COLUMN stock_name VARCHAR(100)"))
+    except Exception as e:
+        logger.warning(f"Ensure alert_rules.stock_name failed: {e}")
+
+
+def _load_stock_name_cache_em(force: bool = False) -> None:
+    global _stock_name_cache, _stock_name_cache_updated_at
+    if _stock_name_cache and not force:
+        return
+    try:
+        resp = requests.get("http://alaya.zone:3001/akshare/stock_zh_a_spot_em", timeout=20)
+        if resp.status_code != 200:
+            return
+        raw = resp.json()
+        rows = raw.get("data", []) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+        cache: Dict[str, str] = {}
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            code = str(r.get("代码") or "").strip()
+            name = str(r.get("名称") or "").strip()
+            if code and name:
+                cache[code] = name
+        if cache:
+            _stock_name_cache = cache
+            _stock_name_cache_updated_at = datetime.utcnow()
+    except Exception as e:
+        logger.warning(f"Load stock name cache failed: {e}")
+
+
+def _resolve_stock_name(symbol: str) -> str:
+    s = (symbol or "").strip().lower()
+    code = s[2:] if (s.startswith("sh") or s.startswith("sz")) else s
+    if not code:
+        return ""
+    if code in _stock_name_cache:
+        return _stock_name_cache.get(code, "")
+    _load_stock_name_cache_em()
+    return _stock_name_cache.get(code, "")
+
+
+def _backfill_alert_rule_stock_name():
+    db = SessionLocal()
+    try:
+        missing = db.query(AlertRule).filter((AlertRule.stock_name == None) | (AlertRule.stock_name == "")).all()
+        if not missing:
+            return
+        _load_stock_name_cache_em()
+        updated = 0
+        for r in missing:
+            nm = _resolve_stock_name(r.symbol)
+            if nm:
+                r.stock_name = nm
+                updated += 1
+        if updated:
+            db.commit()
+    except Exception as e:
+        logger.warning(f"Backfill alert_rules.stock_name failed: {e}")
+    finally:
+        db.close()
+
 
 _drop_legacy_tables()
 Base.metadata.create_all(bind=engine)
 _ensure_indicator_collection_last_run_params()
+_ensure_alert_rules_stock_name()
+_backfill_alert_rule_stock_name()
 
 app = FastAPI(title="AI Watch Stock")
 
@@ -104,6 +179,7 @@ def create_alert_rule(rule: dict, db: Session = Depends(get_db)):
     r = AlertRule(
         name=rule.get("name", "Rule"),
         symbol=rule.get("symbol", ""),
+        stock_name=(rule.get("stock_name") or _resolve_stock_name(rule.get("symbol", "")) or ""),
         period=rule.get("period", "1"),
         provider=rule.get("provider", "em"),
         condition=rule.get("condition", ""),
@@ -124,6 +200,7 @@ def list_alert_rules(skip: int = 0, limit: int = 50, db: Session = Depends(get_d
             "id": r.id,
             "name": r.name,
             "symbol": r.symbol,
+            "stock_name": r.stock_name,
             "period": r.period,
             "provider": r.provider,
             "condition": r.condition,
@@ -141,9 +218,13 @@ def update_alert_rule(rule_id: int, payload: dict, db: Session = Depends(get_db)
     r = db.query(AlertRule).filter(AlertRule.id == rule_id).first()
     if not r:
         raise HTTPException(status_code=404, detail="AlertRule not found")
-    for k in ["name","symbol","period","provider","condition","message","level","enabled"]:
+    for k in ["name", "symbol", "stock_name", "period", "provider", "condition", "message", "level", "enabled"]:
         if k in payload:
             setattr(r, k, payload[k])
+    if "symbol" in payload and "stock_name" not in payload:
+        r.stock_name = _resolve_stock_name(payload.get("symbol", "")) or r.stock_name
+    if "stock_name" in payload and not payload.get("stock_name") and r.symbol:
+        r.stock_name = _resolve_stock_name(r.symbol) or r.stock_name
     db.commit()
     db.refresh(r)
     return {"id": r.id}
@@ -154,9 +235,11 @@ def batch_create_alert_rules(payload: dict, db: Session = Depends(get_db)):
     rules = payload.get("rules")
     if isinstance(rules, list):
         for rd in rules:
+            sym = rd.get("symbol", "")
             r = AlertRule(
                 name=rd.get("name", "Rule"),
-                symbol=rd.get("symbol", ""),
+                symbol=sym,
+                stock_name=(rd.get("stock_name") or _resolve_stock_name(sym) or ""),
                 period=str(rd.get("period", "1")),
                 provider=rd.get("provider", "em"),
                 condition=rd.get("condition", ""),
@@ -204,6 +287,7 @@ def batch_create_alert_rules(payload: dict, db: Session = Depends(get_db)):
                     items.append({
                         "name": f"{symbol} {op} {thr}",
                         "symbol": symbol,
+                        "stock_name": _resolve_stock_name(symbol) or "",
                         "period": period,
                         "provider": "em",
                         "condition": cond,
@@ -214,9 +298,11 @@ def batch_create_alert_rules(payload: dict, db: Session = Depends(get_db)):
     if not items:
         raise HTTPException(status_code=400, detail="No rules provided")
     for rd in items:
+        sym = rd.get("symbol", "")
         r = AlertRule(
             name=rd.get("name", "Rule"),
-            symbol=rd.get("symbol", ""),
+            symbol=sym,
+            stock_name=(rd.get("stock_name") or _resolve_stock_name(sym) or ""),
             period=str(rd.get("period", "1")),
             provider=rd.get("provider", "em"),
             condition=rd.get("condition", ""),

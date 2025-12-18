@@ -217,6 +217,7 @@ const AlertRulesPage = () => {
     form.setFieldsValue({
       name: record.name,
       symbol: record.symbol,
+      stock_name: record.stock_name,
       period: String(record.period || '1'),
       type,
       threshold,
@@ -237,6 +238,7 @@ const AlertRulesPage = () => {
       const payload = {
         name: values.name,
         symbol: values.symbol,
+        stock_name: values.stock_name,
         period: String(values.period || '1'),
         message: values.message,
         level: values.level,
@@ -276,6 +278,7 @@ const AlertRulesPage = () => {
       key: `group:${sym}`,
       isGroup: true,
       symbol: sym,
+      stock_name: (bySymbol.get(sym) || []).map((x) => x?.stock_name).find((x) => x) || '',
       children: (bySymbol.get(sym) || []).map((r) => ({ ...r, parentSymbol: sym })),
     }));
   }, [groupBySymbol, rules]);
@@ -315,6 +318,7 @@ const AlertRulesPage = () => {
       width: 180,
       render: (name, record) => (record?.isGroup ? `共 ${record.children?.length || 0} 条` : name),
     },
+    { title: '股票名称', dataIndex: 'stock_name', key: 'stock_name', width: 160, render: (v, record) => (record?.isGroup ? v : v) },
     { 
       title: '股票代码', 
       dataIndex: 'symbol', 
@@ -490,6 +494,7 @@ const AlertRulesPage = () => {
             : {
                 expandedRowRender: (record) => (
                   <div style={{ padding: '8px 16px', background: '#fafafa' }}>
+                    <p><strong>股票名称:</strong> {record.stock_name || ''}</p>
                     <p><strong>股票代码:</strong> {record.symbol}</p>
                     <p><strong>条件:</strong> {record.condition}</p>
                     <p><strong>消息:</strong> {record.message}</p>
@@ -545,6 +550,9 @@ const AlertRulesPage = () => {
             <Input />
           </Form.Item>
           <Form.Item name="symbol" label="股票代码" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="stock_name" label="股票名称">
             <Input />
           </Form.Item>
           <Form.Item name="period" label="周期" initialValue="1">
