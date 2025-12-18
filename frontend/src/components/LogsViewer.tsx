@@ -20,6 +20,8 @@ const LogsViewer: React.FC = () => {
 
   useEffect(() => {
     fetchLogs();
+    const interval = setInterval(fetchLogs, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   const columns = [

@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, Form, Input, Button, message, Select } from 'antd';
-import type { Stock, IndicatorDefinition } from '../types';
-import { updateStock, getIndicators } from '../api';
+import { Modal, Form, Input, Button, message, Select, InputNumber } from 'antd';
+import type { Stock, IndicatorDefinition, AIConfig } from '../types';
+import { updateStock, getIndicators, getAIConfigs } from '../api';
 
 type StockConfigFormValues = {
   indicator_ids?: number[];
   prompt_template?: string;
+  interval_seconds?: number;
+  ai_provider_id?: number;
 };
 
 interface Props {
@@ -18,14 +20,16 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
   const [form] = Form.useForm();
   const [allIndicators, setAllIndicators] = useState<IndicatorDefinition[]>([]);
   const [loadingIndicators, setLoadingIndicators] = useState(false);
+  const [aiConfigs, setAiConfigs] = useState<AIConfig[]>([]);
 
-  const refreshIndicators = async () => {
+  const fetchData = async () => {
     setLoadingIndicators(true);
     try {
-      const res = await getIndicators();
-      setAllIndicators(res.data);
+      const [indRes, aiRes] = await Promise.all([getIndicators(), getAIConfigs()]);
+      setAllIndicators(indRes.data);
+      setAiConfigs(aiRes.data);
     } catch {
-      message.error('加载指标库失败');
+      message.error('加载配置数据失败');
     } finally {
       setLoadingIndicators(false);
     }
@@ -33,7 +37,7 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
 
   useEffect(() => {
     if (!visible) return;
-    refreshIndicators();
+    fetchData();
   }, [visible]);
 
   useEffect(() => {
@@ -41,6 +45,8 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
     form.setFieldsValue({
       prompt_template: stock.prompt_template,
       indicator_ids: (stock.indicators || []).map((x) => x.id),
+      interval_seconds: stock.interval_seconds,
+      ai_provider_id: stock.ai_provider_id,
     });
   }, [form, stock, visible]);
 
@@ -67,6 +73,14 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
         layout="vertical" 
         onFinish={handleUpdate}
       >
+        <Form.Item name="interval_seconds" label="监测间隔（秒）">
+          <InputNumber min={10} max={3600} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="ai_provider_id" label="AI 配置">
+          <Select placeholder="请选择 AI 配置">
+            {aiConfigs.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
+          </Select>
+        </Form.Item>
         <Form.Item name="indicator_ids" label="监控指标（可多选）">
           <Select
             mode="multiple"
