@@ -18,6 +18,7 @@ class Stock(Base):
     name = Column(String, default="")
     is_monitoring = Column(Boolean, default=False)
     interval_seconds = Column(Integer, default=300)  # Default 5 minutes
+    monitoring_schedule = Column(Text, nullable=True) # JSON list of {start: "HH:MM", end: "HH:MM"}
     
     # Configuration for this stock
     prompt_template = Column(Text, nullable=True) # Custom prompt for this stock

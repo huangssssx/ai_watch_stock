@@ -4,6 +4,7 @@ from typing import List
 from database import get_db
 import models
 import schemas
+import json
 from services.monitor_service import update_stock_job
 from services.data_fetcher import data_fetcher
 from services.ai_service import ai_service
@@ -18,6 +19,14 @@ def read_stocks(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
 @router.post("/", response_model=schemas.Stock)
 def create_stock(stock: schemas.StockCreate, db: Session = Depends(get_db)):
     data = stock.dict()
+    
+    if not data.get("monitoring_schedule"):
+        default_schedule = [
+            {"start": "09:30", "end": "11:30"},
+            {"start": "13:00", "end": "15:00"}
+        ]
+        data["monitoring_schedule"] = json.dumps(default_schedule)
+
     indicator_ids = data.pop("indicator_ids", None) or []
     db_stock = models.Stock(**data)
     if indicator_ids:

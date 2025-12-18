@@ -4,6 +4,7 @@ export interface Stock {
   name: string;
   is_monitoring: boolean;
   interval_seconds: number;
+  monitoring_schedule?: string; // JSON string
   prompt_template?: string;
   ai_provider_id?: number;
   indicators: IndicatorDefinition[];

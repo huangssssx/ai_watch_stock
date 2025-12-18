@@ -65,6 +65,7 @@ class StockBase(BaseModel):
     symbol: str
     name: str
     interval_seconds: int = 300
+    monitoring_schedule: Optional[str] = None
     prompt_template: Optional[str] = None
     ai_provider_id: Optional[int] = None
 
@@ -75,6 +76,7 @@ class StockUpdate(BaseModel):
     name: Optional[str] = None
     interval_seconds: Optional[int] = None
     is_monitoring: Optional[bool] = None
+    monitoring_schedule: Optional[str] = None
     prompt_template: Optional[str] = None
     ai_provider_id: Optional[int] = None
     indicator_ids: Optional[List[int]] = None

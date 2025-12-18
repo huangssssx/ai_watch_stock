@@ -6,6 +6,7 @@ from services.data_fetcher import data_fetcher
 from services.ai_service import ai_service
 from services.alert_service import alert_service
 import datetime
+import json
 
 scheduler = BackgroundScheduler()
 
@@ -15,6 +16,40 @@ def process_stock(stock_id: int):
         stock = db.query(Stock).filter(Stock.id == stock_id).first()
         if not stock or not stock.is_monitoring:
             return
+
+        # Check schedule
+        schedule_str = stock.monitoring_schedule
+        if not schedule_str:
+             # Default schedule
+             schedule_str = json.dumps([
+                 {"start": "09:30", "end": "11:30"},
+                 {"start": "13:00", "end": "15:00"}
+             ])
+
+        if schedule_str:
+            try:
+                schedule = json.loads(schedule_str)
+                if isinstance(schedule, list) and len(schedule) > 0:
+                    now = datetime.datetime.now().time()
+                    is_in_schedule = False
+                    for period in schedule:
+                        start_str = period.get("start")
+                        end_str = period.get("end")
+                        if start_str and end_str:
+                            try:
+                                start_time = datetime.datetime.strptime(start_str, "%H:%M").time()
+                                end_time = datetime.datetime.strptime(end_str, "%H:%M").time()
+                                if start_time <= now <= end_time:
+                                    is_in_schedule = True
+                                    break
+                            except ValueError:
+                                continue
+                    
+                    if not is_in_schedule:
+                        # print(f"Stock {stock.symbol} is outside monitoring schedule. Skipping.")
+                        return
+            except Exception as e:
+                print(f"Error checking schedule for {stock.symbol}: {e}")
 
         print(f"Processing stock: {stock.symbol} ({stock.name})")
 
