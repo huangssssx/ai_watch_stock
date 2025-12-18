@@ -112,3 +112,21 @@ class Log(LogBase, ORMModel):
     id: int
     timestamp: datetime
     stock: Optional[Stock] = None
+
+# System Config
+class EmailConfig(BaseModel):
+    smtp_server: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    sender_email: str = ""
+    sender_password: str = ""
+    receiver_email: str = ""
+
+class GlobalPromptConfig(BaseModel):
+    prompt_template: str = ""
+
+class SystemConfigBase(BaseModel):
+    key: str
+    value: str
+
+class SystemConfig(SystemConfigBase, ORMModel):
+    updated_at: Optional[datetime]

@@ -14,18 +14,45 @@ class AIService:
                 base_url=ai_config["base_url"]
             )
             
-            system_prompt = "You are a professional stock analyst. Analyze the provided data and return the result in strictly formatted JSON. The JSON must contain 'type' (string: 'info', 'warning', 'error') and 'message' (string)."
+            system_prompt = (
+                "你是一位拥有20年经验的资深量化基金经理，擅长短线博弈和趋势跟踪。"
+                "你的任务是根据提供的股票实时数据和技术指标，给出当前时间点明确的、可执行的交易指令。"
+                "\n\n"
+                "【分析原则】\n"
+                "1. 客观：只基于提供的数据说话，不要幻想未提供的新闻。\n"
+                "2. 果断：必须给出明确的方向（买入/卖出/观望），禁止模棱两可。\n"
+                "3. 风控：任何开仓建议必须包含止损位。\n"
+                "\n\n"
+                "【输出要求】\n"
+                "请严格只输出一个合法的 JSON 对象，不要包含 Markdown 代码块标记（如 ```json），格式如下：\n"
+                "{\n"
+                "  \"type\": \"info\" | \"warning\" | \"error\",  // info=正常分析, warning=数据不足或风险极高, error=无法分析\n"
+                "  \"signal\": \"STRONG_BUY\" | \"BUY\" | \"WAIT\" | \"SELL\" | \"STRONG_SELL\", // 明确的信号\n"
+                "  \"action_advice\": \"...\", // 一句话的大白话操作建议，例如：'现价25.5元立即买入，目标27元'\n"
+                "  \"suggested_position\": \"...\", // 建议仓位，例如：'3成仓' 或 '空仓观望'\n"
+                "  \"duration\": \"...\", // 建议持仓时间，例如：'短线T+1' 或 '中线持股2周'\n"
+                "  \"support_pressure\": {\"support\": 价格, \"pressure\": 价格}, // 支撑压力位\n"
+                "  \"stop_loss_price\": 价格, // 严格的止损价格\n"
+                "  \"message\": \"...\" // 详细的逻辑分析摘要，解释为什么这么做，不超过100字\n"
+                "}"
+            )
             
+            import datetime
+            current_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
             user_content = f"""
-            Task: Analyze the following stock data based on the instructions.
+            Current Time: {current_time_str}
             
-            Instructions:
+            Task: Analyze the following market data and generate an investment decision JSON.
+            
+            Analysis Instructions (Strategy):
             {prompt_template}
             
-            Data:
+            Real-time Indicators Data:
             {data_context}
             
-            Return strictly JSON format: {{"type": "...", "message": "..."}}
+            Remember: Be decisive. If the signal is strictly strictly strictly unclear, allow 'WAIT'. Otherwise, give a direction.
+            Return strictly JSON format.
             """
             
             response = client.chat.completions.create(
@@ -40,10 +67,21 @@ class AIService:
             content = response.choices[0].message.content
             
             try:
-                result = json.loads(content)
+                # Clean markdown code blocks if present
+                clean_content = content.replace("```json", "").replace("```", "").strip()
+                result = json.loads(clean_content)
+                
+                # Ensure signal field exists
+                if "signal" not in result:
+                    result["signal"] = "WAIT"
+                    
                 return result, content
             except json.JSONDecodeError:
-                return {"type": "error", "message": "AI returned invalid JSON"}, content
+                return {
+                    "type": "error", 
+                    "message": "AI returned invalid JSON",
+                    "signal": "WAIT"
+                }, content
                 
         except Exception as e:
             return {"type": "error", "message": f"AI Error: {str(e)}"}, str(e)

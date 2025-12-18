@@ -69,3 +69,15 @@ export interface StockTestRunResponse {
   data_truncated: boolean;
   data_char_limit?: number | null;
 }
+
+export interface EmailConfig {
+  smtp_server: string;
+  smtp_port: number;
+  sender_email: string;
+  sender_password: string;
+  receiver_email: string;
+}
+
+export interface GlobalPromptConfig {
+  prompt_template: string;
+}

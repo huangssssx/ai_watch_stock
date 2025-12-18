@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse } from './types';
+import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig } from './types';
 
 const API_URL = 'http://localhost:8000';
 
@@ -28,3 +28,10 @@ export const testAIConfig = (id: number, payload: AIConfigTestRequest) =>
 
 export const getLogs = (stockId?: number) => api.get<Log[]>('/logs/', { params: { stock_id: stockId } });
 export const clearLogs = (logIds?: number[]) => api.delete('/logs/', { data: logIds });
+
+export const getEmailConfig = () => api.get<EmailConfig>('/settings/email');
+export const updateEmailConfig = (config: EmailConfig) => api.put<EmailConfig>('/settings/email', config);
+export const testEmailConfig = (config: EmailConfig) => api.post<{ ok: boolean; message: string }>('/settings/email/test', config);
+
+export const getGlobalPrompt = () => api.get<GlobalPromptConfig>('/settings/global-prompt');
+export const updateGlobalPrompt = (config: GlobalPromptConfig) => api.put<GlobalPromptConfig>('/settings/global-prompt', config);

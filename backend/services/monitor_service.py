@@ -1,7 +1,7 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session
 from database import SessionLocal
-from models import Stock, Log, AIConfig
+from models import Stock, Log, AIConfig, SystemConfig
 from services.data_fetcher import data_fetcher
 from services.ai_service import ai_service
 from services.alert_service import alert_service
@@ -85,7 +85,18 @@ def process_stock(stock_id: int):
         data_for_ai = full_data[:max_chars]
 
         # Use stock specific prompt or default
-        prompt = stock.prompt_template or "Analyze the trend."
+        prompt = stock.prompt_template
+        if not prompt:
+            global_prompt_config = db.query(SystemConfig).filter(SystemConfig.key == "global_prompt").first()
+            if global_prompt_config and global_prompt_config.value:
+                try:
+                    data = json.loads(global_prompt_config.value)
+                    prompt = data.get("prompt_template")
+                except:
+                    pass
+        
+        if not prompt:
+            prompt = "Analyze the trend."
         
         analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict)
         

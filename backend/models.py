@@ -75,3 +75,10 @@ class KnowledgeBase(Base):
     content = Column(Text)
     tags = Column(String) # Comma separated tags
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class SystemConfig(Base):
+    __tablename__ = "system_configs"
+
+    key = Column(String, primary_key=True, index=True) # e.g., "email_config", "global_prompt"
+    value = Column(Text) # JSON string or plain text
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

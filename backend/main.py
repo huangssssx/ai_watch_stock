@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import stocks, ai_configs, logs, indicators
+from routers import stocks, ai_configs, logs, indicators, settings
 from services.monitor_service import start_scheduler
 
 app = FastAPI(title="AI Stock Watcher")
@@ -18,6 +18,7 @@ app.include_router(stocks.router)
 app.include_router(ai_configs.router)
 app.include_router(logs.router)
 app.include_router(indicators.router)
+app.include_router(settings.router)
 
 @app.on_event("startup")
 def startup_event():
