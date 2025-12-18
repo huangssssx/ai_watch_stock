@@ -21,10 +21,20 @@ class AIConfigBase(BaseModel):
     base_url: str
     api_key: str
     model_name: str
+    max_tokens: Optional[int] = 100000
     is_active: bool = True
 
 class AIConfigCreate(AIConfigBase):
     pass
+
+class AIConfigUpdate(BaseModel):
+    name: Optional[str] = None
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model_name: Optional[str] = None
+    max_tokens: Optional[int] = None
+    is_active: Optional[bool] = None
 
 class AIConfig(AIConfigBase, ORMModel):
     id: int
@@ -99,3 +109,4 @@ class LogBase(BaseModel):
 class Log(LogBase, ORMModel):
     id: int
     timestamp: datetime
+    stock: Optional[Stock] = None

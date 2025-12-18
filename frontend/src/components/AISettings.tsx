@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Modal, Form, Input, message, Space } from 'antd';
+import { Table, Button, Modal, Form, Input, message, Space, InputNumber, Tooltip } from 'antd';
 import type { AIConfig, AIConfigTestRequest, AIConfigTestResponse } from '../types';
-import { getAIConfigs, createAIConfig, deleteAIConfig, testAIConfig } from '../api';
-import { DeleteOutlined } from '@ant-design/icons';
+import { getAIConfigs, createAIConfig, deleteAIConfig, testAIConfig, updateAIConfig } from '../api';
+import { DeleteOutlined, EditOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 
-type AIConfigCreateFormValues = {
+type AIConfigFormValues = {
   name: string;
   provider: string;
   base_url: string;
   api_key: string;
   model_name: string;
+  max_tokens?: number;
   is_active?: boolean;
 };
 
@@ -20,6 +21,8 @@ const AISettings: React.FC = () => {
   const [configs, setConfigs] = useState<AIConfig[]>([]);
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [form] = Form.useForm();
+  const [editingConfig, setEditingConfig] = useState<AIConfig | null>(null);
+  
   const [isTestModalVisible, setIsTestModalVisible] = useState(false);
   const [testForm] = Form.useForm<AIConfigTestFormValues>();
   const [testing, setTesting] = useState(false);
@@ -38,15 +41,36 @@ const AISettings: React.FC = () => {
     return () => window.clearTimeout(id);
   }, []);
 
-  const handleAdd = async (values: AIConfigCreateFormValues) => {
+  const handleOpenModal = (config?: AIConfig) => {
+    form.resetFields();
+    if (config) {
+      setEditingConfig(config);
+      form.setFieldsValue(config);
+    } else {
+      setEditingConfig(null);
+      form.setFieldsValue({
+        provider: 'openai',
+        max_tokens: 100000
+      });
+    }
+    setIsModalVisible(true);
+  };
+
+  const handleSubmit = async (values: AIConfigFormValues) => {
     try {
-      await createAIConfig(values);
-      message.success('配置已添加');
+      if (editingConfig) {
+        await updateAIConfig(editingConfig.id, values);
+        message.success('配置已更新');
+      } else {
+        await createAIConfig(values);
+        message.success('配置已添加');
+      }
       setIsModalVisible(false);
       form.resetFields();
+      setEditingConfig(null);
       fetchConfigs();
     } catch {
-      message.error('添加配置失败');
+      message.error(editingConfig ? '更新失败' : '添加失败');
     }
   };
 
@@ -92,12 +116,14 @@ const AISettings: React.FC = () => {
     { title: '名称', dataIndex: 'name', key: 'name' },
     { title: '厂商', dataIndex: 'provider', key: 'provider' },
     { title: '模型', dataIndex: 'model_name', key: 'model_name' },
+    { title: '上下文限制', dataIndex: 'max_tokens', key: 'max_tokens', render: (val) => val ? `${val.toLocaleString()} chars` : '-' },
     { 
       title: '操作', 
       key: 'action',
       render: (_: unknown, record: AIConfig) => (
         <Space>
           <Button onClick={() => openTestModal(record)}>测试</Button>
+          <Button icon={<EditOutlined />} onClick={() => handleOpenModal(record)} />
           <Button danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />
         </Space>
       )
@@ -106,11 +132,16 @@ const AISettings: React.FC = () => {
 
   return (
     <div>
-      <Button type="primary" onClick={() => setIsModalVisible(true)} style={{ marginBottom: 16 }}>添加 AI 配置</Button>
+      <Button type="primary" onClick={() => handleOpenModal()} style={{ marginBottom: 16 }}>添加 AI 配置</Button>
       <Table dataSource={configs} columns={columns} rowKey="id" />
 
-      <Modal title="添加 AI 配置" open={isModalVisible} onOk={form.submit} onCancel={() => setIsModalVisible(false)}>
-        <Form form={form} onFinish={handleAdd} layout="vertical">
+      <Modal 
+        title={editingConfig ? "编辑 AI 配置" : "添加 AI 配置"} 
+        open={isModalVisible} 
+        onOk={form.submit} 
+        onCancel={() => setIsModalVisible(false)}
+      >
+        <Form form={form} onFinish={handleSubmit} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input />
           </Form.Item>
@@ -125,6 +156,20 @@ const AISettings: React.FC = () => {
           </Form.Item>
           <Form.Item name="model_name" label="模型名称" rules={[{ required: true, message: '请输入模型名称' }]}>
             <Input />
+          </Form.Item>
+          <Form.Item 
+            name="max_tokens" 
+            label={
+              <span>
+                最大上下文限制 (字符数) 
+                <Tooltip title="通常 1 Token ≈ 3~4 字符。DeepSeek-V3 160K Token 约等于 500,000 字符。默认 100,000 以平衡成本与性能。">
+                  <InfoCircleOutlined style={{ marginLeft: 4 }} />
+                </Tooltip>
+              </span>
+            }
+            initialValue={100000}
+          >
+            <InputNumber style={{ width: '100%' }} min={1000} step={1000} />
           </Form.Item>
         </Form>
       </Modal>

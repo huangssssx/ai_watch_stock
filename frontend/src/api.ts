@@ -21,8 +21,10 @@ export const deleteIndicator = (id: number) => api.delete(`/indicators/${id}`);
 
 export const getAIConfigs = () => api.get<AIConfig[]>('/ai-configs/');
 export const createAIConfig = (config: Partial<AIConfig>) => api.post<AIConfig>('/ai-configs/', config);
+export const updateAIConfig = (id: number, config: Partial<AIConfig>) => api.put<AIConfig>(`/ai-configs/${id}`, config);
 export const deleteAIConfig = (id: number) => api.delete(`/ai-configs/${id}`);
 export const testAIConfig = (id: number, payload: AIConfigTestRequest) =>
   api.post<AIConfigTestResponse>(`/ai-configs/${id}/test`, payload);
 
 export const getLogs = (stockId?: number) => api.get<Log[]>('/logs/', { params: { stock_id: stockId } });
+export const clearLogs = (logIds?: number[]) => api.delete('/logs/', { data: logIds });

@@ -49,6 +49,7 @@ class AIConfig(Base):
     base_url = Column(String)
     api_key = Column(String)
     model_name = Column(String)
+    max_tokens = Column(Integer, default=100000) # Max tokens/chars context limit
     
     is_active = Column(Boolean, default=True)
 

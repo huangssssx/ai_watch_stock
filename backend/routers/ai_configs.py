@@ -21,6 +21,20 @@ def create_ai_config(config: schemas.AIConfigCreate, db: Session = Depends(get_d
     db.refresh(db_config)
     return db_config
 
+@router.put("/{config_id}", response_model=schemas.AIConfig)
+def update_ai_config(config_id: int, config: schemas.AIConfigUpdate, db: Session = Depends(get_db)):
+    db_config = db.query(models.AIConfig).filter(models.AIConfig.id == config_id).first()
+    if not db_config:
+        raise HTTPException(status_code=404, detail="Config not found")
+    
+    update_data = config.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_config, key, value)
+
+    db.commit()
+    db.refresh(db_config)
+    return db_config
+
 @router.delete("/{config_id}")
 def delete_ai_config(config_id: int, db: Session = Depends(get_db)):
     db_config = db.query(models.AIConfig).filter(models.AIConfig.id == config_id).first()

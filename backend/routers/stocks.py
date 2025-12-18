@@ -100,7 +100,7 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
         data_parts.append(f"--- Indicator: {indicator.name} ---\n{data}\n")
     full_data = "\n".join(data_parts)
 
-    data_char_limit = 20000
+    data_char_limit = ai_config.max_tokens if ai_config.max_tokens else 100000
     data_truncated = len(full_data) > data_char_limit
     data_for_prompt = full_data[:data_char_limit] if data_truncated else full_data
 

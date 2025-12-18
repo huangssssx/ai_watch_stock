@@ -43,17 +43,21 @@ def process_stock(stock_id: int):
             "model_name": ai_config.model_name
         }
         
+        # Truncate data based on max_tokens config (approx chars)
+        max_chars = ai_config.max_tokens if ai_config.max_tokens else 100000
+        data_for_ai = full_data[:max_chars]
+
         # Use stock specific prompt or default
         prompt = stock.prompt_template or "Analyze the trend."
         
-        analysis_json, raw_response = ai_service.analyze(full_data, prompt, config_dict)
+        analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict)
         
         # 3. Log Result
         is_alert = analysis_json.get("type") == "warning"
         
         log_entry = Log(
             stock_id=stock.id,
-            raw_data=full_data[:5000],
+            raw_data=data_for_ai, # Store the actual data sent
             ai_response=raw_response,
             ai_analysis=analysis_json,
             is_alert=is_alert

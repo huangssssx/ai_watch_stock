@@ -23,6 +23,7 @@ export interface AIConfig {
   base_url: string;
   api_key: string;
   model_name: string;
+  max_tokens?: number;
   is_active: boolean;
 }
 
@@ -52,6 +53,7 @@ export interface Log {
     message: string;
   };
   is_alert: boolean;
+  stock?: Stock;
 }
 
 export interface StockTestRunResponse {
