@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Card, Table, Button, Space, Tag, Switch, Modal, Form, Input, Select, InputNumber, message, Divider, notification } from 'antd';
 import { 
   getAlertRules, 
@@ -27,6 +27,10 @@ const AlertRulesPage = () => {
   const [pollInterval, setPollInterval] = useState(() => {
     const saved = localStorage.getItem('alert_poll_interval');
     return saved ? parseInt(saved, 10) : 60000;
+  });
+  const [groupBySymbol, setGroupBySymbol] = useState(() => {
+    const saved = localStorage.getItem('alert_group_by_symbol');
+    return saved === '1';
   });
 
   const loadNotifications = useCallback(async () => {
@@ -119,6 +123,50 @@ const AlertRulesPage = () => {
     }
   };
 
+  const handleBatchDeleteBySymbol = async () => {
+    if (!selectedRowKeys.length) {
+      message.warning('请先选择要删除的规则');
+      return;
+    }
+    
+    // 获取选中规则对应的股票代码
+    const selectedSymbols = [...new Set(
+      rules
+        .filter(rule => selectedRowKeys.includes(rule.id))
+        .map(rule => rule.symbol)
+    )];
+    
+    if (selectedSymbols.length === 0) {
+      message.warning('未找到对应的股票代码');
+      return;
+    }
+    
+    Modal.confirm({
+      title: '确认按股票代码删除？',
+      content: `将删除以下股票代码的所有规则: ${selectedSymbols.join(', ')}`,
+      okText: '确认删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          // 获取这些股票代码的所有规则ID
+          const rulesToDelete = rules
+            .filter(rule => selectedSymbols.includes(rule.symbol))
+            .map(rule => rule.id);
+          
+          if (rulesToDelete.length > 0) {
+            await batchDeleteAlertRules({ ids: rulesToDelete });
+            message.success(`已删除 ${rulesToDelete.length} 条规则`);
+            setSelectedRowKeys([]);
+            loadRules();
+          }
+        } catch {
+          message.error('删除失败');
+        }
+      }
+    });
+  };
+
   const handleDeleteAll = async () => {
     Modal.confirm({
       title: '确认删除全部规则？',
@@ -209,10 +257,77 @@ const AlertRulesPage = () => {
     message.success('轮询间隔已更新');
   };
 
+  const handleGroupBySymbolChange = (checked) => {
+    setGroupBySymbol(checked);
+    localStorage.setItem('alert_group_by_symbol', checked ? '1' : '0');
+    setSelectedRowKeys([]);
+  };
+
+  const groupedDataSource = useMemo(() => {
+    if (!groupBySymbol) return rules;
+    const bySymbol = new Map();
+    for (const r of rules) {
+      const sym = String(r?.symbol || '').trim() || '(空)';
+      if (!bySymbol.has(sym)) bySymbol.set(sym, []);
+      bySymbol.get(sym).push(r);
+    }
+    const symbols = Array.from(bySymbol.keys()).sort((a, b) => a.localeCompare(b));
+    return symbols.map((sym) => ({
+      key: `group:${sym}`,
+      isGroup: true,
+      symbol: sym,
+      children: (bySymbol.get(sym) || []).map((r) => ({ ...r, parentSymbol: sym })),
+    }));
+  }, [groupBySymbol, rules]);
+
+  const groupKeyToChildIds = useMemo(() => {
+    if (!groupBySymbol) return new Map();
+    const map = new Map();
+    for (const g of groupedDataSource) {
+      if (!g?.isGroup) continue;
+      const ids = Array.isArray(g.children) ? g.children.map((c) => c.id).filter((v) => typeof v === 'number') : [];
+      map.set(g.key, ids);
+    }
+    return map;
+  }, [groupBySymbol, groupedDataSource]);
+
+  const fullySelectedGroupKeys = useMemo(() => {
+    if (!groupBySymbol) return [];
+    const selectedSet = new Set(selectedRowKeys);
+    const keys = [];
+    for (const [groupKey, ids] of groupKeyToChildIds.entries()) {
+      if (ids.length > 0 && ids.every((id) => selectedSet.has(id))) keys.push(groupKey);
+    }
+    return keys;
+  }, [groupBySymbol, groupKeyToChildIds, selectedRowKeys]);
+
+  const tableSelectedRowKeys = useMemo(() => {
+    if (!groupBySymbol) return selectedRowKeys;
+    return [...selectedRowKeys, ...fullySelectedGroupKeys];
+  }, [fullySelectedGroupKeys, groupBySymbol, selectedRowKeys]);
+
   const columns = [
-    { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
-    { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
-    { title: '股票代码', dataIndex: 'symbol', key: 'symbol', width: 120 },
+    { title: 'ID', dataIndex: 'id', key: 'id', width: 80, render: (id, record) => (record?.isGroup ? null : id) },
+    {
+      title: '名称',
+      dataIndex: 'name',
+      key: 'name',
+      width: 180,
+      render: (name, record) => (record?.isGroup ? `共 ${record.children?.length || 0} 条` : name),
+    },
+    { 
+      title: '股票代码', 
+      dataIndex: 'symbol', 
+      key: 'symbol', 
+      width: 120,
+      ...(groupBySymbol
+        ? {}
+        : {
+            sorter: (a, b) => String(a?.symbol || '').localeCompare(String(b?.symbol || '')),
+            sortDirections: ['ascend', 'descend'],
+          }),
+      render: (symbol, record) => (record?.isGroup ? <span style={{ fontWeight: 600 }}>{symbol}（{record.children?.length || 0}）</span> : symbol),
+    },
     { title: '周期', dataIndex: 'period', key: 'period', width: 80 },
     { title: '条件', dataIndex: 'condition', key: 'condition', ellipsis: true },
     { title: '消息', dataIndex: 'message', key: 'message', ellipsis: true },
@@ -221,26 +336,59 @@ const AlertRulesPage = () => {
       dataIndex: 'level', 
       key: 'level', 
       width: 120,
-      render: (level) => <Tag color={level === 'WARNING' ? 'red' : 'default'}>{level}</Tag>
+      render: (level, record) => (record?.isGroup ? null : <Tag color={level === 'WARNING' ? 'red' : 'default'}>{level}</Tag>)
     },
     { 
       title: '状态', 
       dataIndex: 'enabled', 
       key: 'enabled', 
       width: 120,
-      render: (enabled, record) => (
-        <Switch checked={enabled} onChange={(v) => handleToggleEnabled(record, v)} />
-      )
+      render: (enabled, record) => (record?.isGroup ? null : <Switch checked={enabled} onChange={(v) => handleToggleEnabled(record, v)} />)
     },
     {
       title: '操作',
       key: 'action',
       width: 180,
       render: (_, record) => (
-        <Space>
-          <Button type="link" onClick={() => openEdit(record)}>编辑</Button>
-          <Button type="link" danger onClick={() => handleDelete(record.id)}>删除</Button>
-        </Space>
+        record?.isGroup ? (
+          <Space>
+            <Button
+              type="link"
+              danger
+              onClick={() => {
+                const ids = groupKeyToChildIds.get(record.key) || [];
+                if (!ids.length) {
+                  message.warning('该分组下没有可删除的规则');
+                  return;
+                }
+                Modal.confirm({
+                  title: '确认删除该股票代码下全部规则？',
+                  content: `将删除 ${record.symbol} 的 ${ids.length} 条规则`,
+                  okText: '确认删除',
+                  okButtonProps: { danger: true },
+                  cancelText: '取消',
+                  onOk: async () => {
+                    try {
+                      await batchDeleteAlertRules({ ids });
+                      message.success(`已删除 ${ids.length} 条规则`);
+                      setSelectedRowKeys((prev) => prev.filter((id) => !ids.includes(id)));
+                      loadRules();
+                    } catch {
+                      message.error('删除失败');
+                    }
+                  },
+                });
+              }}
+            >
+              删除该股票全部
+            </Button>
+          </Space>
+        ) : (
+          <Space>
+            <Button type="link" onClick={() => openEdit(record)}>编辑</Button>
+            <Button type="link" danger onClick={() => handleDelete(record.id)}>删除</Button>
+          </Space>
+        )
       ),
     },
   ];
@@ -266,8 +414,16 @@ const AlertRulesPage = () => {
             />
           </Space>
           <Divider type="vertical" />
+          <Space size={6}>
+            <span style={{ fontSize: '14px' }}>按股票分组:</span>
+            <Switch checked={groupBySymbol} onChange={handleGroupBySymbolChange} />
+          </Space>
+          <Divider type="vertical" />
           <Button danger onClick={handleDeleteAll}>删除全部</Button>
           <Button onClick={handleBatchDeleteSelected}>批量删除选中</Button>
+          <Button onClick={() => handleBatchDeleteBySymbol()} style={{ marginLeft: 8 }}>
+            按股票代码删除选中
+          </Button>
           <Button type="primary" onClick={loadRules}>刷新</Button>
         </Space>
       }
@@ -288,16 +444,60 @@ const AlertRulesPage = () => {
       <Table
         loading={loading}
         columns={columns}
-        dataSource={rules}
+        dataSource={groupedDataSource}
         style={{ width: '100%' }}
-        rowKey="id"
+        rowKey={(record) => (record?.isGroup ? record.key : record.id)}
         size="small"
-        rowSelection={{
-          selectedRowKeys,
-          onChange: setSelectedRowKeys,
-        }}
+        rowSelection={
+          groupBySymbol
+            ? {
+                selectedRowKeys: tableSelectedRowKeys,
+                onSelect: (record, selected) => {
+                  if (record?.isGroup) {
+                    const ids = groupKeyToChildIds.get(record.key) || [];
+                    setSelectedRowKeys((prev) => {
+                      if (selected) return Array.from(new Set([...prev, ...ids]));
+                      const remove = new Set(ids);
+                      return prev.filter((id) => !remove.has(id));
+                    });
+                    return;
+                  }
+                  if (typeof record?.id !== 'number') return;
+                  setSelectedRowKeys((prev) =>
+                    selected ? Array.from(new Set([...prev, record.id])) : prev.filter((id) => id !== record.id)
+                  );
+                },
+                onSelectAll: (selected) => {
+                  if (selected) {
+                    const allIds = [];
+                    for (const ids of groupKeyToChildIds.values()) allIds.push(...ids);
+                    setSelectedRowKeys(Array.from(new Set(allIds)));
+                    return;
+                  }
+                  setSelectedRowKeys([]);
+                },
+              }
+            : {
+                selectedRowKeys,
+                onChange: setSelectedRowKeys,
+              }
+        }
         pagination={{ pageSize: 20 }}
         scroll={{ x: 'max-content' }}
+        expandable={
+          groupBySymbol
+            ? { defaultExpandAllRows: true }
+            : {
+                expandedRowRender: (record) => (
+                  <div style={{ padding: '8px 16px', background: '#fafafa' }}>
+                    <p><strong>股票代码:</strong> {record.symbol}</p>
+                    <p><strong>条件:</strong> {record.condition}</p>
+                    <p><strong>消息:</strong> {record.message}</p>
+                  </div>
+                ),
+                rowExpandable: () => true,
+              }
+        }
       />
 
       <Divider />
