@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse } from './types';
+import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse } from './types';
 
 const API_URL = 'http://localhost:8000';
 
@@ -12,6 +12,7 @@ export const createStock = (stock: Partial<Stock> & { indicator_ids?: number[] }
 export const updateStock = (id: number, stock: Partial<Stock> & { indicator_ids?: number[] }) =>
   api.put<Stock>(`/stocks/${id}`, stock);
 export const deleteStock = (id: number) => api.delete(`/stocks/${id}`);
+export const testRunStock = (id: number) => api.post<StockTestRunResponse>(`/stocks/${id}/test-run`);
 
 export const getIndicators = () => api.get<IndicatorDefinition[]>('/indicators/');
 export const createIndicator = (indicator: Pick<IndicatorDefinition, 'name' | 'akshare_api' | 'params_json'>) =>

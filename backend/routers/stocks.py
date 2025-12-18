@@ -5,6 +5,8 @@ from database import get_db
 import models
 import schemas
 from services.monitor_service import update_stock_job
+from services.data_fetcher import data_fetcher
+from services.ai_service import ai_service
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -77,3 +79,58 @@ def delete_stock(stock_id: int, db: Session = Depends(get_db)):
     db.delete(db_stock)
     db.commit()
     return {"ok": True}
+
+@router.post("/{stock_id}/test-run", response_model=schemas.StockTestRunResponse)
+def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
+    db_stock = db.query(models.Stock).filter(models.Stock.id == stock_id).first()
+    if not db_stock:
+        raise HTTPException(status_code=404, detail="Stock not found")
+
+    if not db_stock.ai_provider_id:
+        raise HTTPException(status_code=400, detail="No AI provider configured")
+
+    ai_config = db.query(models.AIConfig).filter(models.AIConfig.id == db_stock.ai_provider_id).first()
+    if not ai_config:
+        raise HTTPException(status_code=404, detail="AI Config not found")
+
+    context = {"symbol": db_stock.symbol}
+    data_parts = []
+    for indicator in db_stock.indicators:
+        data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context)
+        data_parts.append(f"--- Indicator: {indicator.name} ---\n{data}\n")
+    full_data = "\n".join(data_parts)
+
+    data_char_limit = 20000
+    data_truncated = len(full_data) > data_char_limit
+    data_for_prompt = full_data[:data_char_limit] if data_truncated else full_data
+
+    prompt_template = db_stock.prompt_template or "Analyze the trend."
+    system_prompt = (
+        "You are a professional stock analyst. Analyze the provided data and return the result in strictly formatted JSON. "
+        "The JSON must contain 'type' (string: 'info', 'warning', 'error') and 'message' (string)."
+    )
+    user_prompt = f"""Task: Analyze the following stock data based on the instructions.
+
+Instructions:
+{prompt_template}
+
+Data:
+{data_for_prompt}
+
+Return strictly JSON format: {{"type": "...", "message": "..."}}"""
+
+    config_dict = {"api_key": ai_config.api_key, "base_url": ai_config.base_url, "model_name": ai_config.model_name}
+    ai_reply = ai_service.chat(user_prompt, config_dict, system_prompt=system_prompt)
+
+    return {
+        "ok": True,
+        "stock_id": db_stock.id,
+        "stock_symbol": db_stock.symbol,
+        "model_name": ai_config.model_name,
+        "base_url": ai_config.base_url,
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "ai_reply": ai_reply,
+        "data_truncated": data_truncated,
+        "data_char_limit": data_char_limit if data_truncated else None,
+    }

@@ -53,3 +53,16 @@ export interface Log {
   };
   is_alert: boolean;
 }
+
+export interface StockTestRunResponse {
+  ok: boolean;
+  stock_id: number;
+  stock_symbol: string;
+  model_name?: string;
+  base_url?: string;
+  system_prompt: string;
+  user_prompt: string;
+  ai_reply: string;
+  data_truncated: boolean;
+  data_char_limit?: number | null;
+}

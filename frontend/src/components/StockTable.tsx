@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag } from 'antd';
-import type { Stock, AIConfig } from '../types';
-import { getStocks, updateStock, deleteStock, createStock, getAIConfigs } from '../api';
+import type { Stock, AIConfig, StockTestRunResponse } from '../types';
+import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock } from '../api';
 import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
 import StockConfigModal from './StockConfigModal.tsx';
 import type { ColumnsType } from 'antd/es/table';
@@ -20,6 +20,10 @@ const StockTable: React.FC = () => {
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [configModalVisible, setConfigModalVisible] = useState(false);
   const [currentStock, setCurrentStock] = useState<Stock | null>(null);
+  const [testModalVisible, setTestModalVisible] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testStock, setTestStock] = useState<Stock | null>(null);
+  const [testResult, setTestResult] = useState<StockTestRunResponse | null>(null);
   
   const [form] = Form.useForm();
 
@@ -75,6 +79,22 @@ const StockTable: React.FC = () => {
     }
   };
 
+  const handleTestRun = async (stock: Stock) => {
+    setTestStock(stock);
+    setTestResult(null);
+    setTestModalVisible(true);
+    setTesting(true);
+    try {
+      const res = await testRunStock(stock.id);
+      setTestResult(res.data);
+      message.success('测试完成');
+    } catch {
+      message.error('测试失败（请确认已配置 AI 与指标）');
+    } finally {
+      setTesting(false);
+    }
+  };
+
   const columns: ColumnsType<Stock> = [
     { title: '代码', dataIndex: 'symbol', key: 'symbol' },
     { title: '名称', dataIndex: 'name', key: 'name' },
@@ -104,6 +124,9 @@ const StockTable: React.FC = () => {
             onClick={() => handleToggleMonitor(record)}
           >
             {record.is_monitoring ? '停止' : '开始'}
+          </Button>
+          <Button onClick={() => handleTestRun(record)} loading={testing && testStock?.id === record.id}>
+            测试
           </Button>
           <Button icon={<SettingOutlined />} onClick={() => { setCurrentStock(record); setConfigModalVisible(true); }} />
           <Button danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />
@@ -136,6 +159,46 @@ const StockTable: React.FC = () => {
             </Select>
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title={`测试：${testStock ? `${testStock.symbol} ${testStock.name || ''}` : ''}`}
+        open={testModalVisible}
+        onCancel={() => {
+          setTestModalVisible(false);
+          setTestStock(null);
+          setTestResult(null);
+          setTesting(false);
+        }}
+        footer={null}
+        width={900}
+      >
+        {testResult ? (
+          <div>
+            <div style={{ marginBottom: 8 }}>
+              模型：{testResult.model_name ?? '-'} / Base URL：{testResult.base_url ?? '-'}
+            </div>
+            {testResult.data_truncated && (
+              <div style={{ marginBottom: 8 }}>
+                提示：数据过长已截断（最多 {testResult.data_char_limit ?? '-'} 字符）
+              </div>
+            )}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ marginBottom: 4 }}>System Prompt</div>
+              <Input.TextArea value={testResult.system_prompt} readOnly autoSize={{ minRows: 3, maxRows: 10 }} />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ marginBottom: 4 }}>User Prompt（包含指标数据）</div>
+              <Input.TextArea value={testResult.user_prompt} readOnly autoSize={{ minRows: 6, maxRows: 16 }} />
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>AI 原始返回</div>
+              <Input.TextArea value={testResult.ai_reply} readOnly autoSize={{ minRows: 6, maxRows: 16 }} />
+            </div>
+          </div>
+        ) : (
+          <div>{testing ? '测试中，请稍候…' : '暂无结果'}</div>
+        )}
       </Modal>
 
       {currentStock && (

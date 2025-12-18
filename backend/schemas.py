@@ -2,6 +2,18 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
+try:
+    from pydantic import ConfigDict
+except Exception:
+    ConfigDict = None
+
+class ORMModel(BaseModel):
+    if ConfigDict is not None:
+        model_config = ConfigDict(from_attributes=True)
+
+    class Config:
+        orm_mode = True
+
 # AI Config
 class AIConfigBase(BaseModel):
     name: str
@@ -14,10 +26,8 @@ class AIConfigBase(BaseModel):
 class AIConfigCreate(AIConfigBase):
     pass
 
-class AIConfig(AIConfigBase):
+class AIConfig(AIConfigBase, ORMModel):
     id: int
-    class Config:
-        orm_mode = True
 
 class AIConfigTestRequest(BaseModel):
     prompt_template: Optional[str] = None
@@ -37,10 +47,8 @@ class IndicatorDefinitionBase(BaseModel):
 class IndicatorDefinitionCreate(IndicatorDefinitionBase):
     pass
 
-class IndicatorDefinition(IndicatorDefinitionBase):
+class IndicatorDefinition(IndicatorDefinitionBase, ORMModel):
     id: int
-    class Config:
-        orm_mode = True
 
 # Stock
 class StockBase(BaseModel):
@@ -61,15 +69,24 @@ class StockUpdate(BaseModel):
     ai_provider_id: Optional[int] = None
     indicator_ids: Optional[List[int]] = None
 
-class Stock(StockBase):
+class Stock(StockBase, ORMModel):
     id: int
     is_monitoring: bool
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
     indicators: List[IndicatorDefinition] = []
-    
-    class Config:
-        orm_mode = True
+
+class StockTestRunResponse(BaseModel):
+    ok: bool
+    stock_id: int
+    stock_symbol: str
+    model_name: Optional[str] = None
+    base_url: Optional[str] = None
+    system_prompt: str
+    user_prompt: str
+    ai_reply: str
+    data_truncated: bool = False
+    data_char_limit: Optional[int] = None
 
 # Log
 class LogBase(BaseModel):
@@ -79,8 +96,6 @@ class LogBase(BaseModel):
     ai_analysis: Dict[str, Any]
     is_alert: bool
 
-class Log(LogBase):
+class Log(LogBase, ORMModel):
     id: int
     timestamp: datetime
-    class Config:
-        orm_mode = True
