@@ -198,7 +198,11 @@ const StockTable: React.FC = () => {
             </div>
             <div>
               <div style={{ marginBottom: 4 }}>AI 原始返回</div>
-              <Input.TextArea value={testResult.ai_reply} readOnly autoSize={{ minRows: 6, maxRows: 16 }} />
+              <div style={{ border: '1px solid #d9d9d9', padding: '8px', borderRadius: '4px', background: '#f5f5f5' }}>
+                <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>
+                  {JSON.stringify(testResult.ai_reply, null, 2)}
+                </pre>
+              </div>
             </div>
           </div>
         ) : (

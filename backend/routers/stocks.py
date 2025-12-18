@@ -148,18 +148,41 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
         "  \"message\": \"...\" // 详细的逻辑分析摘要，解释为什么这么做，不超过100字\n"
         "}"
     )
-    user_prompt = f"""Task: Analyze the following stock data based on the instructions.
 
-Instructions:
-{prompt_template}
+    import datetime
+    current_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-Data:
-{data_for_prompt}
-
-Return strictly JSON format: {{"type": "...", "message": "..."}}"""
+    user_prompt = f"""
+    Current Time: {current_time_str}
+    Stock Symbol: {context.get('symbol', 'Unknown')}
+    
+    Task: Analyze the following market data and generate an investment decision JSON.
+    
+    Analysis Instructions (Strategy):
+    {prompt_template}
+    
+    Real-time Indicators Data:
+    {data_for_prompt}
+    
+    Remember: Be decisive. If the signal is strictly strictly strictly unclear, allow 'WAIT'. Otherwise, give a direction.
+    Return strictly JSON format.
+    """
 
     config_dict = {"api_key": ai_config.api_key, "base_url": ai_config.base_url, "model_name": ai_config.model_name}
-    ai_reply = ai_service.chat(user_prompt, config_dict, system_prompt=system_prompt)
+    ai_reply_str = ai_service.chat(user_prompt, config_dict, system_prompt=system_prompt)
+    
+    # Try to parse AI reply as JSON
+    try:
+        clean_reply = ai_reply_str.replace("```json", "").replace("```", "").strip()
+        ai_reply = json.loads(clean_reply)
+        if "signal" not in ai_reply:
+            ai_reply["signal"] = "WAIT"
+    except json.JSONDecodeError:
+        ai_reply = {
+            "type": "error",
+            "message": "AI parsing failed: " + ai_reply_str,
+            "signal": "WAIT"
+        }
 
     return {
         "ok": True,

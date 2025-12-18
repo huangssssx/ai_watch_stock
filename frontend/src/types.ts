@@ -43,16 +43,28 @@ export interface AIConfigTestResponse {
   raw: string;
 }
 
+export interface AIAnalysisResult {
+  type: 'info' | 'warning' | 'error';
+  signal: 'STRONG_BUY' | 'BUY' | 'WAIT' | 'SELL' | 'STRONG_SELL';
+  action_advice: string;
+  suggested_position: string;
+  duration: string;
+  support_pressure?: {
+    support: number | string;
+    pressure: number | string;
+  };
+  stop_loss_price?: number | string;
+  message: string;
+  [key: string]: unknown;
+}
+
 export interface Log {
   id: number;
   stock_id: number;
   timestamp: string;
   raw_data: string;
   ai_response: string;
-  ai_analysis: {
-    type: string;
-    message: string;
-  };
+  ai_analysis: AIAnalysisResult;
   is_alert: boolean;
   stock?: Stock;
 }
@@ -65,7 +77,7 @@ export interface StockTestRunResponse {
   base_url?: string;
   system_prompt: string;
   user_prompt: string;
-  ai_reply: string;
+  ai_reply: AIAnalysisResult;
   data_truncated: boolean;
   data_char_limit?: number | null;
 }

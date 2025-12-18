@@ -92,12 +92,12 @@ class StockTestRunResponse(BaseModel):
     ok: bool
     stock_id: int
     stock_symbol: str
-    model_name: Optional[str] = None
-    base_url: Optional[str] = None
+    model_name: str
+    base_url: str
     system_prompt: str
     user_prompt: str
-    ai_reply: str
-    data_truncated: bool = False
+    ai_reply: Dict[str, Any]  # Changed from str to Dict
+    data_truncated: bool
     data_char_limit: Optional[int] = None
 
 # Log

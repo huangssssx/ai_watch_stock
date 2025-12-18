@@ -114,6 +114,46 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       onFilter: (value, record) => record.is_alert === value,
     },
     { 
+      title: '信号', 
+      key: 'signal',
+      width: 100,
+      render: (_, record) => {
+        const signal = record.ai_analysis?.signal;
+        let color = 'default';
+        let text = 'WAIT';
+        
+        switch(signal) {
+          case 'STRONG_BUY': color = '#f50'; text = '强力买入'; break;
+          case 'BUY': color = '#faad14'; text = '买入'; break;
+          case 'SELL': color = '#52c41a'; text = '卖出'; break;
+          case 'STRONG_SELL': color = '#135200'; text = '强力卖出'; break;
+          case 'WAIT': color = '#8c8c8c'; text = '观望'; break;
+          default: color = '#8c8c8c'; text = signal || '未知';
+        }
+        
+        return <Tag color={color} style={{ fontWeight: 'bold' }}>{text}</Tag>;
+      }
+    },
+    { 
+      title: '建议 & 仓位', 
+      key: 'advice',
+      width: 250,
+      render: (_, record) => (
+        <Space direction="vertical" size={0}>
+          <div style={{ fontWeight: 500 }}>{record.ai_analysis?.action_advice || '-'}</div>
+          <div style={{ fontSize: '12px', color: '#666' }}>
+            仓位: {record.ai_analysis?.suggested_position || '-'} | 
+            持仓: {record.ai_analysis?.duration || '-'}
+          </div>
+          {record.ai_analysis?.stop_loss_price && (
+            <div style={{ fontSize: '12px', color: '#ff4d4f' }}>
+              止损: {record.ai_analysis.stop_loss_price}
+            </div>
+          )}
+        </Space>
+      )
+    },
+    { 
       title: '消息', 
       dataIndex: ['ai_analysis', 'message'], 
       key: 'message',
