@@ -48,7 +48,7 @@ def process_stock(stock_id: int):
                                 continue
                     
                     if not is_in_schedule:
-                        # print(f"Stock {stock.symbol} is outside monitoring schedule. Skipping.")
+                        print(f"Stock {stock.symbol} is outside monitoring schedule. Current time: {now.strftime('%H:%M')}. Schedule: {schedule}. Skipping.")
                         return
             except Exception as e:
                 print(f"Error checking schedule for {stock.symbol}: {e}")
@@ -85,27 +85,43 @@ def process_stock(stock_id: int):
         data_for_ai = full_data[:max_chars]
 
         # Use stock specific prompt or default
-        prompt = stock.prompt_template
-        if not prompt:
-            global_prompt_config = db.query(SystemConfig).filter(SystemConfig.key == "global_prompt").first()
-            if global_prompt_config and global_prompt_config.value:
-                try:
-                    data = json.loads(global_prompt_config.value)
-                    prompt = data.get("prompt_template")
-                except:
-                    pass
+        global_prompt = ""
+        global_prompt_config = db.query(SystemConfig).filter(SystemConfig.key == "global_prompt").first()
+        if global_prompt_config and global_prompt_config.value:
+            try:
+                data = json.loads(global_prompt_config.value)
+                global_prompt = data.get("prompt_template", "")
+            except:
+                pass
         
-        if not prompt:
+        stock_prompt = stock.prompt_template
+        
+        prompt = ""
+        prompt_source = "system_default"
+        
+        if global_prompt and stock_prompt:
+            prompt = f"{global_prompt}\n\n【个股特别设定/持仓信息】\n{stock_prompt}"
+            prompt_source = "global_plus_stock"
+        elif stock_prompt:
+            prompt = stock_prompt
+            prompt_source = "stock_specific"
+        elif global_prompt:
+            prompt = global_prompt
+            prompt_source = "global_setting"
+        else:
             prompt = "Analyze the trend."
+            prompt_source = "system_default"
         
         analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict)
         
         # 3. Log Result
-        is_alert = analysis_json.get("type") == "warning"
+        signal = analysis_json.get("signal", "WAIT")
+        # Alert if type is warning OR if signal is not WAIT (i.e. actionable advice)
+        is_alert = (analysis_json.get("type") == "warning") or (signal not in ["WAIT", "wait"])
         
         log_entry = Log(
             stock_id=stock.id,
-            raw_data=f"Prompt Template: {prompt}\n\nData Context:\n{data_for_ai}", # Store the actual data sent
+            raw_data=f"Prompt Source: {prompt_source}\nPrompt Template: {prompt}\n\nData Context:\n{data_for_ai}", # Store the actual data sent
             ai_response=raw_response,
             ai_analysis=analysis_json,
             is_alert=is_alert
@@ -116,9 +132,23 @@ def process_stock(stock_id: int):
         # 4. Alert
         if is_alert:
             msg = analysis_json.get("message", "No message")
+            action_advice = analysis_json.get("action_advice", "No advice")
+            suggested_position = analysis_json.get("suggested_position", "-")
+            stop_loss = analysis_json.get("stop_loss_price", "-")
+            
+            email_body = (
+                f"Stock: {stock.symbol} ({stock.name})\n"
+                f"Signal: {signal}\n"
+                f"Advice: {action_advice}\n"
+                f"Position: {suggested_position}\n"
+                f"Stop Loss: {stop_loss}\n\n"
+                f"Analysis: {msg}\n\n"
+                f"Time: {datetime.datetime.now()}"
+            )
+            
             alert_service.send_email(
-                subject=f"Stock Warning: {stock.symbol}",
-                body=f"Stock: {stock.symbol} ({stock.name})\nMessage: {msg}\n\nTime: {datetime.datetime.now()}"
+                subject=f"Stock Signal [{signal}]: {stock.symbol} {stock.name}",
+                body=email_body
             )
             print(f"Alert sent for {stock.symbol}")
         

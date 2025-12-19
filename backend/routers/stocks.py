@@ -113,17 +113,27 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
     data_truncated = len(full_data) > data_char_limit
     data_for_prompt = full_data[:data_char_limit] if data_truncated else full_data
 
-    prompt_template = db_stock.prompt_template
-    if not prompt_template:
-        global_prompt_config = db.query(models.SystemConfig).filter(models.SystemConfig.key == "global_prompt").first()
-        if global_prompt_config and global_prompt_config.value:
-            try:
-                data = json.loads(global_prompt_config.value)
-                prompt_template = data.get("prompt_template")
-            except:
-                pass
+    prompt_template = ""
     
-    if not prompt_template:
+    # Load Global Prompt
+    global_prompt = ""
+    global_prompt_config = db.query(models.SystemConfig).filter(models.SystemConfig.key == "global_prompt").first()
+    if global_prompt_config and global_prompt_config.value:
+        try:
+            data = json.loads(global_prompt_config.value)
+            global_prompt = data.get("prompt_template", "")
+        except:
+            pass
+
+    stock_prompt = db_stock.prompt_template
+    
+    if global_prompt and stock_prompt:
+        prompt_template = f"{global_prompt}\n\n【个股特别设定/持仓信息】\n{stock_prompt}"
+    elif stock_prompt:
+        prompt_template = stock_prompt
+    elif global_prompt:
+        prompt_template = global_prompt
+    else:
         prompt_template = "Analyze the trend."
 
     system_prompt = (

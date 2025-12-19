@@ -218,7 +218,9 @@ const StockTable: React.FC = () => {
           setLogsStock(null);
         }}
         footer={null}
-        width={1000}
+        width="95%"
+        style={{ top: 20 }}
+        bodyStyle={{ height: 'calc(100vh - 100px)', overflow: 'auto' }}
         destroyOnClose
       >
         {logsStock && <LogsViewer stockId={logsStock.id} />}

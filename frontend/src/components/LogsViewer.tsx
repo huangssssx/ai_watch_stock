@@ -1,9 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { Table, Tag, Button, Tooltip, Space, Input, message, Popconfirm } from 'antd';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Table, Tag, Button, Tooltip, Space, Input, message, Popconfirm, Typography, Switch, Collapse } from 'antd';
 import type { Log } from '../types';
 import { getLogs, clearLogs } from '../api';
-import { ReloadOutlined, DeleteOutlined, SearchOutlined } from '@ant-design/icons';
+import { ReloadOutlined, DeleteOutlined, SearchOutlined, CopyOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+
+const { Text } = Typography;
 
 interface Props {
   stockId?: number;
@@ -14,6 +16,7 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [groupByStock, setGroupByStock] = useState(false);
 
   const fetchLogs = async () => {
     setLoading(true);
@@ -60,11 +63,29 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
     );
   });
 
+  const groupedLogs = useMemo(() => {
+    if (!groupByStock) return null;
+    const groups: Record<string, Log[]> = {};
+    filteredLogs.forEach(log => {
+      const key = log.stock ? `${log.stock.name} (${log.stock.symbol})` : '未分类';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(log);
+    });
+    return groups;
+  }, [filteredLogs, groupByStock]);
+
   const rowSelection = {
     selectedRowKeys,
     onChange: (newSelectedRowKeys: React.Key[]) => {
       setSelectedRowKeys(newSelectedRowKeys);
     },
+  };
+
+  const handleCopyLog = (log: Log) => {
+    const content = JSON.stringify(log, null, 2);
+    navigator.clipboard.writeText(content).then(() => {
+      message.success('日志信息已复制');
+    });
   };
 
   const columns: ColumnsType<Log> = [
@@ -157,13 +178,21 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       title: '消息', 
       dataIndex: ['ai_analysis', 'message'], 
       key: 'message',
-      width: 300,
-      ellipsis: {
-        showTitle: false,
-      },
+      width: 200,
       render: (text) => (
         <Tooltip title={text} placement="topLeft" overlayStyle={{ maxWidth: 500 }}>
-          <span>{text}</span>
+          <div style={{
+            display: '-webkit-box',
+            WebkitLineClamp: 3,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            wordBreak: 'break-word', // 允许长单词换行，但不强制截断
+            whiteSpace: 'normal',    // 允许换行
+            cursor: 'help'
+          }}>
+            {text}
+          </div>
         </Tooltip>
       )
     },
@@ -171,12 +200,22 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       title: 'AI 原始返回',
       dataIndex: 'ai_response',
       key: 'ai_response',
-      ellipsis: {
-        showTitle: false,
-      },
+      width: 200,
       render: (text) => (
         <Tooltip title={<div style={{ whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>{text}</div>} placement="topLeft" overlayStyle={{ maxWidth: 600 }}>
-          <span style={{ fontFamily: 'monospace', color: '#666' }}>{text}</span>
+          <div style={{
+            display: '-webkit-box',
+            WebkitLineClamp: 3,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            wordBreak: 'break-all', // JSON 字符串通常需要 break-all
+            cursor: 'help',
+            fontFamily: 'monospace',
+            color: '#666'
+          }}>
+            {text}
+          </div>
         </Tooltip>
       )
     },
@@ -184,13 +223,36 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       title: '发送内容',
       dataIndex: 'raw_data',
       key: 'raw_data',
-      ellipsis: {
-        showTitle: false,
-      },
+      width: 200,
       render: (text) => (
         <Tooltip title={<div style={{ whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>{text}</div>} placement="topLeft" overlayStyle={{ maxWidth: 600 }}>
-          <span style={{ fontFamily: 'monospace', color: '#666', cursor: 'pointer' }}>查看内容</span>
+           <div style={{
+            display: '-webkit-box',
+            WebkitLineClamp: 3,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            wordBreak: 'break-all', // 包含 JSON 或长字符串，需要 break-all
+            cursor: 'help',
+            fontFamily: 'monospace',
+            color: '#666'
+          }}>
+            {text}
+          </div>
         </Tooltip>
+      )
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 80,
+      render: (_, record) => (
+        <Button 
+          icon={<CopyOutlined />} 
+          size="small" 
+          onClick={() => handleCopyLog(record)}
+          title="复制本条完整日志 JSON"
+        />
       )
     }
   ];
@@ -199,6 +261,12 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
     <div>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
         <Space>
+          <Switch 
+            checked={groupByStock} 
+            onChange={setGroupByStock} 
+            checkedChildren="分组" 
+            unCheckedChildren="列表" 
+          />
           <Button icon={<ReloadOutlined />} onClick={fetchLogs}>刷新</Button>
           <Input 
             placeholder="搜索股票名称/代码/消息..." 
@@ -222,14 +290,44 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
           </Popconfirm>
         </Space>
       </div>
-      <Table 
-        dataSource={filteredLogs} 
-        columns={columns} 
-        rowKey="id" 
-        loading={loading}
-        pagination={{ defaultPageSize: 20, showSizeChanger: true }}
-        rowSelection={rowSelection}
-      />
+      
+      {groupByStock && groupedLogs ? (
+        <Collapse 
+          defaultActiveKey={Object.keys(groupedLogs)} 
+          items={Object.entries(groupedLogs).map(([key, groupLogs]) => ({
+            key,
+            label: `${key} (${groupLogs.length})`,
+            children: (
+              <Table 
+                dataSource={groupLogs} 
+                columns={columns.filter(c => c.key !== 'stock')} 
+                rowKey="id" 
+                loading={loading}
+                pagination={{ defaultPageSize: 10, showSizeChanger: true }}
+                rowSelection={{
+                  selectedRowKeys,
+                  onChange: (newKeys) => {
+                    const groupIds = groupLogs.map(l => l.id);
+                    const otherKeys = selectedRowKeys.filter(k => !groupIds.includes(k as number));
+                    setSelectedRowKeys([...otherKeys, ...newKeys]);
+                  }
+                }}
+                scroll={{ x: 'max-content' }}
+              />
+            )
+          }))}
+        />
+      ) : (
+        <Table 
+          dataSource={filteredLogs} 
+          columns={columns} 
+          rowKey="id" 
+          loading={loading}
+          pagination={{ defaultPageSize: 20, showSizeChanger: true }}
+          rowSelection={rowSelection}
+          scroll={{ x: 'max-content' }}
+        />
+      )}
     </div>
   );
 };
