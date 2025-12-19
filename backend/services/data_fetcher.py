@@ -285,7 +285,7 @@ class DataFetcher:
     def fetch(self, api_name: str, params_json: str, context: Dict[str, Any], post_process_json: str = None) -> str:
         """
         Fetch data from akshare.
-        Returns a string representation (CSV or Markdown) of the data.
+        Returns a string representation (JSON) of the data.
         """
         try:
             params = json.loads(params_json)
@@ -313,8 +313,8 @@ class DataFetcher:
             if df is None or df.empty:
                 return f"No data returned for {api_name}."
             
-            # Return as CSV string for AI to consume
-            return df.to_csv(index=False)
+            # Return as JSON string for AI to consume
+            return df.to_json(orient="records", force_ascii=False)
             
         except Exception as e:
             return f"Error fetching {api_name}: {str(e)}"

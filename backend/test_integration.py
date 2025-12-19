@@ -48,7 +48,7 @@ class TestIntegration(unittest.TestCase):
     @patch('services.alert_service.smtplib')
     def test_process_loop(self, mock_smtp, mock_openai, mock_ak):
         # 1. Mock Data Fetch
-        mock_ak.stock_zh_a_spot_em.return_value.to_csv.return_value = "symbol,price\n600000,10.5"
+        mock_ak.stock_zh_a_spot_em.return_value.to_json.return_value = '[{"symbol": "600000", "price": 10.5}]'
         
         # 2. Mock AI Response
         mock_client = MagicMock()
@@ -153,7 +153,7 @@ class TestPostProcess(unittest.TestCase):
         )
 
         fetcher = DataFetcher()
-        out_csv = fetcher.fetch(
+        out_json = fetcher.fetch(
             "stock_zh_a_spot_em",
             params_json='{"symbol":"{symbol}"}',
             context={"symbol": "600000"},
@@ -165,8 +165,8 @@ class TestPostProcess(unittest.TestCase):
                 ensure_ascii=False,
             ),
         )
-        self.assertIn("600000", out_csv)
-        self.assertNotIn("000001", out_csv)
+        self.assertIn("600000", out_json)
+        self.assertNotIn("000001", out_json)
 
 if __name__ == '__main__':
     unittest.main()
