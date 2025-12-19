@@ -10,9 +10,9 @@ except Exception:
 class ORMModel(BaseModel):
     if ConfigDict is not None:
         model_config = ConfigDict(from_attributes=True)
-
-    class Config:
-        orm_mode = True
+    else:
+        class Config:
+            orm_mode = True
 
 # AI Config
 class AIConfigBase(BaseModel):

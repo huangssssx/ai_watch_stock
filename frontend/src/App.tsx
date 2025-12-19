@@ -11,6 +11,7 @@ const { Header, Content, Sider } = Layout;
 
 const App: React.FC = () => {
   const [selectedKey, setSelectedKey] = useState('1');
+  const [collapsed, setCollapsed] = useState(false);
 
   const renderContent = () => {
     switch (selectedKey) {
@@ -25,8 +26,10 @@ const App: React.FC = () => {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Sider collapsible>
-        <div style={{ height: 32, margin: 16, background: 'rgba(255, 255, 255, 0.2)', textAlign: 'center', color: 'white', lineHeight: '32px' }}>智能盯盘</div>
+      <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed}>
+        <div style={{ height: 32, margin: 16, background: 'rgba(255, 255, 255, 0.2)', textAlign: 'center', color: 'white', lineHeight: '32px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+          {collapsed ? 'AI' : '智能盯盘'}
+        </div>
         <Menu theme="dark" defaultSelectedKeys={['1']} mode="inline" onClick={(e) => setSelectedKey(e.key)}>
           <Menu.Item key="1" icon={<DashboardOutlined />}>看盘</Menu.Item>
           <Menu.Item key="2" icon={<RobotOutlined />}>AI 模型</Menu.Item>
