@@ -9,9 +9,11 @@ import datetime
 import json
 import time
 import os
+import html
 
 scheduler = BackgroundScheduler()
 _alert_history_by_stock_id = {}
+_last_alert_content_by_stock_id = {}
 
 def _emit(event: str, payload: dict):
     try:
@@ -30,6 +32,59 @@ def _get_alert_rate_limit(db: Session):
         return {"enabled": enabled, "max_per_hour_per_stock": max_per_hour_per_stock}
     except Exception:
         return None
+
+def _canonicalize_signal(signal_value) -> str:
+    if signal_value is None:
+        return "WAIT"
+    text = str(signal_value).strip()
+    if not text:
+        return "WAIT"
+
+    upper = text.upper()
+    if upper in ["STRONG_BUY", "BUY", "WAIT", "SELL", "STRONG_SELL"]:
+        return upper
+
+    if text in {"观望", "空仓观望", "持币观望", "等待", "继续观望", "谨慎观望"}:
+        return "WAIT"
+    if text in {"强烈买入", "强买", "重仓买入"}:
+        return "STRONG_BUY"
+    if text in {"买入", "建议买入", "做多", "开多"}:
+        return "BUY"
+    if text in {"强烈卖出", "强卖", "清仓", "全部卖出"}:
+        return "STRONG_SELL"
+    if text in {"卖出", "建议卖出", "减仓", "做空", "平仓"}:
+        return "SELL"
+
+    return upper
+
+def _signal_display(canonical_signal: str):
+    mapping = {
+        "STRONG_BUY": ("强烈买入", "#16A34A"),
+        "BUY": ("买入", "#16A34A"),
+        "WAIT": ("观望", "#6B7280"),
+        "SELL": ("卖出", "#DC2626"),
+        "STRONG_SELL": ("强烈卖出", "#DC2626"),
+    }
+    return mapping.get(canonical_signal, (canonical_signal, "#111827"))
+
+def _duration_severity(duration_text: str):
+    text = (duration_text or "").strip()
+    if not text or text == "-":
+        return ("一般", "#D97706")
+    urgent_keywords = ["立即", "马上", "立刻", "分钟", "分", "当日", "今天", "T+0", "T0", "T+1", "T1", "短线"]
+    medium_keywords = ["1天", "2天", "3天", "几天", "日内", "本周", "3-5天", "一周内"]
+    low_keywords = ["两周", "2周", "几周", "周", "月", "季度", "中线", "长线"]
+    if any(k in text for k in urgent_keywords):
+        return ("紧急", "#DC2626")
+    if any(k in text for k in low_keywords):
+        return ("不紧急", "#6B7280")
+    if any(k in text for k in medium_keywords):
+        return ("一般", "#D97706")
+    return ("一般", "#D97706")
+
+def _to_html(text_value):
+    text = "" if text_value is None else str(text_value)
+    return html.escape(text).replace("\n", "<br/>")
 
 def process_stock(stock_id: int):
     start_time_perf = time.time()
@@ -212,8 +267,10 @@ def process_stock(stock_id: int):
         
         # 3. Log Result
         signal = analysis_json.get("signal", "WAIT")
+        canonical_signal = _canonicalize_signal(signal)
+        analysis_json["signal"] = canonical_signal
         # Alert if type is warning OR if signal is not WAIT (i.e. actionable advice)
-        is_alert = (analysis_json.get("type") == "warning") or (signal not in ["WAIT", "wait"])
+        is_alert = (analysis_json.get("type") == "warning") or (canonical_signal != "WAIT")
         
         log_entry = Log(
             stock_id=stock.id,
@@ -229,28 +286,75 @@ def process_stock(stock_id: int):
         alert_attempted = False
         alert_result = None
         alert_suppressed = False
-        if is_alert:
+
+        # Filter: Only alert for Buy/Sell signals (ignore WAIT), and deduplicate content
+        should_send_email = canonical_signal in ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"]
+        alert_content_key = f"{canonical_signal}-{(analysis_json.get('action_advice') or '').strip()}"
+        
+        if should_send_email:
+            last_content = _last_alert_content_by_stock_id.get(stock.id)
+            if last_content == alert_content_key:
+                should_send_email = False
+                print(f"Duplicate alert suppressed for {stock.symbol}")
+
+        if should_send_email:
             alert_attempted = True
             msg = analysis_json.get("message", "No message")
             action_advice = analysis_json.get("action_advice", "No advice")
             suggested_position = analysis_json.get("suggested_position", "-")
+            duration_text = analysis_json.get("duration", "-")
             stop_loss = analysis_json.get("stop_loss_price", "-")
+            now_dt = datetime.datetime.now()
+            signal_cn, signal_color = _signal_display(canonical_signal)
+            duration_level, duration_color = _duration_severity(duration_text)
             
-            email_body = (
-                f"Stock: {stock.symbol} ({stock.name})\n"
-                f"Signal: {signal}\n"
-                f"Advice: {action_advice}\n"
-                f"Position: {suggested_position}\n"
-                f"Stop Loss: {stop_loss}\n\n"
-                f"Analysis: {msg}\n\n"
-                f"Time: {datetime.datetime.now()}"
-            )
+            email_body = f"""
+<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial; font-size:14px; color:#111827; line-height:1.6;">
+  <div style="font-size:18px; font-weight:700; margin-bottom:12px;">AI 盯盘提醒</div>
+  <div style="margin-bottom:12px;">
+    <span style="color:#6B7280;">股票</span>：<span style="font-weight:700;">{_to_html(stock.symbol)}</span> {_to_html(stock.name)}
+  </div>
+  <table style="border-collapse:collapse; width:100%; max-width:720px;">
+    <tr>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB; width:140px; color:#374151;">信号</td>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB;">
+        <span style="color:{signal_color}; font-weight:800;">{_to_html(signal_cn)}</span>
+        <span style="color:#6B7280;">（{_to_html(canonical_signal)}）</span>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB; color:#374151;">操作建议</td>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB;">{_to_html(action_advice)}</td>
+    </tr>
+    <tr>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB; color:#374151;">建议仓位</td>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB;">{_to_html(suggested_position)}</td>
+    </tr>
+    <tr>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB; color:#374151;">建议持仓时间</td>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB;">
+        <span style="color:{duration_color}; font-weight:800;">{_to_html(duration_text)}</span>
+        <span style="color:{duration_color};">（{_to_html(duration_level)}）</span>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB; color:#374151;">止损价</td>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB;">{_to_html(stop_loss)}</td>
+    </tr>
+    <tr>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB; color:#374151;">分析摘要</td>
+      <td style="padding:8px 10px; border:1px solid #E5E7EB;">{_to_html(msg)}</td>
+    </tr>
+  </table>
+  <div style="margin-top:12px; color:#6B7280;">触发时间：{_to_html(now_dt.strftime("%Y-%m-%d %H:%M:%S"))}</div>
+</div>
+""".strip()
 
             alert_rate_limit_config = _get_alert_rate_limit(db)
             max_per_hour_str = os.getenv("ALERT_MAX_PER_HOUR_PER_STOCK", "").strip() if not alert_rate_limit_config else ""
             max_per_hour_cfg = alert_rate_limit_config.get("max_per_hour_per_stock", 0) if alert_rate_limit_config else 0
             enabled_cfg = alert_rate_limit_config.get("enabled", False) if alert_rate_limit_config else False
-            bypass_rate_limit = (analysis_json.get("type") == "warning") or (signal in ["STRONG_SELL", "STRONG_BUY"])
+            bypass_rate_limit = canonical_signal in ["STRONG_SELL", "STRONG_BUY"]
             if enabled_cfg and max_per_hour_cfg > 0 and not bypass_rate_limit:
                 now_ts = time.time()
                 history = _alert_history_by_stock_id.get(stock.id, [])
@@ -264,16 +368,17 @@ def process_stock(stock_id: int):
                             "run_id": run_id,
                             "stock_id": stock.id,
                             "symbol": stock.symbol,
-                            "signal": signal,
+                            "signal": canonical_signal,
                             "max_per_hour": max_per_hour_cfg,
                             "sent_last_hour": len(history),
                         },
                     )
                 else:
-                    subject = f"Stock Signal [{signal}]: {stock.symbol} {stock.name}"
-                    alert_result = alert_service.send_email(subject=subject, body=email_body)
+                    subject = f"【AI盯盘】{stock.symbol} {stock.name} - {signal_cn}"
+                    alert_result = alert_service.send_email(subject=subject, body=email_body, is_html=True)
                     history.append(now_ts)
                     _alert_history_by_stock_id[stock.id] = history
+                    _last_alert_content_by_stock_id[stock.id] = alert_content_key
                     print(f"Alert sent for {stock.symbol}")
             elif max_per_hour_str:
                 try:
@@ -290,35 +395,49 @@ def process_stock(stock_id: int):
                         _emit(
                             "alert_suppressed",
                             {
-                                "run_id": run_id,
-                                "stock_id": stock.id,
-                                "symbol": stock.symbol,
-                                "signal": signal,
-                                "max_per_hour": max_per_hour,
-                                "sent_last_hour": len(history),
-                            },
-                        )
+                            "run_id": run_id,
+                            "stock_id": stock.id,
+                            "symbol": stock.symbol,
+                            "signal": canonical_signal,
+                            "max_per_hour": max_per_hour,
+                            "sent_last_hour": len(history),
+                        },
+                    )
                     else:
-                        subject = f"Stock Signal [{signal}]: {stock.symbol} {stock.name}"
-                        alert_result = alert_service.send_email(subject=subject, body=email_body)
+                        subject = f"【AI盯盘】{stock.symbol} {stock.name} - {signal_cn}"
+                        alert_result = alert_service.send_email(subject=subject, body=email_body, is_html=True)
                         history.append(now_ts)
                         _alert_history_by_stock_id[stock.id] = history
+                        _last_alert_content_by_stock_id[stock.id] = alert_content_key
                         print(f"Alert sent for {stock.symbol}")
                 else:
-                    subject = f"Stock Signal [{signal}]: {stock.symbol} {stock.name}"
-                    alert_result = alert_service.send_email(subject=subject, body=email_body)
+                    subject = f"【AI盯盘】{stock.symbol} {stock.name} - {signal_cn}"
+                    alert_result = alert_service.send_email(subject=subject, body=email_body, is_html=True)
                     history = _alert_history_by_stock_id.get(stock.id, [])
                     history.append(time.time())
                     _alert_history_by_stock_id[stock.id] = history
+                    _last_alert_content_by_stock_id[stock.id] = alert_content_key
                     print(f"Alert sent for {stock.symbol}")
             else:
-                subject = f"Stock Signal [{signal}]: {stock.symbol} {stock.name}"
-                alert_result = alert_service.send_email(subject=subject, body=email_body)
+                subject = f"【AI盯盘】{stock.symbol} {stock.name} - {signal_cn}"
+                alert_result = alert_service.send_email(subject=subject, body=email_body, is_html=True)
                 history = _alert_history_by_stock_id.get(stock.id, [])
                 history.append(time.time())
                 _alert_history_by_stock_id[stock.id] = history
+                _last_alert_content_by_stock_id[stock.id] = alert_content_key
                 print(f"Alert sent for {stock.symbol}")
         
+        # 5. Cleanup Logs
+        try:
+            # Keep only last 3 days of logs for this stock
+            cutoff_date = datetime.datetime.now() - datetime.timedelta(days=3)
+            deleted_count = db.query(Log).filter(Log.stock_id == stock.id, Log.timestamp < cutoff_date).delete()
+            if deleted_count > 0:
+                print(f"Cleaned up {deleted_count} old logs for {stock.symbol}")
+                db.commit()
+        except Exception as e:
+            print(f"Error cleaning up logs: {e}")
+
         duration = time.time() - start_time_perf
         print(f"Finished processing {stock.symbol} in {duration:.2f}s")
         _emit(
@@ -336,7 +455,7 @@ def process_stock(stock_id: int):
                 "ai_called": True,
                 "ai_model": ai_config.model_name,
                 "ai_duration_ms": ai_duration_ms,
-                "signal": signal,
+                "signal": canonical_signal,
                 "type": analysis_json.get("type"),
                 "is_alert": is_alert,
                 "alert_attempted": alert_attempted,

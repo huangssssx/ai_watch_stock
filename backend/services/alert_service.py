@@ -17,7 +17,7 @@ class AlertService:
             db.close()
         return None
 
-    def send_email(self, subject: str, body: str):
+    def send_email(self, subject: str, body: str, is_html: bool = False):
         config = self.get_email_config()
         
         # Fallback to env vars if not in DB (for backward compatibility or testing)
@@ -36,7 +36,7 @@ class AlertService:
             msg["From"] = sender_email
             msg["To"] = receiver_email
             msg["Subject"] = subject
-            msg.attach(MIMEText(body, "plain"))
+            msg.attach(MIMEText(body, "html" if is_html else "plain"))
 
             server = smtplib.SMTP(smtp_server, smtp_port)
             server.starttls()

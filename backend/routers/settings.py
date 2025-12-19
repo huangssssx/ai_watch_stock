@@ -47,15 +47,25 @@ def test_email_config(config: schemas.EmailConfig):
         msg = MIMEMultipart()
         msg["From"] = config.sender_email
         msg["To"] = config.receiver_email
-        msg["Subject"] = "AI Watch Stock - Test Email"
-        msg.attach(MIMEText("This is a test email from AI Watch Stock system.", "plain"))
+        msg["Subject"] = "AI Watch Stock - 邮件配置测试"
+        body = """
+<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial; font-size:14px; color:#111827; line-height:1.6;">
+  <div style="font-size:18px; font-weight:700; margin-bottom:12px;">邮件配置测试</div>
+  <div style="margin-bottom:12px; color:#374151;">这是一封来自 AI Watch Stock 的测试邮件，用于验证 SMTP 配置是否可用。</div>
+  <div style="margin-bottom:8px; color:#6B7280;">字体颜色示例（按时间紧急程度）：</div>
+  <div><span style="color:#DC2626; font-weight:800;">紧急</span>：建议立即处理/短线信号</div>
+  <div><span style="color:#D97706; font-weight:800;">一般</span>：1-3 天内处理</div>
+  <div><span style="color:#6B7280; font-weight:800;">不紧急</span>：中线/长线周期</div>
+</div>
+""".strip()
+        msg.attach(MIMEText(body, "html"))
 
         server = smtplib.SMTP(config.smtp_server, config.smtp_port)
         server.starttls()
         server.login(config.sender_email, config.sender_password)
         server.send_message(msg)
         server.quit()
-        return {"ok": True, "message": "Test email sent successfully"}
+        return {"ok": True, "message": "测试邮件发送成功"}
     except Exception as e:
         return {"ok": False, "message": str(e)}
 
