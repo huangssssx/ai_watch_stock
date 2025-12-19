@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Layout, Menu } from 'antd';
-import { DashboardOutlined, SettingOutlined, HistoryOutlined, AppstoreOutlined, RobotOutlined, ToolOutlined } from '@ant-design/icons';
+import { DashboardOutlined, HistoryOutlined, AppstoreOutlined, RobotOutlined, ToolOutlined } from '@ant-design/icons';
 import StockTable from './components/StockTable.tsx';
 import AISettings from './components/AISettings.tsx';
 import LogsViewer from './components/LogsViewer.tsx';

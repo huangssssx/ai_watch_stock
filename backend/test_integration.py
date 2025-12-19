@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch
-import os
+import json
 from services.data_fetcher import DataFetcher
 from services.ai_service import AIService
 from services.monitor_service import process_stock
@@ -10,9 +10,7 @@ from database import SessionLocal, Base, engine
 # Mock Akshare
 class TestIntegration(unittest.TestCase):
     def setUp(self):
-        db_path = os.path.join(os.path.dirname(__file__), "stock_watch.db")
-        if os.path.exists(db_path):
-            os.remove(db_path)
+        Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)
         self.db = SessionLocal()
         
@@ -21,7 +19,14 @@ class TestIntegration(unittest.TestCase):
         self.db.add(self.ai_config)
         self.db.commit()
         
-        self.stock = Stock(symbol="600000", name="PF Bank", is_monitoring=True, interval_seconds=10, ai_provider_id=self.ai_config.id)
+        self.stock = Stock(
+            symbol="600000",
+            name="PF Bank",
+            is_monitoring=True,
+            interval_seconds=10,
+            ai_provider_id=self.ai_config.id,
+            monitoring_schedule=json.dumps([{"start": "00:00", "end": "23:59"}]),
+        )
         self.db.add(self.stock)
         self.db.commit()
         
@@ -62,6 +67,106 @@ class TestIntegration(unittest.TestCase):
         self.assertTrue(log.is_alert)
         self.assertEqual(log.ai_analysis['type'], 'warning')
         print("Integration test passed: Flow executed successfully and alert logged.")
+
+    @patch('services.ai_service.OpenAI')
+    def test_chat_uses_system_role_for_openai_base_url(self, mock_openai):
+        mock_client = MagicMock()
+        mock_openai.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = "ok"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        svc = AIService()
+        ai_config = {"api_key": "sk-test", "base_url": "https://api.openai.com/v1", "model_name": "gpt-4o-mini"}
+        out = svc.chat("hello", ai_config, system_prompt="请在结尾加“主人！”")
+        self.assertEqual(out, "ok")
+
+        _, kwargs = mock_client.chat.completions.create.call_args
+        self.assertEqual(kwargs["messages"][0]["role"], "system")
+        self.assertIn("主人", kwargs["messages"][0]["content"])
+
+    @patch('services.ai_service.OpenAI')
+    def test_chat_embeds_system_prompt_for_non_openai_base_url(self, mock_openai):
+        mock_client = MagicMock()
+        mock_openai.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = "ok"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        svc = AIService()
+        ai_config = {"api_key": "sk-test", "base_url": "https://api.deepseek.com/v1", "model_name": "deepseek-chat"}
+        out = svc.chat("hello", ai_config, system_prompt="请在结尾加“主人！”")
+        self.assertEqual(out, "ok")
+
+        _, kwargs = mock_client.chat.completions.create.call_args
+        self.assertEqual(kwargs["messages"][0]["role"], "user")
+        self.assertIn("系统指令", kwargs["messages"][0]["content"])
+        self.assertIn("主人", kwargs["messages"][0]["content"])
+
+class TestPostProcess(unittest.TestCase):
+    def test_filter_rows_numeric_compare(self):
+        import pandas as pd
+
+        fetcher = DataFetcher()
+        df = pd.DataFrame(
+            {
+                "日期": ["2025-01-01", "2025-01-02", "2025-01-03"],
+                "份额变化": ["1,000", "200", "--"],
+            }
+        )
+        spec = {"filter_rows": [{"column": "份额变化", "op": ">", "value": 500}]}
+        out = fetcher._apply_post_process(df, json.dumps(spec))
+        self.assertEqual(out["日期"].tolist(), ["2025-01-01"])
+
+    def test_filter_rows_contains_and_in(self):
+        import pandas as pd
+
+        fetcher = DataFetcher()
+        df = pd.DataFrame(
+            {
+                "基金简称": ["A股ETF", "中证500ETF", "可转债基金"],
+                "代码": ["510300", "510500", "000000"],
+            }
+        )
+        spec = {
+            "filter_rows": {
+                "and": [
+                    {"column": "基金简称", "op": "contains", "value": "ETF"},
+                    {"column": "代码", "op": "in", "value": ["510300"]},
+                ]
+            }
+        }
+        out = fetcher._apply_post_process(df, json.dumps(spec))
+        self.assertEqual(out["代码"].tolist(), ["510300"])
+
+    @patch('services.data_fetcher.ak')
+    def test_fetch_resolves_placeholders_in_post_process(self, mock_ak):
+        import pandas as pd
+
+        mock_ak.stock_zh_a_spot_em.return_value = pd.DataFrame(
+            {
+                "代码": ["600000", "000001"],
+                "基金简称": ["X", "Y"],
+                "日期": ["2025-01-01", "2025-01-01"],
+                "份额变化": ["100", "200"],
+            }
+        )
+
+        fetcher = DataFetcher()
+        out_csv = fetcher.fetch(
+            "stock_zh_a_spot_em",
+            params_json='{"symbol":"{symbol}"}',
+            context={"symbol": "600000"},
+            post_process_json=json.dumps(
+                {
+                    "filter_rows": [{"column": "代码", "op": "in", "value": ["{symbol}"]}],
+                    "select_columns": ["代码", "基金简称", "日期", "份额变化"],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.assertIn("600000", out_csv)
+        self.assertNotIn("000001", out_csv)
 
 if __name__ == '__main__':
     unittest.main()

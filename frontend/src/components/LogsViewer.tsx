@@ -1,11 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Table, Tag, Button, Tooltip, Space, Input, message, Popconfirm, Typography, Switch, Collapse } from 'antd';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { Table, Tag, Button, Tooltip, Space, Input, message, Popconfirm, Switch, Collapse } from 'antd';
 import type { Log } from '../types';
 import { getLogs, clearLogs } from '../api';
 import { ReloadOutlined, DeleteOutlined, SearchOutlined, CopyOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-
-const { Text } = Typography;
 
 interface Props {
   stockId?: number;
@@ -18,7 +16,7 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [groupByStock, setGroupByStock] = useState(false);
 
-  const fetchLogs = async () => {
+  const fetchLogs = useCallback(async () => {
     setLoading(true);
     try {
       const res = await getLogs();
@@ -32,7 +30,7 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [stockId]);
 
   const handleClear = async (ids?: number[]) => {
     try {
@@ -51,7 +49,7 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
     fetchLogs();
     const interval = setInterval(fetchLogs, 10000);
     return () => clearInterval(interval);
-  }, [stockId]);
+  }, [fetchLogs]);
 
   const filteredLogs = logs.filter(log => {
     if (!searchText) return true;

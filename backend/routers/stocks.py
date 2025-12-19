@@ -105,7 +105,7 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
     context = {"symbol": db_stock.symbol}
     data_parts = []
     for indicator in db_stock.indicators:
-        data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context)
+        data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context, indicator.post_process_json)
         data_parts.append(f"--- Indicator: {indicator.name} ---\n{data}\n")
     full_data = "\n".join(data_parts)
 
@@ -117,11 +117,13 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
     
     # Load Global Prompt
     global_prompt = ""
+    account_info = ""
     global_prompt_config = db.query(models.SystemConfig).filter(models.SystemConfig.key == "global_prompt").first()
     if global_prompt_config and global_prompt_config.value:
         try:
             data = json.loads(global_prompt_config.value)
             global_prompt = data.get("prompt_template", "")
+            account_info = data.get("account_info", "")
         except:
             pass
 
@@ -165,6 +167,9 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
     user_prompt = f"""
     Current Time: {current_time_str}
     Stock Symbol: {context.get('symbol', 'Unknown')}
+
+    User Account Info:
+    {(account_info or '').strip() or '-'}
     
     Task: Analyze the following market data and generate an investment decision JSON.
     

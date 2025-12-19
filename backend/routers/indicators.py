@@ -20,6 +20,24 @@ def create_indicator(indicator: schemas.IndicatorDefinitionCreate, db: Session =
     db.refresh(db_indicator)
     return db_indicator
 
+@router.put("/{indicator_id}", response_model=schemas.IndicatorDefinition)
+def update_indicator(indicator_id: int, indicator: schemas.IndicatorDefinitionUpdate, db: Session = Depends(get_db)):
+    db_indicator = (
+        db.query(models.IndicatorDefinition)
+        .filter(models.IndicatorDefinition.id == indicator_id)
+        .first()
+    )
+    if not db_indicator:
+        raise HTTPException(status_code=404, detail="Indicator not found")
+    
+    update_data = indicator.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_indicator, key, value)
+        
+    db.commit()
+    db.refresh(db_indicator)
+    return db_indicator
+
 @router.delete("/{indicator_id}")
 def delete_indicator(indicator_id: int, db: Session = Depends(get_db)):
     db_indicator = (

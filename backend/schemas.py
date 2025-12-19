@@ -53,9 +53,16 @@ class IndicatorDefinitionBase(BaseModel):
     name: str
     akshare_api: str
     params_json: str
+    post_process_json: Optional[str] = None
 
 class IndicatorDefinitionCreate(IndicatorDefinitionBase):
     pass
+
+class IndicatorDefinitionUpdate(BaseModel):
+    name: Optional[str] = None
+    akshare_api: Optional[str] = None
+    params_json: Optional[str] = None
+    post_process_json: Optional[str] = None
 
 class IndicatorDefinition(IndicatorDefinitionBase, ORMModel):
     id: int
@@ -123,6 +130,11 @@ class EmailConfig(BaseModel):
 
 class GlobalPromptConfig(BaseModel):
     prompt_template: str = ""
+    account_info: str = ""
+
+class AlertRateLimitConfig(BaseModel):
+    enabled: bool = False
+    max_per_hour_per_stock: int = 0
 
 class SystemConfigBase(BaseModel):
     key: str

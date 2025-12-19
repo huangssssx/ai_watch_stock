@@ -83,3 +83,28 @@ def update_global_prompt(config: schemas.GlobalPromptConfig, db: Session = Depen
     
     db.commit()
     return config
+
+@router.get("/alert-rate-limit", response_model=schemas.AlertRateLimitConfig)
+def get_alert_rate_limit_config(db: Session = Depends(get_db)):
+    config = db.query(models.SystemConfig).filter(models.SystemConfig.key == "alert_rate_limit").first()
+    if not config or not config.value:
+        return schemas.AlertRateLimitConfig()
+    try:
+        data = json.loads(config.value)
+        return schemas.AlertRateLimitConfig(**data)
+    except:
+        return schemas.AlertRateLimitConfig()
+
+@router.put("/alert-rate-limit", response_model=schemas.AlertRateLimitConfig)
+def update_alert_rate_limit_config(config: schemas.AlertRateLimitConfig, db: Session = Depends(get_db)):
+    db_config = db.query(models.SystemConfig).filter(models.SystemConfig.key == "alert_rate_limit").first()
+    value_str = config.json()
+
+    if not db_config:
+        db_config = models.SystemConfig(key="alert_rate_limit", value=value_str)
+        db.add(db_config)
+    else:
+        db_config.value = value_str
+
+    db.commit()
+    return config

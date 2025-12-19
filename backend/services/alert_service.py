@@ -29,7 +29,7 @@ class AlertService:
 
         if not sender_email or not sender_password:
             print(f"[MOCK EMAIL] To: {receiver_email}, Subject: {subject}, Body: {body}")
-            return
+            return {"ok": True, "mocked": True, "receiver_email": receiver_email, "error": None}
 
         try:
             msg = MIMEMultipart()
@@ -44,7 +44,9 @@ class AlertService:
             server.send_message(msg)
             server.quit()
             print(f"Email sent to {receiver_email}")
+            return {"ok": True, "mocked": False, "receiver_email": receiver_email, "error": None}
         except Exception as e:
             print(f"Failed to send email: {e}")
+            return {"ok": False, "mocked": False, "receiver_email": receiver_email, "error": str(e)}
 
 alert_service = AlertService()

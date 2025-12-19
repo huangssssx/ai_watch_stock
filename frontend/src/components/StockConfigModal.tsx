@@ -5,12 +5,15 @@ import dayjs from 'dayjs';
 import type { Stock, IndicatorDefinition, AIConfig } from '../types';
 import { updateStock, getIndicators, getAIConfigs } from '../api';
 
+type MonitoringSchedulePeriod = { start: string; end: string };
+type MonitoringScheduleFormPeriod = { start: dayjs.Dayjs | null; end: dayjs.Dayjs | null };
+
 type StockConfigFormValues = {
   indicator_ids?: number[];
   prompt_template?: string;
   interval_seconds?: number;
   ai_provider_id?: number;
-  monitoring_schedule_list?: { start: string; end: string }[];
+  monitoring_schedule_list?: MonitoringScheduleFormPeriod[];
 };
 
 interface Props {
@@ -49,14 +52,21 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
     let scheduleList: { start: dayjs.Dayjs | null; end: dayjs.Dayjs | null }[] = [];
     if (stock.monitoring_schedule) {
       try {
-        const parsed = JSON.parse(stock.monitoring_schedule);
+        const parsed: unknown = JSON.parse(stock.monitoring_schedule);
         if (Array.isArray(parsed)) {
-            scheduleList = parsed.map((item: any) => ({
-                start: item.start ? dayjs(item.start, 'HH:mm') : null,
-                end: item.end ? dayjs(item.end, 'HH:mm') : null,
-            }));
+          scheduleList = parsed
+            .map((item: unknown) => {
+              const raw = item as Partial<MonitoringSchedulePeriod>;
+              return {
+                start: raw.start ? dayjs(raw.start, 'HH:mm') : null,
+                end: raw.end ? dayjs(raw.end, 'HH:mm') : null,
+              };
+            })
+            .filter((x) => x.start && x.end);
         }
-      } catch {}
+      } catch {
+        scheduleList = [];
+      }
     } else {
        // Default
        scheduleList = [
@@ -74,12 +84,14 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
     });
   }, [form, stock, visible]);
 
-  const handleUpdate = async (values: any) => {
+  const handleUpdate = async (values: StockConfigFormValues) => {
     try {
-      const schedule = (values.monitoring_schedule_list || []).map((item: any) => ({
+      const schedule = (values.monitoring_schedule_list || [])
+        .map((item) => ({
           start: item.start ? item.start.format('HH:mm') : '',
           end: item.end ? item.end.format('HH:mm') : '',
-      })).filter((x: any) => x.start && x.end);
+        }))
+        .filter((x) => x.start && x.end);
 
       const payload = {
           ...values,

@@ -3,6 +3,16 @@ import json
 from typing import Dict, Any, Optional
 
 class AIService:
+    def _should_embed_system_prompt_in_user(self, ai_config: Dict[str, Any]) -> bool:
+        base_url = (ai_config.get("base_url") or "").strip().lower()
+        if not base_url:
+            return False
+        if "api.openai.com" in base_url:
+            return False
+        if "openai.com" in base_url:
+            return False
+        return True
+
     def analyze(self, data_context: str, prompt_template: str, ai_config: Dict[str, Any]) -> Dict[str, Any]:
         """
         Send data to AI and get analysis result.
@@ -91,10 +101,25 @@ class AIService:
             api_key=ai_config["api_key"],
             base_url=ai_config["base_url"]
         )
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": message})
+        normalized_system_prompt = (system_prompt or "").strip()
+        normalized_message = (message or "").strip()
+
+        if normalized_system_prompt:
+            if self._should_embed_system_prompt_in_user(ai_config):
+                user_content = (
+                    "系统指令：\n"
+                    f"{normalized_system_prompt}\n\n"
+                    "用户输入：\n"
+                    f"{normalized_message}"
+                )
+                messages = [{"role": "user", "content": user_content}]
+            else:
+                messages = [
+                    {"role": "system", "content": normalized_system_prompt},
+                    {"role": "user", "content": normalized_message},
+                ]
+        else:
+            messages = [{"role": "user", "content": normalized_message}]
         response = client.chat.completions.create(
             model=ai_config["model_name"],
             messages=messages,

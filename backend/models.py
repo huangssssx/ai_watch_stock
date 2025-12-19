@@ -38,6 +38,7 @@ class IndicatorDefinition(Base):
     name = Column(String, unique=True, index=True)
     akshare_api = Column(String)
     params_json = Column(String)
+    post_process_json = Column(Text, nullable=True)
 
     stocks = relationship("Stock", secondary=stock_indicators, back_populates="indicators")
 

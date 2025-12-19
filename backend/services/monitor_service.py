@@ -8,15 +8,40 @@ from services.alert_service import alert_service
 import datetime
 import json
 import time
+import os
 
 scheduler = BackgroundScheduler()
+_alert_history_by_stock_id = {}
+
+def _emit(event: str, payload: dict):
+    try:
+        print(json.dumps({"event": event, **payload}, ensure_ascii=False, default=str))
+    except Exception:
+        print(f"{event} {payload}")
+
+def _get_alert_rate_limit(db: Session):
+    config = db.query(SystemConfig).filter(SystemConfig.key == "alert_rate_limit").first()
+    if not config or not config.value:
+        return None
+    try:
+        data = json.loads(config.value)
+        enabled = bool(data.get("enabled", False))
+        max_per_hour_per_stock = int(data.get("max_per_hour_per_stock", 0) or 0)
+        return {"enabled": enabled, "max_per_hour_per_stock": max_per_hour_per_stock}
+    except Exception:
+        return None
 
 def process_stock(stock_id: int):
     start_time_perf = time.time()
     db: Session = SessionLocal()
+    run_id = f"{stock_id}-{time.time_ns()}"
     try:
         stock = db.query(Stock).filter(Stock.id == stock_id).first()
-        if not stock or not stock.is_monitoring:
+        if not stock:
+            _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "reason": "stock_not_found"})
+            return
+        if not stock.is_monitoring:
+            _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "symbol": stock.symbol, "reason": "monitoring_disabled"})
             return
 
         # Check schedule
@@ -28,9 +53,12 @@ def process_stock(stock_id: int):
                  {"start": "13:00", "end": "15:00"}
              ])
 
+        is_in_schedule = True
+        parsed_schedule = None
         if schedule_str:
             try:
                 schedule = json.loads(schedule_str)
+                parsed_schedule = schedule
                 if isinstance(schedule, list) and len(schedule) > 0:
                     now = datetime.datetime.now().time()
                     is_in_schedule = False
@@ -48,18 +76,52 @@ def process_stock(stock_id: int):
                                 continue
                     
                     if not is_in_schedule:
-                        print(f"Stock {stock.symbol} is outside monitoring schedule. Current time: {now.strftime('%H:%M')}. Schedule: {schedule}. Skipping.")
+                        _emit(
+                            "monitor_skip",
+                            {
+                                "run_id": run_id,
+                                "stock_id": stock.id,
+                                "symbol": stock.symbol,
+                                "reason": "outside_schedule",
+                                "now": now.strftime("%H:%M"),
+                                "schedule": schedule,
+                            },
+                        )
                         return
             except Exception as e:
                 print(f"Error checking schedule for {stock.symbol}: {e}")
+
+        _emit(
+            "monitor_start",
+            {
+                "run_id": run_id,
+                "stock_id": stock.id,
+                "symbol": stock.symbol,
+                "name": stock.name,
+                "interval_seconds": stock.interval_seconds,
+                "in_schedule": is_in_schedule,
+                "schedule": parsed_schedule,
+                "indicators_count": len(stock.indicators or []),
+            },
+        )
 
         print(f"Processing stock: {stock.symbol} ({stock.name})")
 
         # 1. Fetch Data
         context = {"symbol": stock.symbol}
         data_parts = []
+        fetch_errors = []
+        fetch_ok = 0
+        fetch_error = 0
         for indicator in stock.indicators:
-            data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context)
+            fetch_start = time.time()
+            data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context, indicator.post_process_json)
+            fetch_duration_ms = int((time.time() - fetch_start) * 1000)
+            if isinstance(data, str) and data.startswith("Error"):
+                fetch_error += 1
+                fetch_errors.append({"indicator": indicator.name, "api": indicator.akshare_api, "duration_ms": fetch_duration_ms, "error": data[:200]})
+            else:
+                fetch_ok += 1
             data_parts.append(f"--- Indicator: {indicator.name} ---\n{data}\n")
         
         full_data = "\n".join(data_parts)
@@ -67,11 +129,41 @@ def process_stock(stock_id: int):
         # 2. AI Analysis
         if not stock.ai_provider_id:
             print(f"No AI provider configured for {stock.symbol}")
+            _emit(
+                "monitor_finish",
+                {
+                    "run_id": run_id,
+                    "stock_id": stock.id,
+                    "symbol": stock.symbol,
+                    "duration_ms": int((time.time() - start_time_perf) * 1000),
+                    "ai_called": False,
+                    "reason": "no_ai_provider",
+                    "fetch_ok": fetch_ok,
+                    "fetch_error": fetch_error,
+                    "fetch_errors": fetch_errors,
+                    "data_chars": len(full_data),
+                },
+            )
             return
             
         ai_config = db.query(AIConfig).filter(AIConfig.id == stock.ai_provider_id).first()
         if not ai_config:
             print(f"AI Config not found")
+            _emit(
+                "monitor_finish",
+                {
+                    "run_id": run_id,
+                    "stock_id": stock.id,
+                    "symbol": stock.symbol,
+                    "duration_ms": int((time.time() - start_time_perf) * 1000),
+                    "ai_called": False,
+                    "reason": "ai_config_not_found",
+                    "fetch_ok": fetch_ok,
+                    "fetch_error": fetch_error,
+                    "fetch_errors": fetch_errors,
+                    "data_chars": len(full_data),
+                },
+            )
             return
 
         config_dict = {
@@ -83,6 +175,7 @@ def process_stock(stock_id: int):
         # Truncate data based on max_tokens config (approx chars)
         max_chars = ai_config.max_tokens if ai_config.max_tokens else 100000
         data_for_ai = full_data[:max_chars]
+        data_truncated = len(full_data) > max_chars
 
         # Use stock specific prompt or default
         global_prompt = ""
@@ -112,7 +205,9 @@ def process_stock(stock_id: int):
             prompt = "Analyze the trend."
             prompt_source = "system_default"
         
+        ai_start = time.time()
         analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict)
+        ai_duration_ms = int((time.time() - ai_start) * 1000)
         
         # 3. Log Result
         signal = analysis_json.get("signal", "WAIT")
@@ -130,7 +225,11 @@ def process_stock(stock_id: int):
         db.commit()
 
         # 4. Alert
+        alert_attempted = False
+        alert_result = None
+        alert_suppressed = False
         if is_alert:
+            alert_attempted = True
             msg = analysis_json.get("message", "No message")
             action_advice = analysis_json.get("action_advice", "No advice")
             suggested_position = analysis_json.get("suggested_position", "-")
@@ -145,18 +244,117 @@ def process_stock(stock_id: int):
                 f"Analysis: {msg}\n\n"
                 f"Time: {datetime.datetime.now()}"
             )
-            
-            alert_service.send_email(
-                subject=f"Stock Signal [{signal}]: {stock.symbol} {stock.name}",
-                body=email_body
-            )
-            print(f"Alert sent for {stock.symbol}")
+
+            alert_rate_limit_config = _get_alert_rate_limit(db)
+            max_per_hour_str = os.getenv("ALERT_MAX_PER_HOUR_PER_STOCK", "").strip() if not alert_rate_limit_config else ""
+            max_per_hour_cfg = alert_rate_limit_config.get("max_per_hour_per_stock", 0) if alert_rate_limit_config else 0
+            enabled_cfg = alert_rate_limit_config.get("enabled", False) if alert_rate_limit_config else False
+            bypass_rate_limit = (analysis_json.get("type") == "warning") or (signal in ["STRONG_SELL", "STRONG_BUY"])
+            if enabled_cfg and max_per_hour_cfg > 0 and not bypass_rate_limit:
+                now_ts = time.time()
+                history = _alert_history_by_stock_id.get(stock.id, [])
+                history = [t for t in history if now_ts - t < 3600]
+                if len(history) >= max_per_hour_cfg:
+                    alert_suppressed = True
+                    _alert_history_by_stock_id[stock.id] = history
+                    _emit(
+                        "alert_suppressed",
+                        {
+                            "run_id": run_id,
+                            "stock_id": stock.id,
+                            "symbol": stock.symbol,
+                            "signal": signal,
+                            "max_per_hour": max_per_hour_cfg,
+                            "sent_last_hour": len(history),
+                        },
+                    )
+                else:
+                    subject = f"Stock Signal [{signal}]: {stock.symbol} {stock.name}"
+                    alert_result = alert_service.send_email(subject=subject, body=email_body)
+                    history.append(now_ts)
+                    _alert_history_by_stock_id[stock.id] = history
+                    print(f"Alert sent for {stock.symbol}")
+            elif max_per_hour_str:
+                try:
+                    max_per_hour = int(max_per_hour_str)
+                except ValueError:
+                    max_per_hour = 0
+                if max_per_hour > 0 and not bypass_rate_limit:
+                    now_ts = time.time()
+                    history = _alert_history_by_stock_id.get(stock.id, [])
+                    history = [t for t in history if now_ts - t < 3600]
+                    if len(history) >= max_per_hour:
+                        alert_suppressed = True
+                        _alert_history_by_stock_id[stock.id] = history
+                        _emit(
+                            "alert_suppressed",
+                            {
+                                "run_id": run_id,
+                                "stock_id": stock.id,
+                                "symbol": stock.symbol,
+                                "signal": signal,
+                                "max_per_hour": max_per_hour,
+                                "sent_last_hour": len(history),
+                            },
+                        )
+                    else:
+                        subject = f"Stock Signal [{signal}]: {stock.symbol} {stock.name}"
+                        alert_result = alert_service.send_email(subject=subject, body=email_body)
+                        history.append(now_ts)
+                        _alert_history_by_stock_id[stock.id] = history
+                        print(f"Alert sent for {stock.symbol}")
+                else:
+                    subject = f"Stock Signal [{signal}]: {stock.symbol} {stock.name}"
+                    alert_result = alert_service.send_email(subject=subject, body=email_body)
+                    history = _alert_history_by_stock_id.get(stock.id, [])
+                    history.append(time.time())
+                    _alert_history_by_stock_id[stock.id] = history
+                    print(f"Alert sent for {stock.symbol}")
+            else:
+                subject = f"Stock Signal [{signal}]: {stock.symbol} {stock.name}"
+                alert_result = alert_service.send_email(subject=subject, body=email_body)
+                history = _alert_history_by_stock_id.get(stock.id, [])
+                history.append(time.time())
+                _alert_history_by_stock_id[stock.id] = history
+                print(f"Alert sent for {stock.symbol}")
         
         duration = time.time() - start_time_perf
         print(f"Finished processing {stock.symbol} in {duration:.2f}s")
+        _emit(
+            "monitor_finish",
+            {
+                "run_id": run_id,
+                "stock_id": stock.id,
+                "symbol": stock.symbol,
+                "duration_ms": int(duration * 1000),
+                "fetch_ok": fetch_ok,
+                "fetch_error": fetch_error,
+                "fetch_errors": fetch_errors,
+                "data_chars": len(full_data),
+                "data_truncated": data_truncated,
+                "ai_called": True,
+                "ai_model": ai_config.model_name,
+                "ai_duration_ms": ai_duration_ms,
+                "signal": signal,
+                "type": analysis_json.get("type"),
+                "is_alert": is_alert,
+                "alert_attempted": alert_attempted,
+                "alert_suppressed": alert_suppressed,
+                "alert_result": alert_result,
+            },
+        )
 
     except Exception as e:
         print(f"Error processing stock {stock_id}: {e}")
+        _emit(
+            "monitor_error",
+            {
+                "run_id": run_id,
+                "stock_id": stock_id,
+                "duration_ms": int((time.time() - start_time_perf) * 1000),
+                "error": str(e),
+            },
+        )
     finally:
         db.close()
 

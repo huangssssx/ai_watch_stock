@@ -15,6 +15,7 @@ export interface IndicatorDefinition {
   name: string;
   akshare_api: string;
   params_json: string;
+  post_process_json?: string;
 }
 
 export interface AIConfig {
@@ -92,4 +93,10 @@ export interface EmailConfig {
 
 export interface GlobalPromptConfig {
   prompt_template: string;
+  account_info?: string;
+}
+
+export interface AlertRateLimitConfig {
+  enabled: boolean;
+  max_per_hour_per_stock: number;
 }

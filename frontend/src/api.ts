@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig } from './types';
+import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig } from './types';
 
 const API_URL = 'http://localhost:8000';
 
@@ -15,8 +15,15 @@ export const deleteStock = (id: number) => api.delete(`/stocks/${id}`);
 export const testRunStock = (id: number) => api.post<StockTestRunResponse>(`/stocks/${id}/test-run`);
 
 export const getIndicators = () => api.get<IndicatorDefinition[]>('/indicators/');
-export const createIndicator = (indicator: Pick<IndicatorDefinition, 'name' | 'akshare_api' | 'params_json'>) =>
+export const createIndicator = (
+  indicator: Pick<IndicatorDefinition, 'name' | 'akshare_api' | 'params_json' | 'post_process_json'>,
+) =>
   api.post<IndicatorDefinition>('/indicators/', indicator);
+export const updateIndicator = (
+  id: number,
+  indicator: Partial<Pick<IndicatorDefinition, 'name' | 'akshare_api' | 'params_json' | 'post_process_json'>>,
+) =>
+  api.put<IndicatorDefinition>(`/indicators/${id}`, indicator);
 export const deleteIndicator = (id: number) => api.delete(`/indicators/${id}`);
 
 export const getAIConfigs = () => api.get<AIConfig[]>('/ai-configs/');
@@ -35,3 +42,7 @@ export const testEmailConfig = (config: EmailConfig) => api.post<{ ok: boolean; 
 
 export const getGlobalPrompt = () => api.get<GlobalPromptConfig>('/settings/global-prompt');
 export const updateGlobalPrompt = (config: GlobalPromptConfig) => api.put<GlobalPromptConfig>('/settings/global-prompt', config);
+
+export const getAlertRateLimitConfig = () => api.get<AlertRateLimitConfig>('/settings/alert-rate-limit');
+export const updateAlertRateLimitConfig = (config: AlertRateLimitConfig) =>
+  api.put<AlertRateLimitConfig>('/settings/alert-rate-limit', config);
