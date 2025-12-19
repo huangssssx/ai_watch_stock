@@ -11,6 +11,7 @@ type AIConfigFormValues = {
   base_url: string;
   api_key: string;
   model_name: string;
+  temperature?: number;
   max_tokens?: number;
   is_active?: boolean;
 };
@@ -116,6 +117,7 @@ const AISettings: React.FC = () => {
     { title: '名称', dataIndex: 'name', key: 'name' },
     { title: '厂商', dataIndex: 'provider', key: 'provider' },
     { title: '模型', dataIndex: 'model_name', key: 'model_name' },
+    { title: '温度', dataIndex: 'temperature', key: 'temperature', render: (val) => val ?? 0.1 },
     { title: '上下文限制', dataIndex: 'max_tokens', key: 'max_tokens', render: (val) => val ? `${val.toLocaleString()} chars` : '-' },
     { 
       title: '操作', 
@@ -156,6 +158,20 @@ const AISettings: React.FC = () => {
           </Form.Item>
           <Form.Item name="model_name" label="模型名称" rules={[{ required: true, message: '请输入模型名称' }]}>
             <Input />
+          </Form.Item>
+          <Form.Item 
+            name="temperature" 
+            label={
+              <span>
+                温度 (Temperature) 
+                <Tooltip title="值越小越严谨，值越大越随机。股票分析建议 0.0 ~ 0.2">
+                  <InfoCircleOutlined style={{ marginLeft: 4 }} />
+                </Tooltip>
+              </span>
+            }
+            initialValue={0.1}
+          >
+            <InputNumber style={{ width: '100%' }} min={0} max={2} step={0.1} />
           </Form.Item>
           <Form.Item 
             name="max_tokens" 

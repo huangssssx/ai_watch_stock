@@ -54,6 +54,7 @@ def test_ai_config(config_id: int, payload: schemas.AIConfigTestRequest, db: Ses
         "api_key": db_config.api_key,
         "base_url": db_config.base_url,
         "model_name": db_config.model_name,
+        "temperature": getattr(db_config, "temperature", 0.7)
     }
 
     system_prompt = payload.prompt_template or None

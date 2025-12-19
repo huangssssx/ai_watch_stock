@@ -25,6 +25,7 @@ export interface AIConfig {
   base_url: string;
   api_key: string;
   model_name: string;
+  temperature?: number;
   max_tokens?: number;
   is_active: boolean;
 }

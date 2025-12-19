@@ -39,6 +39,12 @@ def ensure_db_schema():
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE indicator_definitions ADD COLUMN post_process_json TEXT"))
 
+    if "ai_configs" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("ai_configs")}
+        if "temperature" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE ai_configs ADD COLUMN temperature FLOAT DEFAULT 0.1"))
+
 @app.on_event("startup")
 def startup_event():
     ensure_db_schema()

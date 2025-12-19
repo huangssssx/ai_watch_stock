@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Text, DateTime, JSON, Table
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Text, DateTime, JSON, Table, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -51,6 +51,7 @@ class AIConfig(Base):
     base_url = Column(String)
     api_key = Column(String)
     model_name = Column(String)
+    temperature = Column(Float, default=0.1)
     max_tokens = Column(Integer, default=100000) # Max tokens/chars context limit
     
     is_active = Column(Boolean, default=True)

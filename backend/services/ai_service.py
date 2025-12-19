@@ -71,7 +71,8 @@ class AIService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content}
                 ],
-                response_format={"type": "json_object"} # Force JSON if model supports it, else prompt engineering
+                response_format={"type": "json_object"}, # Force JSON if model supports it, else prompt engineering
+                temperature=ai_config.get("temperature", 0.1)
             )
             
             content = response.choices[0].message.content
@@ -123,6 +124,7 @@ class AIService:
         response = client.chat.completions.create(
             model=ai_config["model_name"],
             messages=messages,
+            temperature=ai_config.get("temperature", 0.7)
         )
         return response.choices[0].message.content or ""
 

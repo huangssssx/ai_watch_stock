@@ -183,7 +183,12 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
     Return strictly JSON format.
     """
 
-    config_dict = {"api_key": ai_config.api_key, "base_url": ai_config.base_url, "model_name": ai_config.model_name}
+    config_dict = {
+        "api_key": ai_config.api_key, 
+        "base_url": ai_config.base_url, 
+        "model_name": ai_config.model_name,
+        "temperature": getattr(ai_config, "temperature", 0.1)
+    }
     ai_reply_str = ai_service.chat(user_prompt, config_dict, system_prompt=system_prompt)
     
     # Try to parse AI reply as JSON

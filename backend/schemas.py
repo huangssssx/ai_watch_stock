@@ -21,6 +21,7 @@ class AIConfigBase(BaseModel):
     base_url: str
     api_key: str
     model_name: str
+    temperature: Optional[float] = 0.1
     max_tokens: Optional[int] = 100000
     is_active: bool = True
 

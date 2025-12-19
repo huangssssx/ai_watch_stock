@@ -169,7 +169,8 @@ def process_stock(stock_id: int):
         config_dict = {
             "api_key": ai_config.api_key,
             "base_url": ai_config.base_url,
-            "model_name": ai_config.model_name
+            "model_name": ai_config.model_name,
+            "temperature": getattr(ai_config, "temperature", 0.1)
         }
         
         # Truncate data based on max_tokens config (approx chars)
