@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Form, Input, Button, Card, Tabs, message, InputNumber, Switch } from 'antd';
+import { Form, Input, Button, Card, Tabs, message, InputNumber, Switch, Checkbox, Divider } from 'antd';
 import { MailOutlined, EditOutlined, SaveOutlined, SendOutlined, BellOutlined } from '@ant-design/icons';
 import { getEmailConfig, updateEmailConfig, testEmailConfig, getGlobalPrompt, updateGlobalPrompt, getAlertRateLimitConfig, updateAlertRateLimitConfig } from '../api';
 import type { EmailConfig, GlobalPromptConfig, AlertRateLimitConfig } from '../types';
@@ -216,6 +216,10 @@ const AlertSettings: React.FC = () => {
       const payload: AlertRateLimitConfig = {
         enabled: Boolean(values.enabled),
         max_per_hour_per_stock: Number(values.max_per_hour_per_stock || 0),
+        allowed_signals: values.allowed_signals || [],
+        allowed_urgencies: values.allowed_urgencies || [],
+        suppress_duplicates: Boolean(values.suppress_duplicates),
+        bypass_rate_limit_for_strong_signals: Boolean(values.bypass_rate_limit_for_strong_signals),
       };
       await updateAlertRateLimitConfig(payload);
       message.success('告警配置已保存');
@@ -228,10 +232,47 @@ const AlertSettings: React.FC = () => {
 
   return (
     <div style={{ maxWidth: 600 }}>
-      <p style={{ color: '#888', marginBottom: 16 }}>
-        该限流只影响同一只股票的邮件发送频率。类型为 warning 或信号为 STRONG_* 的提醒默认不受限流影响。
-      </p>
-      <Form form={form} layout="vertical" onFinish={onFinish} initialValues={{ enabled: false, max_per_hour_per_stock: 0 }}>
+      <Form 
+        form={form} 
+        layout="vertical" 
+        onFinish={onFinish} 
+        initialValues={{ 
+            enabled: false, 
+            max_per_hour_per_stock: 0,
+            allowed_signals: ["STRONG_BUY", "BUY", "SELL", "STRONG_SELL"],
+            allowed_urgencies: ["紧急", "一般", "不紧急"],
+            suppress_duplicates: true,
+            bypass_rate_limit_for_strong_signals: true
+        }}
+      >
+        <Divider>拦截规则</Divider>
+        
+        <Form.Item name="allowed_signals" label="允许发送邮件的信号类型">
+          <Checkbox.Group>
+             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <Checkbox value="STRONG_BUY">STRONG_BUY (强烈买入)</Checkbox>
+                <Checkbox value="BUY">BUY (买入)</Checkbox>
+                <Checkbox value="WAIT">WAIT (观望)</Checkbox>
+                <Checkbox value="SELL">SELL (卖出)</Checkbox>
+                <Checkbox value="STRONG_SELL">STRONG_SELL (强烈卖出)</Checkbox>
+             </div>
+          </Checkbox.Group>
+        </Form.Item>
+
+        <Form.Item name="allowed_urgencies" label="允许发送邮件的紧急程度">
+            <Checkbox.Group>
+                <Checkbox value="紧急">紧急</Checkbox>
+                <Checkbox value="一般">一般</Checkbox>
+                <Checkbox value="不紧急">不紧急</Checkbox>
+            </Checkbox.Group>
+        </Form.Item>
+
+        <Form.Item name="suppress_duplicates" label="内容去重" valuePropName="checked" help="如果连续两次分析内容完全一致，则不发送邮件">
+            <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+        </Form.Item>
+
+        <Divider>频次限制</Divider>
+
         <Form.Item name="enabled" label="启用限流" valuePropName="checked">
           <Switch checkedChildren="开启" unCheckedChildren="关闭" loading={loading} />
         </Form.Item>
@@ -250,6 +291,10 @@ const AlertSettings: React.FC = () => {
           ]}
         >
           <InputNumber min={0} max={120} style={{ width: '100%' }} disabled={!enabled} />
+        </Form.Item>
+
+        <Form.Item name="bypass_rate_limit_for_strong_signals" label="强信号豁免限流" valuePropName="checked" help="STRONG_BUY 和 STRONG_SELL 信号将忽略频次限制强制发送">
+             <Switch checkedChildren="开启" unCheckedChildren="关闭" disabled={!enabled} />
         </Form.Item>
 
         <Form.Item>

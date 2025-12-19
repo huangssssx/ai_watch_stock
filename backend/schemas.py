@@ -136,6 +136,10 @@ class GlobalPromptConfig(BaseModel):
 class AlertRateLimitConfig(BaseModel):
     enabled: bool = False
     max_per_hour_per_stock: int = 0
+    allowed_signals: List[str] = ["STRONG_BUY", "BUY", "SELL", "STRONG_SELL"]
+    allowed_urgencies: List[str] = ["紧急", "一般", "不紧急"]
+    suppress_duplicates: bool = True
+    bypass_rate_limit_for_strong_signals: bool = True
 
 class SystemConfigBase(BaseModel):
     key: str

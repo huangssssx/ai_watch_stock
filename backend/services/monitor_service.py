@@ -21,17 +21,33 @@ def _emit(event: str, payload: dict):
     except Exception:
         print(f"{event} {payload}")
 
-def _get_alert_rate_limit(db: Session):
+def _get_alert_config(db: Session):
     config = db.query(SystemConfig).filter(SystemConfig.key == "alert_rate_limit").first()
-    if not config or not config.value:
-        return None
-    try:
-        data = json.loads(config.value)
-        enabled = bool(data.get("enabled", False))
-        max_per_hour_per_stock = int(data.get("max_per_hour_per_stock", 0) or 0)
-        return {"enabled": enabled, "max_per_hour_per_stock": max_per_hour_per_stock}
-    except Exception:
-        return None
+    
+    # Default config
+    result = {
+        "enabled": False,
+        "max_per_hour_per_stock": 0,
+        "allowed_signals": ["STRONG_BUY", "BUY", "SELL", "STRONG_SELL"],
+        "allowed_urgencies": ["紧急", "一般", "不紧急"],
+        "suppress_duplicates": True,
+        "bypass_rate_limit_for_strong_signals": True
+    }
+
+    if config and config.value:
+        try:
+            data = json.loads(config.value)
+            # Merge with defaults
+            if "enabled" in data: result["enabled"] = bool(data["enabled"])
+            if "max_per_hour_per_stock" in data: result["max_per_hour_per_stock"] = int(data["max_per_hour_per_stock"] or 0)
+            if "allowed_signals" in data: result["allowed_signals"] = data["allowed_signals"]
+            if "allowed_urgencies" in data: result["allowed_urgencies"] = data["allowed_urgencies"]
+            if "suppress_duplicates" in data: result["suppress_duplicates"] = bool(data["suppress_duplicates"])
+            if "bypass_rate_limit_for_strong_signals" in data: result["bypass_rate_limit_for_strong_signals"] = bool(data["bypass_rate_limit_for_strong_signals"])
+        except Exception as e:
+            print(f"Error parsing alert config: {e}")
+            
+    return result
 
 def _canonicalize_signal(signal_value) -> str:
     if signal_value is None:
@@ -287,11 +303,34 @@ def process_stock(stock_id: int):
         alert_result = None
         alert_suppressed = False
 
-        # Filter: Only alert for Buy/Sell signals (ignore WAIT), and deduplicate content
-        should_send_email = canonical_signal in ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"]
-        alert_content_key = f"{canonical_signal}-{(analysis_json.get('action_advice') or '').strip()}"
+        # Load Alert Config
+        alert_config = _get_alert_config(db)
         
+        # Prepare variables for filtering and email
+        msg = analysis_json.get("message", "No message")
+        action_advice = analysis_json.get("action_advice", "No advice")
+        suggested_position = analysis_json.get("suggested_position", "-")
+        duration_text = analysis_json.get("duration", "-")
+        stop_loss = analysis_json.get("stop_loss_price", "-")
+        now_dt = datetime.datetime.now()
+        signal_cn, signal_color = _signal_display(canonical_signal)
+        duration_level, duration_color = _duration_severity(duration_text)
+
+        # Filter 1: Allowed Signals
+        allowed_signals = alert_config.get("allowed_signals", ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"])
+        should_send_email = canonical_signal in allowed_signals
+        
+        alert_content_key = f"{canonical_signal}-{(action_advice or '').strip()}"
+        
+        # Filter 2: Urgency
         if should_send_email:
+            allowed_urgencies = alert_config.get("allowed_urgencies", ["紧急", "一般", "不紧急"])
+            if duration_level not in allowed_urgencies:
+                should_send_email = False
+                # print(f"Alert suppressed due to urgency level '{duration_level}'")
+
+        # Filter 3: Deduplication
+        if should_send_email and alert_config.get("suppress_duplicates", True):
             last_content = _last_alert_content_by_stock_id.get(stock.id)
             if last_content == alert_content_key:
                 should_send_email = False
@@ -299,14 +338,6 @@ def process_stock(stock_id: int):
 
         if should_send_email:
             alert_attempted = True
-            msg = analysis_json.get("message", "No message")
-            action_advice = analysis_json.get("action_advice", "No advice")
-            suggested_position = analysis_json.get("suggested_position", "-")
-            duration_text = analysis_json.get("duration", "-")
-            stop_loss = analysis_json.get("stop_loss_price", "-")
-            now_dt = datetime.datetime.now()
-            signal_cn, signal_color = _signal_display(canonical_signal)
-            duration_level, duration_color = _duration_severity(duration_text)
             
             email_body = f"""
 <div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial; font-size:14px; color:#111827; line-height:1.6;">
@@ -350,11 +381,13 @@ def process_stock(stock_id: int):
 </div>
 """.strip()
 
-            alert_rate_limit_config = _get_alert_rate_limit(db)
-            max_per_hour_str = os.getenv("ALERT_MAX_PER_HOUR_PER_STOCK", "").strip() if not alert_rate_limit_config else ""
-            max_per_hour_cfg = alert_rate_limit_config.get("max_per_hour_per_stock", 0) if alert_rate_limit_config else 0
-            enabled_cfg = alert_rate_limit_config.get("enabled", False) if alert_rate_limit_config else False
-            bypass_rate_limit = canonical_signal in ["STRONG_SELL", "STRONG_BUY"]
+            # Use loaded alert_config
+            max_per_hour_str = os.getenv("ALERT_MAX_PER_HOUR_PER_STOCK", "").strip() if not alert_config.get("enabled") else ""
+            max_per_hour_cfg = alert_config.get("max_per_hour_per_stock", 0)
+            enabled_cfg = alert_config.get("enabled", False)
+            
+            bypass_strong = alert_config.get("bypass_rate_limit_for_strong_signals", True)
+            bypass_rate_limit = bypass_strong and canonical_signal in ["STRONG_SELL", "STRONG_BUY"]
             if enabled_cfg and max_per_hour_cfg > 0 and not bypass_rate_limit:
                 now_ts = time.time()
                 history = _alert_history_by_stock_id.get(stock.id, [])
