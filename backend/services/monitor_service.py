@@ -236,7 +236,7 @@ def process_stock(stock_id: int):
         print(f"Processing stock: {stock.symbol} ({stock.name})")
 
         # 1. Fetch Data
-        context = {"symbol": stock.symbol}
+        context = {"symbol": stock.symbol, "name": stock.name}
         data_parts = []
         fetch_errors = []
         fetch_ok = 0

@@ -5,6 +5,7 @@ from database import get_db
 import models
 import schemas
 import json
+from jinja2 import Template
 from services.monitor_service import update_stock_job
 from services.data_fetcher import data_fetcher
 from services.ai_service import ai_service
@@ -102,7 +103,7 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
     if not ai_config:
         raise HTTPException(status_code=404, detail="AI Config not found")
 
-    context = {"symbol": db_stock.symbol}
+    context = {"symbol": db_stock.symbol, "name": db_stock.name}
     data_parts = []
     for indicator in db_stock.indicators:
         data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context, indicator.post_process_json)
@@ -121,22 +122,24 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
     global_prompt_config = db.query(models.SystemConfig).filter(models.SystemConfig.key == "global_prompt").first()
     if global_prompt_config and global_prompt_config.value:
         try:
-            data = json.loads(global_prompt_config.value)
-            global_prompt = data.get("prompt_template", "")
-            account_info = data.get("account_info", "")
-        except:
-            pass
+            # Try to render jinja2 template
+            template = Template(global_prompt_config.value)
+            global_prompt = template.render(symbol=db_stock.symbol, name=db_stock.name)
+        except Exception as e:
+            print(f"Error rendering global prompt: {e}")
+            global_prompt = global_prompt_config.value
 
-    stock_prompt = db_stock.prompt_template
-    
-    if global_prompt and stock_prompt:
-        prompt_template = f"{global_prompt}\n\n【个股特别设定/持仓信息】\n{stock_prompt}"
-    elif stock_prompt:
-        prompt_template = stock_prompt
-    elif global_prompt:
-        prompt_template = global_prompt
+    # Load Account Info
+    account_config = db.query(models.SystemConfig).filter(models.SystemConfig.key == "account_info").first()
+    if account_config and account_config.value:
+         account_info = account_config.value
+
+    # Stock specific prompt overrides global prompt if exists? 
+    # Or we can combine them. For now let's append stock specific prompt to analysis instructions.
+    if db_stock.prompt_template:
+        prompt_template = db_stock.prompt_template
     else:
-        prompt_template = "Analyze the trend."
+        prompt_template = global_prompt
 
     system_prompt = (
         "你是一位拥有20年经验的资深量化基金经理，擅长短线博弈和趋势跟踪。"
@@ -167,6 +170,7 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
     user_prompt = f"""
     Current Time: {current_time_str}
     Stock Symbol: {context.get('symbol', 'Unknown')}
+    Stock Name: {context.get('name', '')}
 
     User Account Info:
     {(account_info or '').strip() or '-'}
