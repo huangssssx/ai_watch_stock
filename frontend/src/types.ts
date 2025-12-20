@@ -5,6 +5,7 @@ export interface Stock {
   is_monitoring: boolean;
   interval_seconds: number;
   monitoring_schedule?: string; // JSON string
+  only_trade_days?: boolean;
   prompt_template?: string;
   ai_provider_id?: number;
   indicators: IndicatorDefinition[];

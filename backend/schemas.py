@@ -76,6 +76,7 @@ class StockBase(BaseModel):
     monitoring_schedule: Optional[str] = None
     prompt_template: Optional[str] = None
     ai_provider_id: Optional[int] = None
+    only_trade_days: Optional[bool] = True
 
 class StockCreate(StockBase):
     indicator_ids: Optional[List[int]] = None
@@ -88,6 +89,7 @@ class StockUpdate(BaseModel):
     prompt_template: Optional[str] = None
     ai_provider_id: Optional[int] = None
     indicator_ids: Optional[List[int]] = None
+    only_trade_days: Optional[bool] = None
 
 class Stock(StockBase, ORMModel):
     id: int

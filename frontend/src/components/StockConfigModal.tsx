@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, Form, Input, Button, message, Select, InputNumber, Space, TimePicker } from 'antd';
+import { Modal, Form, Input, Button, message, Select, InputNumber, Space, TimePicker, Switch } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import type { Stock, IndicatorDefinition, AIConfig } from '../types';
@@ -12,6 +12,7 @@ type StockConfigFormValues = {
   indicator_ids?: number[];
   prompt_template?: string;
   interval_seconds?: number;
+  only_trade_days?: boolean;
   ai_provider_id?: number;
   monitoring_schedule_list?: MonitoringScheduleFormPeriod[];
 };
@@ -81,6 +82,7 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
       interval_seconds: stock.interval_seconds,
       ai_provider_id: stock.ai_provider_id,
       monitoring_schedule_list: scheduleList,
+      only_trade_days: stock.only_trade_days ?? true,
     });
   }, [form, stock, visible]);
 
@@ -124,6 +126,10 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
           <InputNumber min={10} max={3600} style={{ width: '100%' }} />
         </Form.Item>
         
+        <Form.Item name="only_trade_days" label="只在交易日监控" valuePropName="checked">
+          <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+        </Form.Item>
+
         <Form.Item label="监控时段">
           <Form.List name="monitoring_schedule_list">
             {(fields, { add, remove }) => (

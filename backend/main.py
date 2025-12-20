@@ -45,6 +45,13 @@ def ensure_db_schema():
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE ai_configs ADD COLUMN temperature FLOAT DEFAULT 0.1"))
 
+    if "stocks" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("stocks")}
+        if "only_trade_days" not in cols:
+            with engine.begin() as conn:
+                # Add column, default True (1 in SQLite/MySQL usually works with BOOLEAN)
+                conn.execute(text("ALTER TABLE stocks ADD COLUMN only_trade_days BOOLEAN DEFAULT 1"))
+
 @app.on_event("startup")
 def startup_event():
     ensure_db_schema()

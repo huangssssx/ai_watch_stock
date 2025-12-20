@@ -10,10 +10,61 @@ import json
 import time
 import os
 import html
+import akshare as ak
 
 scheduler = BackgroundScheduler()
 _alert_history_by_stock_id = {}
 _last_alert_content_by_stock_id = {}
+
+# Cache for trade day check
+_is_trade_day_cache = {"date": None, "is_trade": True}
+
+def _check_is_trade_day():
+    today = datetime.date.today()
+    if _is_trade_day_cache["date"] == today:
+        return _is_trade_day_cache["is_trade"]
+
+    try:
+        # Check if it's weekend first (simple heuristic)
+        if today.weekday() >= 5: # Saturday=5, Sunday=6
+            # Still check akshare in case of special workdays, but akshare is authoritative
+            pass
+
+        # Use akshare tool_trade_date_hist_sina or similar
+        # tool_trade_date_hist_sina returns a dataframe with trade_date column
+        # This API might be heavy, so caching is crucial.
+        # Alternatively, use a simpler API if available. 
+        # A common way is to check if today's date is in the list of recent trading dates.
+        
+        # Let's try fetching recent trade dates.
+        # This returns all history, might be big.
+        # Optimisation: Check basic weekend first? No, holidays exist.
+        
+        # Using tool_trade_date_hist_sina() returns all dates.
+        # Let's verify with a lightweight call if possible.
+        # For now, we will rely on akshare.tool_trade_date_hist_sina() 
+        # but filter for current year to speed up if possible? No param.
+        
+        # Fallback to simple weekday check if API fails
+        try:
+            trade_dates_df = ak.tool_trade_date_hist_sina()
+            trade_dates_list = trade_dates_df['trade_date'].astype(str).tolist()
+            today_str = today.strftime("%Y-%m-%d")
+            is_trade = today_str in trade_dates_list
+            _is_trade_day_cache["date"] = today
+            _is_trade_day_cache["is_trade"] = is_trade
+            print(f"Trade day check for {today_str}: {is_trade}")
+            return is_trade
+        except Exception as e:
+            print(f"Akshare trade date check failed: {e}. Fallback to weekday check.")
+            is_weekday = today.weekday() < 5
+            _is_trade_day_cache["date"] = today
+            _is_trade_day_cache["is_trade"] = is_weekday
+            return is_weekday
+
+    except Exception as e:
+        print(f"Error checking trade day: {e}")
+        return True # Default to True on error to not miss monitoring
 
 def _emit(event: str, payload: dict):
     try:
@@ -114,6 +165,12 @@ def process_stock(stock_id: int):
         if not stock.is_monitoring:
             _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "symbol": stock.symbol, "reason": "monitoring_disabled"})
             return
+
+        # Check trading day
+        if getattr(stock, 'only_trade_days', True):
+            if not _check_is_trade_day():
+                 _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "symbol": stock.symbol, "reason": "not_trade_day"})
+                 return
 
         # Check schedule
         schedule_str = stock.monitoring_schedule
