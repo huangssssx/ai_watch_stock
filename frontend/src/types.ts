@@ -17,6 +17,7 @@ export interface IndicatorDefinition {
   akshare_api: string;
   params_json: string;
   post_process_json?: string;
+  python_code?: string;
 }
 
 export interface AIConfig {

@@ -106,7 +106,7 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
     context = {"symbol": db_stock.symbol, "name": db_stock.name}
     data_parts = []
     for indicator in db_stock.indicators:
-        data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context, indicator.post_process_json)
+        data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context, indicator.post_process_json, indicator.python_code)
         data_parts.append(f"--- Indicator: {indicator.name} ---\n{data}\n")
     full_data = "\n".join(data_parts)
 

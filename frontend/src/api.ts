@@ -16,12 +16,12 @@ export const testRunStock = (id: number) => api.post<StockTestRunResponse>(`/sto
 
 export const getIndicators = () => api.get<IndicatorDefinition[]>('/indicators/');
 export const createIndicator = (
-  indicator: Pick<IndicatorDefinition, 'name' | 'akshare_api' | 'params_json' | 'post_process_json'>,
+  indicator: Pick<IndicatorDefinition, 'name' | 'akshare_api' | 'params_json' | 'post_process_json' | 'python_code'>,
 ) =>
   api.post<IndicatorDefinition>('/indicators/', indicator);
 export const updateIndicator = (
   id: number,
-  indicator: Partial<Pick<IndicatorDefinition, 'name' | 'akshare_api' | 'params_json' | 'post_process_json'>>,
+  indicator: Partial<Pick<IndicatorDefinition, 'name' | 'akshare_api' | 'params_json' | 'post_process_json' | 'python_code'>>,
 ) =>
   api.put<IndicatorDefinition>(`/indicators/${id}`, indicator);
 export const deleteIndicator = (id: number) => api.delete(`/indicators/${id}`);

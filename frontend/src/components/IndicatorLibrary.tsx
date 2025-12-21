@@ -1,15 +1,22 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Form, Input, Modal, Table, message, Space } from 'antd';
-import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
+import { Button, Form, Input, Modal, Table, message, Space, Collapse } from 'antd';
+import { DeleteOutlined, EditOutlined, CodeOutlined } from '@ant-design/icons';
 import type { IndicatorDefinition } from '../types';
 import { createIndicator, deleteIndicator, getIndicators, updateIndicator } from '../api';
 import type { ColumnsType } from 'antd/es/table';
+import Editor from 'react-simple-code-editor';
+import Prism from 'prismjs';
+const { highlight, languages } = Prism;
+import 'prismjs/components/prism-clike';
+import 'prismjs/components/prism-python';
+import 'prismjs/themes/prism.css';
 
 type IndicatorCreateFormValues = {
   name: string;
   akshare_api: string;
   params_json: string;
   post_process_json?: string;
+  python_code?: string;
 };
 
 const IndicatorLibrary: React.FC = () => {
@@ -60,6 +67,7 @@ const IndicatorLibrary: React.FC = () => {
       akshare_api: record.akshare_api,
       params_json: record.params_json,
       post_process_json: record.post_process_json,
+      python_code: record.python_code,
     });
     setOpen(true);
   };
@@ -81,10 +89,16 @@ const IndicatorLibrary: React.FC = () => {
   };
 
   const columns: ColumnsType<IndicatorDefinition> = [
-    { title: '名称', dataIndex: 'name', key: 'name', width: 200 },
-    { title: 'AkShare 接口名', dataIndex: 'akshare_api', key: 'akshare_api', width: 240 },
+    { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
+    { title: 'AkShare 接口名', dataIndex: 'akshare_api', key: 'akshare_api', width: 200 },
     { title: '参数 JSON', dataIndex: 'params_json', key: 'params_json', ellipsis: true },
-    { title: '后处理 JSON', dataIndex: 'post_process_json', key: 'post_process_json', ellipsis: true },
+    { 
+      title: 'Python 代码', 
+      dataIndex: 'python_code', 
+      key: 'python_code',
+      width: 100,
+      render: (code: string) => code ? <CodeOutlined style={{ color: '#1890ff' }} /> : '-'
+    },
     {
       title: '操作',
       key: 'action',
@@ -112,34 +126,74 @@ const IndicatorLibrary: React.FC = () => {
         open={open}
         onOk={form.submit}
         onCancel={handleCancel}
+        width={800}
       >
         <Form
           form={form}
           onFinish={handleSubmit}
           layout="vertical"
-          initialValues={{ params_json: '{}', post_process_json: '' }}
+          initialValues={{ params_json: '{}', post_process_json: '', python_code: '' }}
         >
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
-            <Input placeholder="例如：分时、日线、资金流向" />
+            <Input placeholder="例如：ATR指标、MACD指标" />
           </Form.Item>
           <Form.Item
             name="akshare_api"
             label="AkShare 接口名"
             rules={[{ required: true, message: '请输入 AkShare 接口名' }]}
           >
-            <Input placeholder="例如：stock_zh_a_spot_em" />
+            <Input placeholder="例如：stock_zh_a_hist" />
           </Form.Item>
           <Form.Item name="params_json" label="参数 JSON" rules={[{ required: true, message: '请输入参数 JSON' }]}>
-            <Input.TextArea rows={4} placeholder='{"symbol":"{symbol}","start_date":"{today-20}"}' />
+            <Input.TextArea rows={2} placeholder='{"symbol":"{symbol}","period":"daily","start_date":"{today-50}","end_date":"{today}"}' />
           </Form.Item>
-          <Form.Item name="post_process_json" label="后处理 JSON（可选）">
-            <Input.TextArea
-              rows={4}
-              placeholder='{"select_columns":["日期","收盘","换手率"],"sort_by":"日期","tail":30}'
-            />
+
+          <Form.Item 
+            name="python_code" 
+            label="Python 处理脚本 (df 为 Pandas DataFrame)"
+            help="可用变量: df (DataFrame), pd (pandas), np (numpy)。直接修改 df 即可。"
+          >
+            <PythonEditor />
           </Form.Item>
+
+          <Collapse 
+            ghost
+            items={[{
+              key: '1',
+              label: '旧版配置 (Post Process JSON)',
+              children: (
+                <Form.Item name="post_process_json" label="后处理 JSON">
+                  <Input.TextArea
+                    rows={4}
+                    placeholder='{"rename_columns": {"最高": "high"}, "numeric_columns": ["high"], "tail": 1}'
+                  />
+                </Form.Item>
+              )
+            }]}
+          />
         </Form>
       </Modal>
+    </div>
+  );
+};
+
+// Wrapper component to adapt Editor to Antd Form interface (value, onChange)
+const PythonEditor = ({ value, onChange }: { value?: string; onChange?: (val: string) => void }) => {
+  return (
+    <div style={{ border: '1px solid #d9d9d9', borderRadius: '4px', overflow: 'hidden' }}>
+      <Editor
+        value={value || ''}
+        onValueChange={code => onChange?.(code)}
+        highlight={code => highlight(code, languages.python, 'python')}
+        padding={10}
+        style={{
+          fontFamily: '"Fira code", "Fira Mono", monospace',
+          fontSize: 14,
+          backgroundColor: '#f5f5f5',
+          minHeight: '150px',
+        }}
+        textareaClassName="focus:outline-none"
+      />
     </div>
   );
 };

@@ -55,6 +55,7 @@ class IndicatorDefinitionBase(BaseModel):
     akshare_api: str
     params_json: str
     post_process_json: Optional[str] = None
+    python_code: Optional[str] = None
 
 class IndicatorDefinitionCreate(IndicatorDefinitionBase):
     pass
@@ -64,6 +65,7 @@ class IndicatorDefinitionUpdate(BaseModel):
     akshare_api: Optional[str] = None
     params_json: Optional[str] = None
     post_process_json: Optional[str] = None
+    python_code: Optional[str] = None
 
 class IndicatorDefinition(IndicatorDefinitionBase, ORMModel):
     id: int

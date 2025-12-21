@@ -243,7 +243,7 @@ def process_stock(stock_id: int):
         fetch_error = 0
         for indicator in stock.indicators:
             fetch_start = time.time()
-            data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context, indicator.post_process_json)
+            data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context, indicator.post_process_json, indicator.python_code)
             fetch_duration_ms = int((time.time() - fetch_start) * 1000)
             if isinstance(data, str) and data.startswith("Error"):
                 fetch_error += 1

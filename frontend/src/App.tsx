@@ -30,13 +30,19 @@ const App: React.FC = () => {
         <div style={{ height: 32, margin: 16, background: 'rgba(255, 255, 255, 0.2)', textAlign: 'center', color: 'white', lineHeight: '32px', overflow: 'hidden', whiteSpace: 'nowrap' }}>
           {collapsed ? 'AI' : '智能盯盘'}
         </div>
-        <Menu theme="dark" defaultSelectedKeys={['1']} mode="inline" onClick={(e) => setSelectedKey(e.key)}>
-          <Menu.Item key="1" icon={<DashboardOutlined />}>看盘</Menu.Item>
-          <Menu.Item key="2" icon={<RobotOutlined />}>AI 模型</Menu.Item>
-          <Menu.Item key="4" icon={<AppstoreOutlined />}>指标库</Menu.Item>
-          <Menu.Item key="3" icon={<HistoryOutlined />}>日志</Menu.Item>
-          <Menu.Item key="5" icon={<ToolOutlined />}>系统设置</Menu.Item>
-        </Menu>
+        <Menu 
+          theme="dark" 
+          defaultSelectedKeys={['1']} 
+          mode="inline" 
+          onClick={(e) => setSelectedKey(e.key)}
+          items={[
+            { key: '1', icon: <DashboardOutlined />, label: '看盘' },
+            { key: '2', icon: <RobotOutlined />, label: 'AI 模型' },
+            { key: '4', icon: <AppstoreOutlined />, label: '指标库' },
+            { key: '3', icon: <HistoryOutlined />, label: '日志' },
+            { key: '5', icon: <ToolOutlined />, label: '系统设置' },
+          ]}
+        />
       </Sider>
       <Layout className="site-layout">
         <Header style={{ padding: 0, background: '#fff' }} />
