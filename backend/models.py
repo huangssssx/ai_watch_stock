@@ -86,3 +86,33 @@ class SystemConfig(Base):
     key = Column(String, primary_key=True, index=True) # e.g., "email_config", "global_prompt"
     value = Column(Text) # JSON string or plain text
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+class StockScreener(Base):
+    __tablename__ = "stock_screeners"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    description = Column(String, nullable=True)
+    script_content = Column(Text, default="")
+    cron_expression = Column(String, nullable=True)  # e.g., "0 15 * * *"
+    is_active = Column(Boolean, default=False)
+    
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    last_run_status = Column(String, default="pending") # pending, success, failed
+    last_run_log = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    results = relationship("ScreenerResult", back_populates="screener", cascade="all, delete-orphan")
+
+class ScreenerResult(Base):
+    __tablename__ = "screener_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    screener_id = Column(Integer, ForeignKey("stock_screeners.id"))
+    run_at = Column(DateTime(timezone=True), server_default=func.now())
+    result_json = Column(Text) # JSON list of dicts
+    count = Column(Integer, default=0)
+
+    screener = relationship("StockScreener", back_populates="results")
