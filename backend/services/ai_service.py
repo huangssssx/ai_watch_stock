@@ -72,7 +72,8 @@ class AIService:
                     {"role": "user", "content": user_content}
                 ],
                 response_format={"type": "json_object"}, # Force JSON if model supports it, else prompt engineering
-                temperature=ai_config.get("temperature", 0.1)
+                temperature=ai_config.get("temperature", 0.1),
+                
             )
             
             content = response.choices[0].message.content

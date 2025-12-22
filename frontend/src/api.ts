@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig } from './types';
+import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse } from './types';
 
 const API_URL = 'http://localhost:8000';
 
@@ -25,6 +25,8 @@ export const updateIndicator = (
 ) =>
   api.put<IndicatorDefinition>(`/indicators/${id}`, indicator);
 export const deleteIndicator = (id: number) => api.delete(`/indicators/${id}`);
+export const testIndicator = (id: number, payload: IndicatorTestRequest) =>
+  api.post<IndicatorTestResponse>(`/indicators/${id}/test`, payload);
 
 export const getAIConfigs = () => api.get<AIConfig[]>('/ai-configs/');
 export const createAIConfig = (config: Partial<AIConfig>) => api.post<AIConfig>('/ai-configs/', config);

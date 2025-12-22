@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
+import pydantic
 
 try:
     from pydantic import ConfigDict
@@ -8,11 +9,10 @@ except Exception:
     ConfigDict = None
 
 class ORMModel(BaseModel):
-    if ConfigDict is not None:
+    if str(getattr(pydantic, "__version__", "")).startswith("2") and ConfigDict is not None:
         model_config = ConfigDict(from_attributes=True)
-    else:
-        class Config:
-            orm_mode = True
+    class Config:
+        orm_mode = True
 
 # AI Config
 class AIConfigBase(BaseModel):
@@ -37,7 +37,7 @@ class AIConfigUpdate(BaseModel):
     max_tokens: Optional[int] = None
     is_active: Optional[bool] = None
 
-class AIConfig(AIConfigBase, ORMModel):
+class AIConfig(ORMModel, AIConfigBase):
     id: int
 
 class AIConfigTestRequest(BaseModel):
@@ -67,8 +67,21 @@ class IndicatorDefinitionUpdate(BaseModel):
     post_process_json: Optional[str] = None
     python_code: Optional[str] = None
 
-class IndicatorDefinition(IndicatorDefinitionBase, ORMModel):
+class IndicatorDefinition(ORMModel, IndicatorDefinitionBase):
     id: int
+
+class IndicatorTestRequest(BaseModel):
+    symbol: str
+    name: Optional[str] = None
+
+class IndicatorTestResponse(BaseModel):
+    ok: bool
+    indicator_id: int
+    indicator_name: str
+    symbol: str
+    raw: str
+    parsed: Optional[Any] = None
+    error: Optional[str] = None
 
 # Stock
 class StockBase(BaseModel):
@@ -93,7 +106,7 @@ class StockUpdate(BaseModel):
     indicator_ids: Optional[List[int]] = None
     only_trade_days: Optional[bool] = None
 
-class Stock(StockBase, ORMModel):
+class Stock(ORMModel, StockBase):
     id: int
     is_monitoring: bool
     created_at: Optional[datetime]
@@ -120,7 +133,7 @@ class LogBase(BaseModel):
     ai_analysis: Dict[str, Any]
     is_alert: bool
 
-class Log(LogBase, ORMModel):
+class Log(ORMModel, LogBase):
     id: int
     timestamp: datetime
     stock: Optional[Stock] = None
@@ -149,5 +162,5 @@ class SystemConfigBase(BaseModel):
     key: str
     value: str
 
-class SystemConfig(SystemConfigBase, ORMModel):
+class SystemConfig(ORMModel, SystemConfigBase):
     updated_at: Optional[datetime]

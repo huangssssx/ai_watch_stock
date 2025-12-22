@@ -20,6 +20,21 @@ export interface IndicatorDefinition {
   python_code?: string;
 }
 
+export interface IndicatorTestRequest {
+  symbol: string;
+  name?: string;
+}
+
+export interface IndicatorTestResponse {
+  ok: boolean;
+  indicator_id: number;
+  indicator_name: string;
+  symbol: string;
+  raw: string;
+  parsed?: unknown;
+  error?: string | null;
+}
+
 export interface AIConfig {
   id: number;
   name: string;

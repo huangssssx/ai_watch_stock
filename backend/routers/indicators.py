@@ -4,6 +4,8 @@ from typing import List
 from database import get_db
 import models
 import schemas
+import json
+from services.data_fetcher import data_fetcher
 
 router = APIRouter(prefix="/indicators", tags=["indicators"])
 
@@ -51,3 +53,49 @@ def delete_indicator(indicator_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True}
 
+@router.post("/{indicator_id}/test", response_model=schemas.IndicatorTestResponse)
+def test_indicator(indicator_id: int, payload: schemas.IndicatorTestRequest, db: Session = Depends(get_db)):
+    db_indicator = (
+        db.query(models.IndicatorDefinition)
+        .filter(models.IndicatorDefinition.id == indicator_id)
+        .first()
+    )
+    if not db_indicator:
+        raise HTTPException(status_code=404, detail="Indicator not found")
+
+    context = {"symbol": payload.symbol, "name": payload.name or ""}
+    raw = data_fetcher.fetch(
+        db_indicator.akshare_api,
+        db_indicator.params_json,
+        context,
+        db_indicator.post_process_json,
+        db_indicator.python_code,
+    )
+
+    if isinstance(raw, str) and (raw.startswith("Error") or raw.startswith("No data returned")):
+        return {
+            "ok": False,
+            "indicator_id": db_indicator.id,
+            "indicator_name": db_indicator.name,
+            "symbol": payload.symbol,
+            "raw": raw,
+            "parsed": None,
+            "error": raw,
+        }
+
+    parsed = None
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+
+    return {
+        "ok": True,
+        "indicator_id": db_indicator.id,
+        "indicator_name": db_indicator.name,
+        "symbol": payload.symbol,
+        "raw": raw,
+        "parsed": parsed,
+        "error": None,
+    }

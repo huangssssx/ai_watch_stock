@@ -122,9 +122,21 @@ def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
     global_prompt_config = db.query(models.SystemConfig).filter(models.SystemConfig.key == "global_prompt").first()
     if global_prompt_config and global_prompt_config.value:
         try:
-            # Try to render jinja2 template
-            template = Template(global_prompt_config.value)
+            raw_value = global_prompt_config.value
+            prompt_text = raw_value
+            parsed_account_info = ""
+            try:
+                parsed = json.loads(raw_value)
+                if isinstance(parsed, dict):
+                    prompt_text = str(parsed.get("prompt_template") or "")
+                    parsed_account_info = str(parsed.get("account_info") or "")
+            except Exception:
+                pass
+
+            template = Template(prompt_text)
             global_prompt = template.render(symbol=db_stock.symbol, name=db_stock.name)
+            if parsed_account_info.strip():
+                account_info = parsed_account_info
         except Exception as e:
             print(f"Error rendering global prompt: {e}")
             global_prompt = global_prompt_config.value

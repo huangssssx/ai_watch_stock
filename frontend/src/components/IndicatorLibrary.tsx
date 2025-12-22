@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Button, Form, Input, Modal, Table, message, Space, Collapse } from 'antd';
-import { DeleteOutlined, EditOutlined, CodeOutlined } from '@ant-design/icons';
-import type { IndicatorDefinition } from '../types';
-import { createIndicator, deleteIndicator, getIndicators, updateIndicator } from '../api';
+import { DeleteOutlined, EditOutlined, CodeOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import type { IndicatorDefinition, IndicatorTestResponse } from '../types';
+import { createIndicator, deleteIndicator, getIndicators, testIndicator, updateIndicator } from '../api';
 import type { ColumnsType } from 'antd/es/table';
 import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
@@ -25,6 +25,11 @@ const IndicatorLibrary: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form] = Form.useForm();
+  const [testOpen, setTestOpen] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testIndicatorItem, setTestIndicatorItem] = useState<IndicatorDefinition | null>(null);
+  const [testResult, setTestResult] = useState<IndicatorTestResponse | null>(null);
+  const [testForm] = Form.useForm();
 
   const refresh = async () => {
     setLoading(true);
@@ -88,6 +93,58 @@ const IndicatorLibrary: React.FC = () => {
     }
   };
 
+  const handleOpenTest = (record: IndicatorDefinition) => {
+    setTestIndicatorItem(record);
+    setTestResult(null);
+    testForm.resetFields();
+    setTestOpen(true);
+  };
+
+  const handleCloseTest = () => {
+    setTestOpen(false);
+    setTesting(false);
+    setTestIndicatorItem(null);
+    setTestResult(null);
+    testForm.resetFields();
+  };
+
+  const handleRunTest = async () => {
+    const indicator = testIndicatorItem;
+    if (!indicator) return;
+
+    const values = await testForm.validateFields();
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await testIndicator(indicator.id, { symbol: values.symbol });
+      setTestResult(res.data);
+      if (res.data.ok) {
+        message.success('测试完成');
+      } else {
+        message.error(res.data.error || '测试失败');
+        if (res.data.error === 'Indicator not found') {
+          refresh();
+          message.info('指标不存在，已刷新列表');
+        }
+      }
+    } catch {
+      message.error('测试失败');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const testOutput = (() => {
+    if (!testResult) return '';
+    if (testResult.ok) {
+      if (testResult.parsed !== undefined && testResult.parsed !== null) {
+        return JSON.stringify(testResult.parsed, null, 2);
+      }
+      return testResult.raw;
+    }
+    return testResult.error || testResult.raw || '';
+  })();
+
   const columns: ColumnsType<IndicatorDefinition> = [
     { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
     { title: 'AkShare 接口名', dataIndex: 'akshare_api', key: 'akshare_api', width: 200 },
@@ -102,9 +159,10 @@ const IndicatorLibrary: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 120,
+      width: 160,
       render: (_: unknown, record: IndicatorDefinition) => (
         <Space>
+          <Button icon={<PlayCircleOutlined />} onClick={() => handleOpenTest(record)} />
           <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
           <Button danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />
         </Space>
@@ -171,6 +229,26 @@ const IndicatorLibrary: React.FC = () => {
               )
             }]}
           />
+        </Form>
+      </Modal>
+
+      <Modal
+        title={testIndicatorItem ? `测试指标：${testIndicatorItem.name}` : '测试指标'}
+        open={testOpen}
+        onOk={handleRunTest}
+        onCancel={handleCloseTest}
+        confirmLoading={testing}
+        okText="测试"
+        cancelText="关闭"
+        width={900}
+      >
+        <Form form={testForm} layout="vertical" initialValues={{ symbol: '' }}>
+          <Form.Item name="symbol" label="股票代码" rules={[{ required: true, message: '请输入股票代码' }]}>
+            <Input placeholder="例如：600000 / 000001" />
+          </Form.Item>
+          <Form.Item label="输出">
+            <Input.TextArea value={testOutput} readOnly rows={14} placeholder="点击确定开始测试" />
+          </Form.Item>
         </Form>
       </Modal>
     </div>

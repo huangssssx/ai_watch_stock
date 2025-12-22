@@ -83,7 +83,7 @@ def get_global_prompt(db: Session = Depends(get_db)):
 @router.put("/global-prompt", response_model=schemas.GlobalPromptConfig)
 def update_global_prompt(config: schemas.GlobalPromptConfig, db: Session = Depends(get_db)):
     db_config = db.query(models.SystemConfig).filter(models.SystemConfig.key == "global_prompt").first()
-    value_str = config.json()
+    value_str = config.json(ensure_ascii=False)
     
     if not db_config:
         db_config = models.SystemConfig(key="global_prompt", value=value_str)

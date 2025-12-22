@@ -311,10 +311,20 @@ def process_stock(stock_id: int):
         global_prompt_config = db.query(SystemConfig).filter(SystemConfig.key == "global_prompt").first()
         if global_prompt_config and global_prompt_config.value:
             try:
-                data = json.loads(global_prompt_config.value)
-                global_prompt = data.get("prompt_template", "")
-            except:
-                pass
+                raw_value = global_prompt_config.value
+                prompt_text = raw_value
+                try:
+                    parsed = json.loads(raw_value)
+                    if isinstance(parsed, dict):
+                        prompt_text = str(parsed.get("prompt_template") or "")
+                except Exception:
+                    pass
+
+                from jinja2 import Template
+
+                global_prompt = Template(prompt_text).render(symbol=stock.symbol, name=stock.name)
+            except Exception:
+                global_prompt = ""
         
         stock_prompt = stock.prompt_template
         
