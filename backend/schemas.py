@@ -164,3 +164,34 @@ class SystemConfigBase(BaseModel):
 
 class SystemConfig(ORMModel, SystemConfigBase):
     updated_at: Optional[datetime]
+
+# Research Script
+class ResearchScriptBase(BaseModel):
+    title: str
+    description: Optional[str] = None
+    script_content: str
+
+class ResearchScriptCreate(ResearchScriptBase):
+    pass
+
+class ResearchScriptUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    script_content: Optional[str] = None
+
+class ResearchScript(ORMModel, ResearchScriptBase):
+    id: int
+    last_run_at: Optional[datetime] = None
+    last_run_status: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+class ResearchRunRequest(BaseModel):
+    script_content: str
+
+class ResearchRunResponse(BaseModel):
+    success: bool
+    log: str
+    result: Optional[List[Dict[str, Any]]] = None # For table
+    chart: Optional[Dict[str, Any]] = None # For chart
+    error: Optional[str] = None

@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { Layout, Menu } from 'antd';
-import { DashboardOutlined, HistoryOutlined, AppstoreOutlined, RobotOutlined, ToolOutlined, FilterOutlined } from '@ant-design/icons';
+import { DashboardOutlined, HistoryOutlined, AppstoreOutlined, RobotOutlined, ToolOutlined, FilterOutlined, ExperimentOutlined } from '@ant-design/icons';
 import StockTable from './components/StockTable.tsx';
 import AISettings from './components/AISettings.tsx';
 import LogsViewer from './components/LogsViewer.tsx';
 import IndicatorLibrary from './components/IndicatorLibrary.tsx';
 import Settings from './components/Settings.tsx';
 import ScreenerPage from './components/ScreenerPage.tsx';
+import ResearchPage from './components/ResearchPage.tsx';
 
 const { Header, Content, Sider } = Layout;
 
@@ -22,6 +23,7 @@ const App: React.FC = () => {
       case '4': return <IndicatorLibrary />;
       case '5': return <Settings />;
       case '6': return <ScreenerPage />;
+      case '7': return <ResearchPage />;
       default: return <StockTable />;
     }
   };
@@ -41,6 +43,7 @@ const App: React.FC = () => {
             { key: '1', icon: <DashboardOutlined />, label: '看盘' },
             { key: '2', icon: <RobotOutlined />, label: 'AI 模型' },
             { key: '6', icon: <FilterOutlined />, label: '选股' },
+            { key: '7', icon: <ExperimentOutlined />, label: '数据实验室' },
             { key: '4', icon: <AppstoreOutlined />, label: '指标库' },
             { key: '3', icon: <HistoryOutlined />, label: '日志' },
             { key: '5', icon: <ToolOutlined />, label: '系统设置' },

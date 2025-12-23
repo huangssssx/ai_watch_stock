@@ -1,11 +1,17 @@
 import axios from 'axios';
-import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse } from './types';
+import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse, ResearchScript, ResearchRunResponse } from './types';
 
 const API_URL = 'http://localhost:8000';
 
 export const api = axios.create({
   baseURL: API_URL,
 });
+
+export const getResearchScripts = () => api.get<ResearchScript[]>('/research/');
+export const createResearchScript = (script: Partial<ResearchScript>) => api.post<ResearchScript>('/research/', script);
+export const updateResearchScript = (id: number, script: Partial<ResearchScript>) => api.put<ResearchScript>(`/research/${id}`, script);
+export const deleteResearchScript = (id: number) => api.delete(`/research/${id}`);
+export const runResearchScript = (script_content: string) => api.post<ResearchRunResponse>('/research/run', { script_content });
 
 export const getStocks = () => api.get<Stock[]>('/stocks/');
 export const createStock = (stock: Partial<Stock> & { indicator_ids?: number[] }) => api.post<Stock>('/stocks/', stock);

@@ -116,3 +116,17 @@ class ScreenerResult(Base):
     count = Column(Integer, default=0)
 
     screener = relationship("StockScreener", back_populates="results")
+
+class ResearchScript(Base):
+    __tablename__ = "research_scripts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, unique=True, index=True)
+    description = Column(String, nullable=True)
+    script_content = Column(Text, default="")
+    
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    last_run_status = Column(String, default="pending") # pending, success, failed
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

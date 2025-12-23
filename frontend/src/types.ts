@@ -122,3 +122,22 @@ export interface AlertRateLimitConfig {
   suppress_duplicates?: boolean;
   bypass_rate_limit_for_strong_signals?: boolean;
 }
+
+export interface ResearchScript {
+  id: number;
+  title: string;
+  description?: string;
+  script_content: string;
+  last_run_at?: string;
+  last_run_status?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ResearchRunResponse {
+  success: boolean;
+  log: string;
+  result?: Record<string, unknown>[];
+  chart?: Record<string, unknown>;
+  error?: string;
+}
