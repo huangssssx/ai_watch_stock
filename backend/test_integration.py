@@ -68,6 +68,69 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(log.ai_analysis['type'], 'warning')
         print("Integration test passed: Flow executed successfully and alert logged.")
 
+    @patch('services.data_fetcher.ak')
+    @patch('services.ai_service.OpenAI')
+    @patch('services.monitor_service.alert_service.send_email')
+    def test_test_run_can_send_email_when_enabled(self, mock_send_email, mock_openai, mock_ak):
+        mock_ak.stock_zh_a_spot_em.return_value.to_json.return_value = '[{"symbol": "600000", "price": 10.5}]'
+
+        mock_client = MagicMock()
+        mock_openai.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "type": "info",
+                "signal": "BUY",
+                "action_advice": "Test buy",
+                "suggested_position": "1成仓",
+                "duration": "1天",
+                "stop_loss_price": 9.9,
+                "message": "Test message",
+            }
+        )
+        mock_client.chat.completions.create.return_value = mock_response
+
+        mock_send_email.return_value = {"ok": True, "mocked": True, "receiver_email": "test@example.com", "error": None}
+
+        result = process_stock(self.stock.id, send_alerts=True, is_test=False, return_result=True, db=self.db)
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["is_alert"])
+        self.assertTrue(result["alert_attempted"])
+        mock_send_email.assert_called_once()
+
+    @patch('services.data_fetcher.ak')
+    @patch('services.ai_service.OpenAI')
+    def test_bypass_checks_runs_even_if_not_monitoring(self, mock_openai, mock_ak):
+        mock_ak.stock_zh_a_spot_em.return_value.to_json.return_value = '[{"symbol": "600000", "price": 10.5}]'
+
+        mock_client = MagicMock()
+        mock_openai.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "type": "info",
+                "signal": "WAIT",
+                "action_advice": "Test",
+                "suggested_position": "-",
+                "duration": "1天",
+                "stop_loss_price": 9.9,
+                "message": "Test message",
+            }
+        )
+        mock_client.chat.completions.create.return_value = mock_response
+
+        self.stock.is_monitoring = False
+        self.db.add(self.stock)
+        self.db.commit()
+
+        result = process_stock(self.stock.id, bypass_checks=True, send_alerts=False, is_test=False, return_result=True, db=self.db)
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result["ok"])
+        self.assertFalse(bool(result.get("skipped_reason")))
+
     @patch('services.ai_service.OpenAI')
     def test_chat_uses_system_role_for_openai_base_url(self, mock_openai):
         mock_client = MagicMock()

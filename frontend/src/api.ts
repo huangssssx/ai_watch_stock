@@ -24,7 +24,8 @@ export const createStock = (stock: Partial<Stock> & { indicator_ids?: number[] }
 export const updateStock = (id: number, stock: Partial<Stock> & { indicator_ids?: number[] }) =>
   api.put<Stock>(`/stocks/${id}`, stock);
 export const deleteStock = (id: number) => api.delete(`/stocks/${id}`);
-export const testRunStock = (id: number) => api.post<StockTestRunResponse>(`/stocks/${id}/test-run`);
+export const testRunStock = (id: number, options?: { send_alerts?: boolean; bypass_checks?: boolean }) =>
+  api.post<StockTestRunResponse>(`/stocks/${id}/test-run`, undefined, { params: options });
 
 export const getIndicators = () => api.get<IndicatorDefinition[]>('/indicators/');
 export const createIndicator = (

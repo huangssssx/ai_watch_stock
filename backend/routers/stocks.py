@@ -88,12 +88,12 @@ def delete_stock(stock_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 @router.post("/{stock_id}/test-run", response_model=schemas.StockTestRunResponse)
-def test_run_stock(stock_id: int, db: Session = Depends(get_db)):
+def test_run_stock(stock_id: int, send_alerts: bool = True, bypass_checks: bool = True, db: Session = Depends(get_db)):
     result = process_stock(
         stock_id,
-        bypass_checks=True,
-        send_alerts=False,
-        is_test=True,
+        bypass_checks=bypass_checks,
+        send_alerts=send_alerts,
+        is_test=False,
         return_result=True,
         db=db,
     )

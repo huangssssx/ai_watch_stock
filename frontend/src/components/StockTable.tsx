@@ -89,10 +89,14 @@ const StockTable: React.FC = () => {
     setTestModalVisible(true);
     setTesting(true);
     try {
-      const res = await testRunStock(stock.id);
+      const res = await testRunStock(stock.id, { send_alerts: true, bypass_checks: true });
       setTestResult(res.data);
-      if (res.data.ok) message.success('测试完成');
-      else message.error(res.data.error || '测试失败');
+      if (res.data.ok) {
+        if (res.data.skipped_reason) message.warning(`已跳过：${res.data.skipped_reason}`);
+        else message.success('测试完成');
+      } else {
+        message.error(res.data.error || '测试失败');
+      }
     } catch {
       message.error('测试失败（请确认已配置策略所需的 AI / 指标 / 规则脚本）');
     } finally {
@@ -204,7 +208,12 @@ const StockTable: React.FC = () => {
           </Card>
         )}
 
-        {testResult?.monitoring_mode !== 'ai_only' && (
+        {(() => {
+          const precheckSkips = new Set(['monitoring_disabled', 'outside_schedule', 'not_trade_day']);
+          const isPrecheckSkip = testResult?.skipped_reason ? precheckSkips.has(testResult.skipped_reason) : false;
+          if (isPrecheckSkip) return null;
+          if (testResult?.monitoring_mode === 'ai_only') return null;
+          return (
           <Card title="硬规则执行" size="small" style={{ marginBottom: 12 }}>
             <div style={{ marginBottom: 8 }}>
               触发：
@@ -218,9 +227,16 @@ const StockTable: React.FC = () => {
               </pre>
             </div>
           </Card>
-        )}
+          );
+        })()}
 
-        {testResult?.monitoring_mode !== 'script_only' && testResult?.ai_reply && (
+        {(() => {
+          const precheckSkips = new Set(['monitoring_disabled', 'outside_schedule', 'not_trade_day']);
+          const isPrecheckSkip = testResult?.skipped_reason ? precheckSkips.has(testResult.skipped_reason) : false;
+          if (isPrecheckSkip) return null;
+          if (testResult?.monitoring_mode === 'script_only') return null;
+          if (!testResult?.ai_reply) return null;
+          return (
           <Card title="AI 执行" size="small">
             <div style={{ marginBottom: 8 }}>
               模型：{testResult.model_name ?? '-'} / Base URL：{testResult.base_url ?? '-'} / 耗时：
@@ -252,7 +268,8 @@ const StockTable: React.FC = () => {
               </div>
             </div>
           </Card>
-        )}
+          );
+        })()}
 
         {!testResult && (
           <div>{testing ? '测试中，请稍候…' : '暂无结果'}</div>

@@ -208,12 +208,12 @@ def process_stock(
             _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "symbol": stock.symbol, "reason": "monitoring_disabled"})
             if return_result:
                 return {
-                    "ok": False,
+                    "ok": True,
                     "run_id": run_id,
                     "stock_id": stock.id,
                     "stock_symbol": stock.symbol,
                     "monitoring_mode": getattr(stock, "monitoring_mode", "ai_only") or "ai_only",
-                    "error": "monitoring_disabled",
+                    "skipped_reason": "monitoring_disabled",
                 }
             return
 
@@ -223,12 +223,12 @@ def process_stock(
                  _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "symbol": stock.symbol, "reason": "not_trade_day"})
                  if return_result:
                      return {
-                         "ok": False,
+                         "ok": True,
                          "run_id": run_id,
                          "stock_id": stock.id,
                          "stock_symbol": stock.symbol,
                          "monitoring_mode": getattr(stock, "monitoring_mode", "ai_only") or "ai_only",
-                         "error": "not_trade_day",
+                         "skipped_reason": "not_trade_day",
                      }
                  return
 
@@ -278,12 +278,12 @@ def process_stock(
                         )
                         if return_result:
                             return {
-                                "ok": False,
+                                "ok": True,
                                 "run_id": run_id,
                                 "stock_id": stock.id,
                                 "stock_symbol": stock.symbol,
                                 "monitoring_mode": getattr(stock, "monitoring_mode", "ai_only") or "ai_only",
-                                "error": "outside_schedule",
+                                "skipped_reason": "outside_schedule",
                             }
                         return
             except Exception as e:
