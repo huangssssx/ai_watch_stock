@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, Form, Input, Button, message, Select, InputNumber, Space, TimePicker, Switch } from 'antd';
-import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { Modal, Form, Input, Button, message, Select, InputNumber, Space, TimePicker, Switch, Divider, Tooltip, Row, Col } from 'antd';
+import { MinusCircleOutlined, PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import type { Stock, IndicatorDefinition, AIConfig } from '../types';
-import { updateStock, getIndicators, getAIConfigs } from '../api';
+import type { Stock, IndicatorDefinition, AIConfig, RuleScript } from '../types';
+import { updateStock, getIndicators, getAIConfigs, getRules } from '../api';
 
 type MonitoringSchedulePeriod = { start: string; end: string };
 type MonitoringScheduleFormPeriod = { start: dayjs.Dayjs | null; end: dayjs.Dayjs | null };
@@ -15,6 +15,8 @@ type StockConfigFormValues = {
   only_trade_days?: boolean;
   ai_provider_id?: number;
   monitoring_schedule_list?: MonitoringScheduleFormPeriod[];
+  monitoring_mode?: 'ai_only' | 'script_only' | 'hybrid';
+  rule_script_id?: number;
 };
 
 interface Props {
@@ -28,13 +30,18 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
   const [allIndicators, setAllIndicators] = useState<IndicatorDefinition[]>([]);
   const [loadingIndicators, setLoadingIndicators] = useState(false);
   const [aiConfigs, setAiConfigs] = useState<AIConfig[]>([]);
+  const [rules, setRules] = useState<RuleScript[]>([]);
+  
+  // Watch monitoring_mode to toggle fields
+  const monitoringMode = Form.useWatch('monitoring_mode', form);
 
   const fetchData = async () => {
     setLoadingIndicators(true);
     try {
-      const [indRes, aiRes] = await Promise.all([getIndicators(), getAIConfigs()]);
+      const [indRes, aiRes, ruleRes] = await Promise.all([getIndicators(), getAIConfigs(), getRules()]);
       setAllIndicators(indRes.data);
       setAiConfigs(aiRes.data);
+      setRules(ruleRes.data);
     } catch {
       message.error('加载配置数据失败');
     } finally {
@@ -83,6 +90,8 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
       ai_provider_id: stock.ai_provider_id,
       monitoring_schedule_list: scheduleList,
       only_trade_days: stock.only_trade_days ?? true,
+      monitoring_mode: stock.monitoring_mode || 'ai_only',
+      rule_script_id: stock.rule_script_id,
     });
   }, [form, stock, visible]);
 
@@ -109,6 +118,9 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
     }
   };
 
+  const showAIConfig = monitoringMode !== 'script_only';
+  const showRuleConfig = monitoringMode !== 'ai_only';
+
   return (
     <Modal 
       title={`配置 ${stock.symbol}`} 
@@ -121,14 +133,20 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
         form={form} 
         layout="vertical" 
         onFinish={handleUpdate}
+        initialValues={{ monitoring_mode: 'ai_only' }}
       >
-        <Form.Item name="interval_seconds" label="监测间隔（秒）">
-          <InputNumber min={10} max={3600} style={{ width: '100%' }} />
-        </Form.Item>
-        
-        <Form.Item name="only_trade_days" label="只在交易日监控" valuePropName="checked">
-          <Switch checkedChildren="开启" unCheckedChildren="关闭" />
-        </Form.Item>
+        <Row gutter={16}>
+          <Col span={12}>
+            <Form.Item name="interval_seconds" label="监测间隔（秒）">
+              <InputNumber min={10} max={3600} style={{ width: '100%' }} />
+            </Form.Item>
+          </Col>
+          <Col span={12}>
+            <Form.Item name="only_trade_days" label="只在交易日监控" valuePropName="checked">
+              <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+            </Form.Item>
+          </Col>
+        </Row>
 
         <Form.Item label="监控时段">
           <Form.List name="monitoring_schedule_list">
@@ -166,26 +184,66 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
           </Form.List>
         </Form.Item>
 
-        <Form.Item name="ai_provider_id" label="AI 配置">
-          <Select placeholder="请选择 AI 配置">
-            {aiConfigs.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
+        <Divider>策略配置</Divider>
+
+        <Form.Item 
+          name="monitoring_mode" 
+          label={
+            <span>
+              监控模式&nbsp;
+              <Tooltip title="AI Only: 每次都问AI; Script Only: 仅跑脚本规则; Hybrid: 脚本触发后才问AI (省钱)">
+                <QuestionCircleOutlined />
+              </Tooltip>
+            </span>
+          }
+        >
+          <Select>
+            <Select.Option value="ai_only">仅 AI 分析 (AI Only)</Select.Option>
+            <Select.Option value="script_only">仅硬规则 (Script Only)</Select.Option>
+            <Select.Option value="hybrid">混合漏斗 (Hybrid: Rule -》 AI)</Select.Option>
           </Select>
         </Form.Item>
-        <Form.Item name="indicator_ids" label="监控指标（可多选）">
-          <Select
-            mode="multiple"
-            placeholder="请选择用于监控的指标"
-            loading={loadingIndicators}
-            options={allIndicators.map((x) => ({
-              value: x.id,
-              label: `${x.name}（${x.akshare_api}）`,
-            }))}
-          />
-        </Form.Item>
-        <Form.Item name="prompt_template" label="分析提示词（Prompt）">
-          <Input.TextArea rows={4} />
-        </Form.Item>
-        <Button type="primary" htmlType="submit">保存</Button>
+
+        {showRuleConfig && (
+          <Form.Item 
+            name="rule_script_id" 
+            label="关联硬规则脚本" 
+            rules={[{ required: true, message: '请选择规则脚本' }]}
+            style={{ background: '#f6ffed', padding: 8, borderRadius: 4, border: '1px solid #b7eb8f' }}
+          >
+            <Select placeholder="请选择规则脚本">
+              {rules.map(r => <Select.Option key={r.id} value={r.id}>{r.name}</Select.Option>)}
+            </Select>
+          </Form.Item>
+        )}
+
+        {showAIConfig && (
+          <div style={{ background: '#e6f7ff', padding: 8, borderRadius: 4, border: '1px solid #91d5ff', marginBottom: 16 }}>
+            <Form.Item name="ai_provider_id" label="AI 配置" rules={[{ required: true, message: '请选择AI' }]}>
+              <Select placeholder="请选择 AI 配置">
+                {aiConfigs.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
+              </Select>
+            </Form.Item>
+            
+            <Form.Item name="indicator_ids" label="投喂指标（Context Data）">
+              <Select
+                mode="multiple"
+                placeholder="请选择投喂给 AI 的指标数据"
+                loading={loadingIndicators}
+                options={allIndicators.map((x) => ({
+                  value: x.id,
+                  label: `${x.name}（${x.akshare_api}）`,
+                }))}
+              />
+            </Form.Item>
+            
+            <Form.Item name="prompt_template" label="个股分析提示词 (Prompt)">
+              <Input.TextArea rows={4} placeholder="覆盖全局提示词..." />
+            </Form.Item>
+          </div>
+        )}
+
+        <Button type="primary" htmlType="submit" block size="large">保存配置</Button>
       </Form>
     </Modal>
   );

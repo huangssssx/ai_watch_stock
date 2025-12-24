@@ -8,6 +8,7 @@ import IndicatorLibrary from './components/IndicatorLibrary.tsx';
 import Settings from './components/Settings.tsx';
 import ScreenerPage from './components/ScreenerPage.tsx';
 import ResearchPage from './components/ResearchPage.tsx';
+import RuleLibrary from './components/RuleLibrary.tsx';
 
 const { Header, Content, Sider } = Layout;
 
@@ -24,6 +25,7 @@ const App: React.FC = () => {
       case '5': return <Settings />;
       case '6': return <ScreenerPage />;
       case '7': return <ResearchPage />;
+      case '8': return <RuleLibrary />;
       default: return <StockTable />;
     }
   };
@@ -43,6 +45,7 @@ const App: React.FC = () => {
             { key: '1', icon: <DashboardOutlined />, label: '看盘' },
             { key: '2', icon: <RobotOutlined />, label: 'AI 模型' },
             { key: '6', icon: <FilterOutlined />, label: '选股' },
+            { key: '8', icon: <ToolOutlined />, label: '规则库' },
             { key: '7', icon: <ExperimentOutlined />, label: '数据实验室' },
             { key: '4', icon: <AppstoreOutlined />, label: '指标库' },
             { key: '3', icon: <HistoryOutlined />, label: '日志' },

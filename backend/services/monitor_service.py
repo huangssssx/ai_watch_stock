@@ -1,7 +1,7 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session
 from database import SessionLocal
-from models import Stock, Log, AIConfig, SystemConfig
+from models import Stock, Log, AIConfig, SystemConfig, RuleScript
 from services.data_fetcher import data_fetcher
 from services.ai_service import ai_service
 from services.alert_service import alert_service
@@ -11,6 +11,8 @@ import time
 import os
 import html
 import akshare as ak
+import pandas as pd
+import numpy as np
 
 scheduler = BackgroundScheduler()
 _alert_history_by_stock_id = {}
@@ -25,27 +27,9 @@ def _check_is_trade_day():
         return _is_trade_day_cache["is_trade"]
 
     try:
-        # Check if it's weekend first (simple heuristic)
-        if today.weekday() >= 5: # Saturday=5, Sunday=6
-            # Still check akshare in case of special workdays, but akshare is authoritative
+        if today.weekday() >= 5: 
             pass
 
-        # Use akshare tool_trade_date_hist_sina or similar
-        # tool_trade_date_hist_sina returns a dataframe with trade_date column
-        # This API might be heavy, so caching is crucial.
-        # Alternatively, use a simpler API if available. 
-        # A common way is to check if today's date is in the list of recent trading dates.
-        
-        # Let's try fetching recent trade dates.
-        # This returns all history, might be big.
-        # Optimisation: Check basic weekend first? No, holidays exist.
-        
-        # Using tool_trade_date_hist_sina() returns all dates.
-        # Let's verify with a lightweight call if possible.
-        # For now, we will rely on akshare.tool_trade_date_hist_sina() 
-        # but filter for current year to speed up if possible? No param.
-        
-        # Fallback to simple weekday check if API fails
         try:
             trade_dates_df = ak.tool_trade_date_hist_sina()
             trade_dates_list = trade_dates_df['trade_date'].astype(str).tolist()
@@ -64,7 +48,7 @@ def _check_is_trade_day():
 
     except Exception as e:
         print(f"Error checking trade day: {e}")
-        return True # Default to True on error to not miss monitoring
+        return True 
 
 def _emit(event: str, payload: dict):
     try:
@@ -75,7 +59,6 @@ def _emit(event: str, payload: dict):
 def _get_alert_config(db: Session):
     config = db.query(SystemConfig).filter(SystemConfig.key == "alert_rate_limit").first()
     
-    # Default config
     result = {
         "enabled": False,
         "max_per_hour_per_stock": 0,
@@ -88,7 +71,6 @@ def _get_alert_config(db: Session):
     if config and config.value:
         try:
             data = json.loads(config.value)
-            # Merge with defaults
             if "enabled" in data: result["enabled"] = bool(data["enabled"])
             if "max_per_hour_per_stock" in data: result["max_per_hour_per_stock"] = int(data["max_per_hour_per_stock"] or 0)
             if "allowed_signals" in data: result["allowed_signals"] = data["allowed_signals"]
@@ -152,6 +134,33 @@ def _duration_severity(duration_text: str):
 def _to_html(text_value):
     text = "" if text_value is None else str(text_value)
     return html.escape(text).replace("\n", "<br/>")
+
+def _execute_rule_script(stock, rule_script):
+    if not rule_script or not rule_script.code:
+        return False, "No script code"
+    
+    try:
+        # Sandbox scope
+        local_scope = {
+            "ak": ak,
+            "pd": pd,
+            "np": np,
+            "datetime": datetime,
+            "time": time,
+            "symbol": stock.symbol,
+            "triggered": False,
+            "message": ""
+        }
+        
+        exec(rule_script.code, {}, local_scope)
+        
+        triggered = bool(local_scope.get("triggered", False))
+        message = str(local_scope.get("message", ""))
+        return triggered, message
+        
+    except Exception as e:
+        print(f"Error executing rule script for {stock.symbol}: {e}")
+        return False, f"Error: {e}"
 
 def process_stock(stock_id: int):
     start_time_perf = time.time()
@@ -219,6 +228,9 @@ def process_stock(stock_id: int):
             except Exception as e:
                 print(f"Error checking schedule for {stock.symbol}: {e}")
 
+        # Determine Mode
+        monitoring_mode = getattr(stock, "monitoring_mode", "ai_only") or "ai_only"
+        
         _emit(
             "monitor_start",
             {
@@ -229,135 +241,157 @@ def process_stock(stock_id: int):
                 "interval_seconds": stock.interval_seconds,
                 "in_schedule": is_in_schedule,
                 "schedule": parsed_schedule,
-                "indicators_count": len(stock.indicators or []),
+                "mode": monitoring_mode
             },
         )
 
-        print(f"Processing stock: {stock.symbol} ({stock.name})")
+        print(f"Processing stock: {stock.symbol} ({stock.name}) Mode: {monitoring_mode}")
 
-        # 1. Fetch Data
-        context = {"symbol": stock.symbol, "name": stock.name}
-        data_parts = []
-        fetch_errors = []
+        # Rule Execution (for script_only and hybrid)
+        script_triggered = False
+        script_msg = ""
+        
+        if monitoring_mode in ["script_only", "hybrid"]:
+            if stock.rule_script_id:
+                rule = db.query(RuleScript).filter(RuleScript.id == stock.rule_script_id).first()
+                if rule:
+                    script_triggered, script_msg = _execute_rule_script(stock, rule)
+                    if not script_triggered:
+                        _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "reason": "rule_not_triggered", "msg": script_msg})
+                        return
+                else:
+                    print(f"Rule script {stock.rule_script_id} not found")
+            else:
+                 print(f"No rule script configured for {monitoring_mode} mode")
+
+        # Prepare for Alert/AI
+        analysis_json = {}
+        raw_response = ""
+        full_data = ""
         fetch_ok = 0
         fetch_error = 0
-        for indicator in stock.indicators:
-            fetch_start = time.time()
-            data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context, indicator.post_process_json, indicator.python_code)
-            fetch_duration_ms = int((time.time() - fetch_start) * 1000)
-            if isinstance(data, str) and data.startswith("Error"):
-                fetch_error += 1
-                fetch_errors.append({"indicator": indicator.name, "api": indicator.akshare_api, "duration_ms": fetch_duration_ms, "error": data[:200]})
-            else:
-                fetch_ok += 1
-            data_parts.append(f"--- Indicator: {indicator.name} ---\n{data}\n")
-        
-        full_data = "\n".join(data_parts)
-
-        # 2. AI Analysis
-        if not stock.ai_provider_id:
-            print(f"No AI provider configured for {stock.symbol}")
-            _emit(
-                "monitor_finish",
-                {
-                    "run_id": run_id,
-                    "stock_id": stock.id,
-                    "symbol": stock.symbol,
-                    "duration_ms": int((time.time() - start_time_perf) * 1000),
-                    "ai_called": False,
-                    "reason": "no_ai_provider",
-                    "fetch_ok": fetch_ok,
-                    "fetch_error": fetch_error,
-                    "fetch_errors": fetch_errors,
-                    "data_chars": len(full_data),
-                },
-            )
-            return
-            
-        ai_config = db.query(AIConfig).filter(AIConfig.id == stock.ai_provider_id).first()
-        if not ai_config:
-            print(f"AI Config not found")
-            _emit(
-                "monitor_finish",
-                {
-                    "run_id": run_id,
-                    "stock_id": stock.id,
-                    "symbol": stock.symbol,
-                    "duration_ms": int((time.time() - start_time_perf) * 1000),
-                    "ai_called": False,
-                    "reason": "ai_config_not_found",
-                    "fetch_ok": fetch_ok,
-                    "fetch_error": fetch_error,
-                    "fetch_errors": fetch_errors,
-                    "data_chars": len(full_data),
-                },
-            )
-            return
-
-        config_dict = {
-            "api_key": ai_config.api_key,
-            "base_url": ai_config.base_url,
-            "model_name": ai_config.model_name,
-            "temperature": getattr(ai_config, "temperature", 0.1)
-        }
-        
-        # Truncate data based on max_tokens config (approx chars)
-        max_chars = ai_config.max_tokens if ai_config.max_tokens else 100000
-        data_for_ai = full_data[:max_chars]
-        data_truncated = len(full_data) > max_chars
-
-        # Use stock specific prompt or default
-        global_prompt = ""
-        global_prompt_config = db.query(SystemConfig).filter(SystemConfig.key == "global_prompt").first()
-        if global_prompt_config and global_prompt_config.value:
-            try:
-                raw_value = global_prompt_config.value
-                prompt_text = raw_value
-                try:
-                    parsed = json.loads(raw_value)
-                    if isinstance(parsed, dict):
-                        prompt_text = str(parsed.get("prompt_template") or "")
-                except Exception:
-                    pass
-
-                from jinja2 import Template
-
-                global_prompt = Template(prompt_text).render(symbol=stock.symbol, name=stock.name)
-            except Exception:
-                global_prompt = ""
-        
-        stock_prompt = stock.prompt_template
-        
+        fetch_errors = []
+        ai_duration_ms = 0
+        is_alert = False
+        prompt_source = ""
         prompt = ""
-        prompt_source = "system_default"
-        
-        if global_prompt and stock_prompt:
-            prompt = f"{global_prompt}\n\n【个股特别设定/持仓信息】\n{stock_prompt}"
-            prompt_source = "global_plus_stock"
-        elif stock_prompt:
-            prompt = stock_prompt
-            prompt_source = "stock_specific"
-        elif global_prompt:
-            prompt = global_prompt
-            prompt_source = "global_setting"
+        data_truncated = False
+        ai_model_name = "-"
+
+        # SCRIPT ONLY: Bypass AI
+        if monitoring_mode == "script_only":
+            analysis_json = {
+                "type": "warning",
+                "signal": "BUY", # Default to BUY if triggered
+                "action_advice": "Hard Rule Triggered",
+                "message": script_msg or "Rule triggered",
+                "duration": "Immediate",
+                "suggested_position": "Check Manually",
+                "stop_loss_price": "-"
+            }
+            is_alert = True
+            raw_response = f"Script Triggered: {script_msg}"
+
+        # AI ONLY or HYBRID (if triggered)
         else:
-            prompt = "Analyze the trend."
-            prompt_source = "system_default"
-        
-        ai_start = time.time()
-        analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict)
-        ai_duration_ms = int((time.time() - ai_start) * 1000)
-        
+            # 1. Fetch Data
+            context = {"symbol": stock.symbol, "name": stock.name}
+            data_parts = []
+            
+            for indicator in stock.indicators:
+                fetch_start = time.time()
+                data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context, indicator.post_process_json, indicator.python_code)
+                fetch_duration_ms = int((time.time() - fetch_start) * 1000)
+                if isinstance(data, str) and data.startswith("Error"):
+                    fetch_error += 1
+                    fetch_errors.append({"indicator": indicator.name, "api": indicator.akshare_api, "duration_ms": fetch_duration_ms, "error": data[:200]})
+                else:
+                    fetch_ok += 1
+                data_parts.append(f"--- Indicator: {indicator.name} ---\n{data}\n")
+            
+            full_data = "\n".join(data_parts)
+
+            # 2. AI Analysis
+            if not stock.ai_provider_id:
+                print(f"No AI provider configured for {stock.symbol}")
+                # We can return here if AI is mandatory for this mode
+                # But let's allow it to finish to log fetch errors
+                pass
+            else:
+                ai_config = db.query(AIConfig).filter(AIConfig.id == stock.ai_provider_id).first()
+                if not ai_config:
+                    print(f"AI Config not found")
+                else:
+                    ai_model_name = ai_config.model_name
+                    config_dict = {
+                        "api_key": ai_config.api_key,
+                        "base_url": ai_config.base_url,
+                        "model_name": ai_config.model_name,
+                        "temperature": getattr(ai_config, "temperature", 0.1)
+                    }
+                    
+                    max_chars = ai_config.max_tokens if ai_config.max_tokens else 100000
+                    data_for_ai = full_data[:max_chars]
+                    data_truncated = len(full_data) > max_chars
+
+                    # Load Prompts
+                    global_prompt = ""
+                    global_prompt_config = db.query(SystemConfig).filter(SystemConfig.key == "global_prompt").first()
+                    if global_prompt_config and global_prompt_config.value:
+                        try:
+                            raw_value = global_prompt_config.value
+                            prompt_text = raw_value
+                            try:
+                                parsed = json.loads(raw_value)
+                                if isinstance(parsed, dict):
+                                    prompt_text = str(parsed.get("prompt_template") or "")
+                            except Exception:
+                                pass
+
+                            from jinja2 import Template
+
+                            global_prompt = Template(prompt_text).render(symbol=stock.symbol, name=stock.name)
+                        except Exception:
+                            global_prompt = ""
+                    
+                    stock_prompt = stock.prompt_template
+                    
+                    prompt = ""
+                    prompt_source = "system_default"
+                    
+                    if global_prompt and stock_prompt:
+                        prompt = f"{global_prompt}\n\n【个股特别设定/持仓信息】\n{stock_prompt}"
+                        prompt_source = "global_plus_stock"
+                    elif stock_prompt:
+                        prompt = stock_prompt
+                        prompt_source = "stock_specific"
+                    elif global_prompt:
+                        prompt = global_prompt
+                        prompt_source = "global_setting"
+                    else:
+                        prompt = "Analyze the trend."
+                        prompt_source = "system_default"
+
+                    # Add script_msg to prompt if hybrid
+                    if monitoring_mode == "hybrid":
+                        prompt += f"\n\n【硬规则触发信息】\n{script_msg}"
+
+                    ai_start = time.time()
+                    analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict)
+                    ai_duration_ms = int((time.time() - ai_start) * 1000)
+                    
+                    signal = analysis_json.get("signal", "WAIT")
+                    canonical_signal = _canonicalize_signal(signal)
+                    analysis_json["signal"] = canonical_signal
+                    is_alert = (analysis_json.get("type") == "warning") or (canonical_signal != "WAIT")
+
         # 3. Log Result
         signal = analysis_json.get("signal", "WAIT")
         canonical_signal = _canonicalize_signal(signal)
-        analysis_json["signal"] = canonical_signal
-        # Alert if type is warning OR if signal is not WAIT (i.e. actionable advice)
-        is_alert = (analysis_json.get("type") == "warning") or (canonical_signal != "WAIT")
         
         log_entry = Log(
             stock_id=stock.id,
-            raw_data=f"Prompt Source: {prompt_source}\nPrompt Template: {prompt}\n\nData Context:\n{data_for_ai}", # Store the actual data sent
+            raw_data=f"Mode: {monitoring_mode}\nScript Msg: {script_msg}\nPrompt: {prompt}\nData: {full_data[:1000]}...",
             ai_response=raw_response,
             ai_analysis=analysis_json,
             is_alert=is_alert
@@ -394,7 +428,6 @@ def process_stock(stock_id: int):
             allowed_urgencies = alert_config.get("allowed_urgencies", ["紧急", "一般", "不紧急"])
             if duration_level not in allowed_urgencies:
                 should_send_email = False
-                # print(f"Alert suppressed due to urgency level '{duration_level}'")
 
         # Filter 3: Deduplication
         if should_send_email and alert_config.get("suppress_duplicates", True):
@@ -448,18 +481,30 @@ def process_stock(stock_id: int):
 </div>
 """.strip()
 
-            # Use loaded alert_config
             max_per_hour_str = os.getenv("ALERT_MAX_PER_HOUR_PER_STOCK", "").strip() if not alert_config.get("enabled") else ""
             max_per_hour_cfg = alert_config.get("max_per_hour_per_stock", 0)
             enabled_cfg = alert_config.get("enabled", False)
             
             bypass_strong = alert_config.get("bypass_rate_limit_for_strong_signals", True)
             bypass_rate_limit = bypass_strong and canonical_signal in ["STRONG_SELL", "STRONG_BUY"]
+            
+            should_limit = False
+            limit_val = 0
+            
             if enabled_cfg and max_per_hour_cfg > 0 and not bypass_rate_limit:
+                should_limit = True
+                limit_val = max_per_hour_cfg
+            elif max_per_hour_str and not bypass_rate_limit:
+                 try:
+                     limit_val = int(max_per_hour_str)
+                     if limit_val > 0: should_limit = True
+                 except: pass
+
+            if should_limit:
                 now_ts = time.time()
                 history = _alert_history_by_stock_id.get(stock.id, [])
                 history = [t for t in history if now_ts - t < 3600]
-                if len(history) >= max_per_hour_cfg:
+                if len(history) >= limit_val:
                     alert_suppressed = True
                     _alert_history_by_stock_id[stock.id] = history
                     _emit(
@@ -469,7 +514,7 @@ def process_stock(stock_id: int):
                             "stock_id": stock.id,
                             "symbol": stock.symbol,
                             "signal": canonical_signal,
-                            "max_per_hour": max_per_hour_cfg,
+                            "max_per_hour": limit_val,
                             "sent_last_hour": len(history),
                         },
                     )
@@ -477,44 +522,6 @@ def process_stock(stock_id: int):
                     subject = f"【AI盯盘】{stock.symbol} {stock.name} - {signal_cn}"
                     alert_result = alert_service.send_email(subject=subject, body=email_body, is_html=True)
                     history.append(now_ts)
-                    _alert_history_by_stock_id[stock.id] = history
-                    _last_alert_content_by_stock_id[stock.id] = alert_content_key
-                    print(f"Alert sent for {stock.symbol}")
-            elif max_per_hour_str:
-                try:
-                    max_per_hour = int(max_per_hour_str)
-                except ValueError:
-                    max_per_hour = 0
-                if max_per_hour > 0 and not bypass_rate_limit:
-                    now_ts = time.time()
-                    history = _alert_history_by_stock_id.get(stock.id, [])
-                    history = [t for t in history if now_ts - t < 3600]
-                    if len(history) >= max_per_hour:
-                        alert_suppressed = True
-                        _alert_history_by_stock_id[stock.id] = history
-                        _emit(
-                            "alert_suppressed",
-                            {
-                            "run_id": run_id,
-                            "stock_id": stock.id,
-                            "symbol": stock.symbol,
-                            "signal": canonical_signal,
-                            "max_per_hour": max_per_hour,
-                            "sent_last_hour": len(history),
-                        },
-                    )
-                    else:
-                        subject = f"【AI盯盘】{stock.symbol} {stock.name} - {signal_cn}"
-                        alert_result = alert_service.send_email(subject=subject, body=email_body, is_html=True)
-                        history.append(now_ts)
-                        _alert_history_by_stock_id[stock.id] = history
-                        _last_alert_content_by_stock_id[stock.id] = alert_content_key
-                        print(f"Alert sent for {stock.symbol}")
-                else:
-                    subject = f"【AI盯盘】{stock.symbol} {stock.name} - {signal_cn}"
-                    alert_result = alert_service.send_email(subject=subject, body=email_body, is_html=True)
-                    history = _alert_history_by_stock_id.get(stock.id, [])
-                    history.append(time.time())
                     _alert_history_by_stock_id[stock.id] = history
                     _last_alert_content_by_stock_id[stock.id] = alert_content_key
                     print(f"Alert sent for {stock.symbol}")
@@ -529,7 +536,6 @@ def process_stock(stock_id: int):
         
         # 5. Cleanup Logs
         try:
-            # Keep only last 3 days of logs for this stock
             cutoff_date = datetime.datetime.now() - datetime.timedelta(days=3)
             deleted_count = db.query(Log).filter(Log.stock_id == stock.id, Log.timestamp < cutoff_date).delete()
             if deleted_count > 0:
@@ -552,8 +558,8 @@ def process_stock(stock_id: int):
                 "fetch_errors": fetch_errors,
                 "data_chars": len(full_data),
                 "data_truncated": data_truncated,
-                "ai_called": True,
-                "ai_model": ai_config.model_name,
+                "ai_called": (monitoring_mode != "script_only") or (monitoring_mode == "hybrid" and script_triggered),
+                "ai_model": ai_model_name,
                 "ai_duration_ms": ai_duration_ms,
                 "signal": canonical_signal,
                 "type": analysis_json.get("type"),
@@ -582,7 +588,6 @@ def start_scheduler():
     scheduler.start()
     print("Scheduler started")
     
-    # Restore jobs from DB
     db: Session = SessionLocal()
     try:
         stocks = db.query(Stock).filter(Stock.is_monitoring == True).all()
@@ -597,11 +602,9 @@ def start_scheduler():
 def update_stock_job(stock_id: int, interval: int, is_monitoring: bool):
     job_id = f"stock_{stock_id}"
     
-    # Remove existing job
     if scheduler.get_job(job_id):
         scheduler.remove_job(job_id)
     
-    # Add new job if monitoring is on
     if is_monitoring:
         scheduler.add_job(
             process_stock, 

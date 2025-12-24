@@ -205,16 +205,16 @@ const ResearchPage: React.FC = () => {
              />
           </Splitter.Panel>
           <Splitter.Panel>
-            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#fff' }}>
+            <div  style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#fff' }}>
               <Tabs 
                 activeKey={activeTab} 
                 onChange={setActiveTab} 
-                style={{ padding: '0 16px', flex: 1 }}
+                style={{ padding: '0 16px', flex: 1,height: '100%' }}
                 items={[
                   {
                     key: 'log',
                     label: 'Log',
-                    children: <Input.TextArea value={log} readOnly style={{ height: '100%', resize: 'none', fontFamily: 'monospace' }} />
+                    children: <Input.TextArea value={log} readOnly style={{ flex:1,height: '100%', minHeight: 500, fontFamily: 'monospace' }} />
                   },
                   {
                     key: 'table',

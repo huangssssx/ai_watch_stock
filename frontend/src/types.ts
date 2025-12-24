@@ -8,7 +8,28 @@ export interface Stock {
   only_trade_days?: boolean;
   prompt_template?: string;
   ai_provider_id?: number;
+  monitoring_mode?: 'ai_only' | 'script_only' | 'hybrid';
+  rule_script_id?: number;
   indicators: IndicatorDefinition[];
+}
+
+export interface RuleScript {
+  id: number;
+  name: string;
+  description?: string;
+  code: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface RuleTestPayload {
+  symbol: string;
+}
+
+export interface RuleTestResponse {
+  triggered: boolean;
+  message: string;
+  log: string;
 }
 
 export interface IndicatorDefinition {

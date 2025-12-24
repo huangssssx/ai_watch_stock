@@ -25,12 +25,28 @@ class Stock(Base):
     prompt_template = Column(Text, nullable=True) # Custom prompt for this stock
     ai_provider_id = Column(Integer, ForeignKey("ai_configs.id"), nullable=True)
     
+    # Monitoring Strategy
+    monitoring_mode = Column(String, default="ai_only") # ai_only, script_only, hybrid
+    rule_script_id = Column(Integer, ForeignKey("rule_scripts.id"), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     indicators = relationship("IndicatorDefinition", secondary=stock_indicators, back_populates="stocks")
     logs = relationship("Log", back_populates="stock", cascade="all, delete-orphan")
     ai_config = relationship("AIConfig")
+    rule_script = relationship("RuleScript")
+
+class RuleScript(Base):
+    __tablename__ = "rule_scripts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    description = Column(String, nullable=True)
+    code = Column(Text, default="") # Python code
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 class IndicatorDefinition(Base):
     __tablename__ = "indicator_definitions"

@@ -92,6 +92,8 @@ class StockBase(BaseModel):
     prompt_template: Optional[str] = None
     ai_provider_id: Optional[int] = None
     only_trade_days: Optional[bool] = True
+    monitoring_mode: Optional[str] = "ai_only"
+    rule_script_id: Optional[int] = None
 
 class StockCreate(StockBase):
     indicator_ids: Optional[List[int]] = None
@@ -105,6 +107,8 @@ class StockUpdate(BaseModel):
     ai_provider_id: Optional[int] = None
     indicator_ids: Optional[List[int]] = None
     only_trade_days: Optional[bool] = None
+    monitoring_mode: Optional[str] = None
+    rule_script_id: Optional[int] = None
 
 class Stock(ORMModel, StockBase):
     id: int
@@ -195,3 +199,30 @@ class ResearchRunResponse(BaseModel):
     result: Optional[List[Dict[str, Any]]] = None # For table
     chart: Optional[Dict[str, Any]] = None # For chart
     error: Optional[str] = None
+
+# Rule Script
+class RuleScriptBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    code: str
+
+class RuleScriptCreate(RuleScriptBase):
+    pass
+
+class RuleScriptUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    code: Optional[str] = None
+
+class RuleScript(ORMModel, RuleScriptBase):
+    id: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+class RuleTestPayload(BaseModel):
+    symbol: str
+
+class RuleTestResponse(BaseModel):
+    triggered: bool
+    message: str
+    log: str

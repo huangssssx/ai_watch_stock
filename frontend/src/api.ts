@@ -1,11 +1,17 @@
 import axios from 'axios';
-import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse, ResearchScript, ResearchRunResponse } from './types';
+import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse, ResearchScript, ResearchRunResponse, RuleScript, RuleTestPayload, RuleTestResponse } from './types';
 
 const API_URL = 'http://localhost:8000';
 
 export const api = axios.create({
   baseURL: API_URL,
 });
+
+export const getRules = () => api.get<RuleScript[]>('/rules/');
+export const createRule = (rule: Partial<RuleScript>) => api.post<RuleScript>('/rules/', rule);
+export const updateRule = (id: number, rule: Partial<RuleScript>) => api.put<RuleScript>(`/rules/${id}`, rule);
+export const deleteRule = (id: number) => api.delete(`/rules/${id}`);
+export const testRule = (id: number, payload: RuleTestPayload) => api.post<RuleTestResponse>(`/rules/${id}/test`, payload);
 
 export const getResearchScripts = () => api.get<ResearchScript[]>('/research/');
 export const createResearchScript = (script: Partial<ResearchScript>) => api.post<ResearchScript>('/research/', script);
