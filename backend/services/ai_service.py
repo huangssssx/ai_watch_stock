@@ -1,6 +1,6 @@
 from openai import OpenAI
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 class AIService:
     def _should_embed_system_prompt_in_user(self, ai_config: Dict[str, Any]) -> bool:
@@ -97,6 +97,74 @@ class AIService:
                 
         except Exception as e:
             return {"type": "error", "message": f"AI Error: {str(e)}"}, str(e)
+
+    def analyze_debug(self, data_context: str, prompt_template: str, ai_config: Dict[str, Any]) -> Tuple[Dict[str, Any], str, Dict[str, str]]:
+        try:
+            client = OpenAI(
+                api_key=ai_config["api_key"],
+                base_url=ai_config["base_url"]
+            )
+            
+            system_prompt = (
+                "你是一位拥有20年经验的资深量化基金经理，擅长短线博弈和趋势跟踪。"
+                "你的任务是根据提供的股票实时数据和技术指标，给出当前时间点明确的、可执行的交易指令。"
+                "\n\n"
+                "【分析原则】\n"
+                "1. 客观：只基于提供的数据说话，不要幻想未提供的新闻。\n"
+                "2. 果断：必须给出明确的方向（买入/卖出/观望），禁止模棱两可。\n"
+                "3. 风控：任何开仓建议必须包含止损位。\n"
+                "\n\n"
+                "【输出要求】\n"
+                "请严格只输出一个合法的 JSON 对象，不要包含 Markdown 代码块标记（如 ```json），格式如下：\n"
+                "{\n"
+                "  \"type\": \"info\" | \"warning\" | \"error\",  // info=正常分析, warning=数据不足或风险极高, error=无法分析\n"
+                "  \"signal\": \"STRONG_BUY\" | \"BUY\" | \"WAIT\" | \"SELL\" | \"STRONG_SELL\", // 明确的信号\n"
+                "  \"action_advice\": \"...\", // 一句话的大白话操作建议，例如：'现价25.5元立即买入，目标27元'\n"
+                "  \"suggested_position\": \"...\", // 建议仓位，例如：'3成仓' 或 '空仓观望'\n"
+                "  \"duration\": \"...\", // 建议持仓时间，例如：'短线T+1' 或 '中线持股2周'\n"
+                "  \"support_pressure\": {\"support\": 价格, \"pressure\": 价格}, // 支撑压力位\n"
+                "  \"stop_loss_price\": 价格, // 严格的止损价格\n"
+                "  \"message\": \"...\" // 详细的逻辑分析摘要，解释为什么这么做，不超过100字\n"
+                "}"
+            )
+
+            user_content = (
+                "数据:\n"
+                f"{data_context}\n\n"
+                "分析要求:\n"
+                f"{prompt_template}\n\n"
+                "请严格输出 JSON 格式。"
+            )
+
+            response = client.chat.completions.create(
+                model=ai_config["model_name"],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                response_format={"type": "json_object"},
+                temperature=ai_config.get("temperature", 0.1),
+            )
+            
+            content = response.choices[0].message.content
+            
+            try:
+                clean_content = content.replace("```json", "").replace("```", "").strip()
+                result = json.loads(clean_content)
+                
+                if "signal" not in result:
+                    result["signal"] = "WAIT"
+                    
+                return result, content, {"system_prompt": system_prompt, "user_prompt": user_content}
+            except json.JSONDecodeError:
+                return {
+                    "type": "error", 
+                    "message": "AI returned invalid JSON",
+                    "signal": "WAIT"
+                }, content, {"system_prompt": system_prompt, "user_prompt": user_content}
+                
+        except Exception as e:
+            return {"type": "error", "message": f"AI Error: {str(e)}"}, str(e), {"system_prompt": "", "user_prompt": ""}
 
     def chat(self, message: str, ai_config: Dict[str, Any], system_prompt: Optional[str] = None) -> str:
         client = OpenAI(

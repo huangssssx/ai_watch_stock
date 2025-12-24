@@ -111,15 +111,37 @@ export interface Log {
 
 export interface StockTestRunResponse {
   ok: boolean;
+  run_id?: string | null;
   stock_id: number;
   stock_symbol: string;
-  model_name?: string;
-  base_url?: string;
-  system_prompt: string;
-  user_prompt: string;
-  ai_reply: AIAnalysisResult;
-  data_truncated: boolean;
+  monitoring_mode?: 'ai_only' | 'script_only' | 'hybrid' | string | null;
+  skipped_reason?: string | null;
+  error?: string | null;
+
+  script_triggered?: boolean | null;
+  script_message?: string | null;
+  script_log?: string | null;
+
+  model_name?: string | null;
+  base_url?: string | null;
+  system_prompt?: string | null;
+  user_prompt?: string | null;
+  ai_reply?: AIAnalysisResult | null;
+  raw_response?: string | null;
+
+  data_truncated?: boolean | null;
   data_char_limit?: number | null;
+
+  fetch_ok?: number | null;
+  fetch_error?: number | null;
+  fetch_errors?: { indicator?: string; api?: string; duration_ms?: number; error?: string }[] | null;
+  ai_duration_ms?: number | null;
+
+  is_alert?: boolean | null;
+  alert_attempted?: boolean | null;
+  alert_suppressed?: boolean | null;
+  alert_result?: unknown;
+  prompt_source?: string | null;
 }
 
 export interface EmailConfig {

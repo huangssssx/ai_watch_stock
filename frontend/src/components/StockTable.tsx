@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag, Card } from 'antd';
-import type { Stock, AIConfig, StockTestRunResponse, RuleTestResponse } from '../types';
-import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock, testRule } from '../api';
+import type { Stock, AIConfig, StockTestRunResponse } from '../types';
+import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock } from '../api';
 import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined } from '@ant-design/icons';
 import StockConfigModal from './StockConfigModal.tsx';
 import LogsViewer from './LogsViewer.tsx';
@@ -25,7 +25,6 @@ const StockTable: React.FC = () => {
   const [testing, setTesting] = useState(false);
   const [testStock, setTestStock] = useState<Stock | null>(null);
   const [testResult, setTestResult] = useState<StockTestRunResponse | null>(null);
-  const [ruleTestResult, setRuleTestResult] = useState<RuleTestResponse | null>(null);
   
   const [logsModalVisible, setLogsModalVisible] = useState(false);
   const [logsStock, setLogsStock] = useState<Stock | null>(null);
@@ -87,35 +86,13 @@ const StockTable: React.FC = () => {
   const handleTestRun = async (stock: Stock) => {
     setTestStock(stock);
     setTestResult(null);
-    setRuleTestResult(null);
     setTestModalVisible(true);
     setTesting(true);
     try {
-      const mode = stock.monitoring_mode ?? 'ai_only';
-      const needsRule = mode !== 'ai_only';
-      const needsAI = mode !== 'script_only';
-
-      let triggered = true;
-      if (needsRule) {
-        if (!stock.rule_script_id) {
-          message.error('当前策略需要硬规则，但未配置规则脚本');
-          return;
-        }
-        const ruleRes = await testRule(stock.rule_script_id, { symbol: stock.symbol });
-        setRuleTestResult(ruleRes.data);
-        triggered = ruleRes.data.triggered;
-        if (mode === 'hybrid' && !triggered) {
-          message.info('硬规则未触发，已跳过 AI 测试');
-          return;
-        }
-      }
-
-      if (needsAI) {
-        const res = await testRunStock(stock.id);
-        setTestResult(res.data);
-      }
-
-      message.success('测试完成');
+      const res = await testRunStock(stock.id);
+      setTestResult(res.data);
+      if (res.data.ok) message.success('测试完成');
+      else message.error(res.data.error || '测试失败');
     } catch {
       message.error('测试失败（请确认已配置策略所需的 AI / 指标 / 规则脚本）');
     } finally {
@@ -197,7 +174,6 @@ const StockTable: React.FC = () => {
           setTestModalVisible(false);
           setTestStock(null);
           setTestResult(null);
-          setRuleTestResult(null);
           setTesting(false);
         }}
         footer={null}
@@ -206,48 +182,69 @@ const StockTable: React.FC = () => {
         <div style={{ marginBottom: 12 }}>
           <span style={{ marginRight: 8 }}>策略：</span>
           {(() => {
-            const mode = testStock?.monitoring_mode ?? 'ai_only';
+            const mode = testResult?.monitoring_mode ?? testStock?.monitoring_mode ?? 'ai_only';
             if (mode === 'ai_only') return <Tag color="blue">仅 AI</Tag>;
             if (mode === 'script_only') return <Tag color="green">仅硬规则</Tag>;
             return <Tag color="purple">混合（Rule → AI）</Tag>;
           })()}
         </div>
 
-        {ruleTestResult && (
-          <Card title="硬规则测试" size="small" style={{ marginBottom: 12 }}>
+        {testResult && (
+          <Card title="执行信息" size="small" style={{ marginBottom: 12 }}>
             <div style={{ marginBottom: 8 }}>
-              触发：{ruleTestResult.triggered ? <Tag color="red">YES</Tag> : <Tag color="green">NO</Tag>}
+              状态：
+              {testResult.ok ? <Tag color="green">OK</Tag> : <Tag color="red">FAIL</Tag>}
+              {testResult.skipped_reason ? <Tag>{`SKIP: ${testResult.skipped_reason}`}</Tag> : null}
+              {testResult.is_alert ? <Tag color="red">ALERT</Tag> : <Tag>NO ALERT</Tag>}
+              {testResult.alert_attempted ? <Tag color="blue">已尝试告警</Tag> : <Tag>未发送告警</Tag>}
+              {testResult.alert_suppressed ? <Tag color="gold">告警被抑制</Tag> : null}
             </div>
-            <div style={{ marginBottom: 8 }}>Message：{ruleTestResult.message || '-'}</div>
+            <div style={{ marginBottom: 8 }}>Run ID：{testResult.run_id || '-'}</div>
+            <div style={{ marginBottom: 8 }}>错误：{testResult.error || '-'}</div>
+          </Card>
+        )}
+
+        {testResult?.monitoring_mode !== 'ai_only' && (
+          <Card title="硬规则执行" size="small" style={{ marginBottom: 12 }}>
+            <div style={{ marginBottom: 8 }}>
+              触发：
+              {testResult?.script_triggered ? <Tag color="red">YES</Tag> : <Tag color="green">NO</Tag>}
+            </div>
+            <div style={{ marginBottom: 8 }}>Message：{testResult?.script_message || '-'}</div>
             <div>
               <div style={{ marginBottom: 4 }}>Log Output</div>
               <pre style={{ background: '#f5f5f5', padding: 8, borderRadius: 4, maxHeight: 240, overflow: 'auto' }}>
-                {ruleTestResult.log || '(No output)'}
+                {testResult?.script_log || '(No output)'}
               </pre>
             </div>
           </Card>
         )}
 
-        {testResult && (
-          <Card title="AI 测试" size="small">
+        {testResult?.monitoring_mode !== 'script_only' && testResult?.ai_reply && (
+          <Card title="AI 执行" size="small">
             <div style={{ marginBottom: 8 }}>
-              模型：{testResult.model_name ?? '-'} / Base URL：{testResult.base_url ?? '-'}
+              模型：{testResult.model_name ?? '-'} / Base URL：{testResult.base_url ?? '-'} / 耗时：
+              {testResult.ai_duration_ms ?? '-'}ms
             </div>
             {testResult.data_truncated && (
               <div style={{ marginBottom: 8 }}>
                 提示：数据过长已截断（最多 {testResult.data_char_limit ?? '-'} 字符）
               </div>
             )}
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ marginBottom: 4 }}>System Prompt</div>
-              <Input.TextArea value={testResult.system_prompt} readOnly autoSize={{ minRows: 3, maxRows: 10 }} />
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ marginBottom: 4 }}>User Prompt（包含指标数据）</div>
-              <Input.TextArea value={testResult.user_prompt} readOnly autoSize={{ minRows: 6, maxRows: 16 }} />
-            </div>
+            {testResult.system_prompt ? (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ marginBottom: 4 }}>System Prompt</div>
+                <Input.TextArea value={testResult.system_prompt} readOnly autoSize={{ minRows: 3, maxRows: 10 }} />
+              </div>
+            ) : null}
+            {testResult.user_prompt ? (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ marginBottom: 4 }}>User Prompt（包含指标数据）</div>
+                <Input.TextArea value={testResult.user_prompt} readOnly autoSize={{ minRows: 6, maxRows: 16 }} />
+              </div>
+            ) : null}
             <div>
-              <div style={{ marginBottom: 4 }}>AI 原始返回</div>
+              <div style={{ marginBottom: 4 }}>AI 返回（解析后 JSON）</div>
               <div style={{ border: '1px solid #d9d9d9', padding: '8px', borderRadius: '4px', background: '#f5f5f5' }}>
                 <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>
                   {JSON.stringify(testResult.ai_reply, null, 2)}
@@ -257,7 +254,7 @@ const StockTable: React.FC = () => {
           </Card>
         )}
 
-        {!ruleTestResult && !testResult && (
+        {!testResult && (
           <div>{testing ? '测试中，请稍候…' : '暂无结果'}</div>
         )}
       </Modal>

@@ -119,15 +119,37 @@ class Stock(ORMModel, StockBase):
 
 class StockTestRunResponse(BaseModel):
     ok: bool
+    run_id: Optional[str] = None
     stock_id: int
     stock_symbol: str
-    model_name: str
-    base_url: str
-    system_prompt: str
-    user_prompt: str
-    ai_reply: Dict[str, Any]  # Changed from str to Dict
-    data_truncated: bool
+    monitoring_mode: Optional[str] = None
+    skipped_reason: Optional[str] = None
+    error: Optional[str] = None
+
+    script_triggered: Optional[bool] = None
+    script_message: Optional[str] = None
+    script_log: Optional[str] = None
+
+    model_name: Optional[str] = None
+    base_url: Optional[str] = None
+    system_prompt: Optional[str] = None
+    user_prompt: Optional[str] = None
+    ai_reply: Optional[Dict[str, Any]] = None
+    raw_response: Optional[str] = None
+
+    data_truncated: Optional[bool] = None
     data_char_limit: Optional[int] = None
+
+    fetch_ok: Optional[int] = None
+    fetch_error: Optional[int] = None
+    fetch_errors: Optional[List[Dict[str, Any]]] = None
+    ai_duration_ms: Optional[int] = None
+
+    is_alert: Optional[bool] = None
+    alert_attempted: Optional[bool] = None
+    alert_suppressed: Optional[bool] = None
+    alert_result: Optional[Any] = None
+    prompt_source: Optional[str] = None
 
 # Log
 class LogBase(BaseModel):

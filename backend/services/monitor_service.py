@@ -1,5 +1,6 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session
+from typing import Optional
 from database import SessionLocal
 from models import Stock, Log, AIConfig, SystemConfig, RuleScript
 from services.data_fetcher import data_fetcher
@@ -10,6 +11,8 @@ import json
 import time
 import os
 import html
+import io
+import sys
 import akshare as ak
 import pandas as pd
 import numpy as np
@@ -137,10 +140,13 @@ def _to_html(text_value):
 
 def _execute_rule_script(stock, rule_script):
     if not rule_script or not rule_script.code:
-        return False, "No script code"
+        return False, "No script code", ""
     
     try:
-        # Sandbox scope
+        old_stdout = sys.stdout
+        new_stdout = io.StringIO()
+        sys.stdout = new_stdout
+
         local_scope = {
             "ak": ak,
             "pd": pd,
@@ -152,47 +158,93 @@ def _execute_rule_script(stock, rule_script):
             "message": ""
         }
         
-        exec(rule_script.code, {}, local_scope)
-        
-        triggered = bool(local_scope.get("triggered", False))
-        message = str(local_scope.get("message", ""))
-        return triggered, message
+        try:
+            exec(rule_script.code, {}, local_scope)
+            triggered = bool(local_scope.get("triggered", False))
+            message = str(local_scope.get("message", ""))
+        except Exception as e:
+            print(f"Error executing script: {e}")
+            triggered = False
+            message = f"Error: {e}"
+        output_log = new_stdout.getvalue()
+        sys.stdout = old_stdout
+        return triggered, message, output_log
         
     except Exception as e:
+        try:
+            sys.stdout = old_stdout
+        except Exception:
+            pass
         print(f"Error executing rule script for {stock.symbol}: {e}")
-        return False, f"Error: {e}"
+        return False, f"Error: {e}", ""
 
-def process_stock(stock_id: int):
+def process_stock(
+    stock_id: int,
+    bypass_checks: bool = False,
+    send_alerts: bool = True,
+    is_test: bool = False,
+    return_result: bool = False,
+    db: Optional[Session] = None,
+):
     start_time_perf = time.time()
-    db: Session = SessionLocal()
+    owns_db = db is None
+    if db is None:
+        db = SessionLocal()
     run_id = f"{stock_id}-{time.time_ns()}"
     try:
         stock = db.query(Stock).filter(Stock.id == stock_id).first()
         if not stock:
             _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "reason": "stock_not_found"})
+            if return_result:
+                return {
+                    "ok": False,
+                    "run_id": run_id,
+                    "stock_id": stock_id,
+                    "stock_symbol": "",
+                    "error": "stock_not_found",
+                }
             return
-        if not stock.is_monitoring:
+        if (not bypass_checks) and (not stock.is_monitoring):
             _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "symbol": stock.symbol, "reason": "monitoring_disabled"})
+            if return_result:
+                return {
+                    "ok": False,
+                    "run_id": run_id,
+                    "stock_id": stock.id,
+                    "stock_symbol": stock.symbol,
+                    "monitoring_mode": getattr(stock, "monitoring_mode", "ai_only") or "ai_only",
+                    "error": "monitoring_disabled",
+                }
             return
 
         # Check trading day
-        if getattr(stock, 'only_trade_days', True):
+        if (not bypass_checks) and getattr(stock, "only_trade_days", True):
             if not _check_is_trade_day():
                  _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "symbol": stock.symbol, "reason": "not_trade_day"})
+                 if return_result:
+                     return {
+                         "ok": False,
+                         "run_id": run_id,
+                         "stock_id": stock.id,
+                         "stock_symbol": stock.symbol,
+                         "monitoring_mode": getattr(stock, "monitoring_mode", "ai_only") or "ai_only",
+                         "error": "not_trade_day",
+                     }
                  return
 
         # Check schedule
         schedule_str = stock.monitoring_schedule
-        if not schedule_str:
-             # Default schedule
-             schedule_str = json.dumps([
-                 {"start": "09:30", "end": "11:30"},
-                 {"start": "13:00", "end": "15:00"}
-             ])
+        if (not bypass_checks) and (not schedule_str):
+            schedule_str = json.dumps(
+                [
+                    {"start": "09:30", "end": "11:30"},
+                    {"start": "13:00", "end": "15:00"},
+                ]
+            )
 
         is_in_schedule = True
         parsed_schedule = None
-        if schedule_str:
+        if (not bypass_checks) and schedule_str:
             try:
                 schedule = json.loads(schedule_str)
                 parsed_schedule = schedule
@@ -224,6 +276,15 @@ def process_stock(stock_id: int):
                                 "schedule": schedule,
                             },
                         )
+                        if return_result:
+                            return {
+                                "ok": False,
+                                "run_id": run_id,
+                                "stock_id": stock.id,
+                                "stock_symbol": stock.symbol,
+                                "monitoring_mode": getattr(stock, "monitoring_mode", "ai_only") or "ai_only",
+                                "error": "outside_schedule",
+                            }
                         return
             except Exception as e:
                 print(f"Error checking schedule for {stock.symbol}: {e}")
@@ -250,19 +311,129 @@ def process_stock(stock_id: int):
         # Rule Execution (for script_only and hybrid)
         script_triggered = False
         script_msg = ""
+        script_log = ""
         
-        if monitoring_mode in ["script_only", "hybrid"]:
-            if stock.rule_script_id:
-                rule = db.query(RuleScript).filter(RuleScript.id == stock.rule_script_id).first()
-                if rule:
-                    script_triggered, script_msg = _execute_rule_script(stock, rule)
-                    if not script_triggered:
-                        _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "reason": "rule_not_triggered", "msg": script_msg})
-                        return
-                else:
-                    print(f"Rule script {stock.rule_script_id} not found")
-            else:
-                 print(f"No rule script configured for {monitoring_mode} mode")
+        needs_rule = monitoring_mode in ["script_only", "hybrid"]
+        needs_ai = monitoring_mode in ["ai_only", "hybrid"]
+
+        if needs_rule:
+            if not stock.rule_script_id:
+                msg = f"No rule script configured for {monitoring_mode} mode"
+                _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "reason": "rule_missing"})
+                if is_test:
+                    analysis_json = {
+                        "type": "error",
+                        "signal": "WAIT",
+                        "action_advice": "-",
+                        "message": msg,
+                        "duration": "-",
+                        "suggested_position": "-",
+                        "stop_loss_price": "-",
+                    }
+                    log_entry = Log(
+                        stock_id=stock.id,
+                        raw_data=f"Mode: {monitoring_mode}\nSkip Reason: rule_missing\nRule Script ID: -\nScript Triggered: -\nScript Msg: {msg}\nScript Log:\n",
+                        ai_response="",
+                        ai_analysis=analysis_json,
+                        is_alert=False,
+                    )
+                    db.add(log_entry)
+                    db.commit()
+                if return_result:
+                    return {
+                        "ok": False,
+                        "run_id": run_id,
+                        "stock_id": stock.id,
+                        "stock_symbol": stock.symbol,
+                        "monitoring_mode": monitoring_mode,
+                        "error": "rule_missing",
+                        "script_triggered": False,
+                        "script_message": msg,
+                        "script_log": "",
+                    }
+                return
+
+            rule = db.query(RuleScript).filter(RuleScript.id == stock.rule_script_id).first()
+            if not rule:
+                msg = f"Rule script {stock.rule_script_id} not found"
+                _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "reason": "rule_not_found"})
+                if is_test:
+                    analysis_json = {
+                        "type": "error",
+                        "signal": "WAIT",
+                        "action_advice": "-",
+                        "message": msg,
+                        "duration": "-",
+                        "suggested_position": "-",
+                        "stop_loss_price": "-",
+                    }
+                    log_entry = Log(
+                        stock_id=stock.id,
+                        raw_data=f"Mode: {monitoring_mode}\nSkip Reason: rule_not_found\nRule Script ID: {stock.rule_script_id}\nScript Triggered: -\nScript Msg: {msg}\nScript Log:\n",
+                        ai_response="",
+                        ai_analysis=analysis_json,
+                        is_alert=False,
+                    )
+                    db.add(log_entry)
+                    db.commit()
+                if return_result:
+                    return {
+                        "ok": False,
+                        "run_id": run_id,
+                        "stock_id": stock.id,
+                        "stock_symbol": stock.symbol,
+                        "monitoring_mode": monitoring_mode,
+                        "error": "rule_not_found",
+                        "script_triggered": False,
+                        "script_message": msg,
+                        "script_log": "",
+                    }
+                return
+
+            script_triggered, script_msg, script_log = _execute_rule_script(stock, rule)
+            if not script_triggered:
+                is_script_error = str(script_msg or "").startswith("Error:")
+                should_log = is_test or is_script_error
+                if should_log:
+                    analysis_json = {
+                        "type": "error" if is_script_error else "info",
+                        "signal": "WAIT",
+                        "action_advice": "-",
+                        "message": script_msg or ("Rule not triggered" if not is_script_error else "Rule error"),
+                        "duration": "-",
+                        "suggested_position": "-",
+                        "stop_loss_price": "-",
+                    }
+                    log_entry = Log(
+                        stock_id=stock.id,
+                        raw_data=(
+                            f"Mode: {monitoring_mode}\nSkip Reason: rule_not_triggered\nRule Script ID: {stock.rule_script_id}\n"
+                            f"Script Triggered: {script_triggered}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')[:5000]}"
+                        ),
+                        ai_response="",
+                        ai_analysis=analysis_json,
+                        is_alert=False,
+                    )
+                    db.add(log_entry)
+                    db.commit()
+                _emit(
+                    "monitor_skip",
+                    {"run_id": run_id, "stock_id": stock_id, "reason": "rule_not_triggered", "msg": script_msg},
+                )
+                if return_result:
+                    return {
+                        "ok": True,
+                        "run_id": run_id,
+                        "stock_id": stock.id,
+                        "stock_symbol": stock.symbol,
+                        "monitoring_mode": monitoring_mode,
+                        "skipped_reason": "rule_not_triggered",
+                        "script_triggered": False,
+                        "script_message": script_msg,
+                        "script_log": script_log,
+                        "ai_reply": None,
+                    }
+                return
 
         # Prepare for Alert/AI
         analysis_json = {}
@@ -277,6 +448,8 @@ def process_stock(stock_id: int):
         prompt = ""
         data_truncated = False
         ai_model_name = "-"
+        prompt_debug = {"system_prompt": "", "user_prompt": ""}
+        ai_base_url = ""
 
         # SCRIPT ONLY: Bypass AI
         if monitoring_mode == "script_only":
@@ -294,6 +467,45 @@ def process_stock(stock_id: int):
 
         # AI ONLY or HYBRID (if triggered)
         else:
+            if needs_ai and (not stock.ai_provider_id):
+                msg = f"No AI provider configured for {stock.symbol}"
+                print(msg)
+                if is_test:
+                    analysis_json = {
+                        "type": "error",
+                        "signal": "WAIT",
+                        "action_advice": "-",
+                        "message": msg,
+                        "duration": "-",
+                        "suggested_position": "-",
+                        "stop_loss_price": "-",
+                    }
+                    log_entry = Log(
+                        stock_id=stock.id,
+                        raw_data=(
+                            f"Mode: {monitoring_mode}\nSkip Reason: ai_provider_missing\nRule Script ID: {stock.rule_script_id}\n"
+                            f"Script Triggered: {script_triggered if needs_rule else '-'}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')[:5000]}"
+                        ),
+                        ai_response="",
+                        ai_analysis=analysis_json,
+                        is_alert=False,
+                    )
+                    db.add(log_entry)
+                    db.commit()
+                if return_result:
+                    return {
+                        "ok": False,
+                        "run_id": run_id,
+                        "stock_id": stock.id,
+                        "stock_symbol": stock.symbol,
+                        "monitoring_mode": monitoring_mode,
+                        "error": "ai_provider_missing",
+                        "script_triggered": script_triggered,
+                        "script_message": script_msg,
+                        "script_log": script_log,
+                    }
+                return
+
             # 1. Fetch Data
             context = {"symbol": stock.symbol, "name": stock.name}
             data_parts = []
@@ -312,78 +524,111 @@ def process_stock(stock_id: int):
             full_data = "\n".join(data_parts)
 
             # 2. AI Analysis
-            if not stock.ai_provider_id:
-                print(f"No AI provider configured for {stock.symbol}")
-                # We can return here if AI is mandatory for this mode
-                # But let's allow it to finish to log fetch errors
-                pass
-            else:
-                ai_config = db.query(AIConfig).filter(AIConfig.id == stock.ai_provider_id).first()
-                if not ai_config:
-                    print(f"AI Config not found")
-                else:
-                    ai_model_name = ai_config.model_name
-                    config_dict = {
-                        "api_key": ai_config.api_key,
-                        "base_url": ai_config.base_url,
-                        "model_name": ai_config.model_name,
-                        "temperature": getattr(ai_config, "temperature", 0.1)
+            ai_config = db.query(AIConfig).filter(AIConfig.id == stock.ai_provider_id).first()
+            if not ai_config:
+                print("AI Config not found")
+                if is_test:
+                    analysis_json = {
+                        "type": "error",
+                        "signal": "WAIT",
+                        "action_advice": "-",
+                        "message": "AI Config not found",
+                        "duration": "-",
+                        "suggested_position": "-",
+                        "stop_loss_price": "-",
                     }
-                    
-                    max_chars = ai_config.max_tokens if ai_config.max_tokens else 100000
-                    data_for_ai = full_data[:max_chars]
-                    data_truncated = len(full_data) > max_chars
+                    log_entry = Log(
+                        stock_id=stock.id,
+                        raw_data=(
+                            f"Mode: {monitoring_mode}\nSkip Reason: ai_config_not_found\nRule Script ID: {stock.rule_script_id}\n"
+                            f"Script Triggered: {script_triggered if needs_rule else '-'}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')[:5000]}"
+                            f"\nData: {(full_data or '')[:1000]}..."
+                        ),
+                        ai_response="",
+                        ai_analysis=analysis_json,
+                        is_alert=False,
+                    )
+                    db.add(log_entry)
+                    db.commit()
+                if return_result:
+                    return {
+                        "ok": False,
+                        "run_id": run_id,
+                        "stock_id": stock.id,
+                        "stock_symbol": stock.symbol,
+                        "monitoring_mode": monitoring_mode,
+                        "error": "ai_config_not_found",
+                        "script_triggered": script_triggered,
+                        "script_message": script_msg,
+                        "script_log": script_log,
+                    }
+                return
 
-                    # Load Prompts
+            ai_model_name = ai_config.model_name
+            ai_base_url = ai_config.base_url
+            config_dict = {
+                "api_key": ai_config.api_key,
+                "base_url": ai_config.base_url,
+                "model_name": ai_config.model_name,
+                "temperature": getattr(ai_config, "temperature", 0.1),
+            }
+
+            max_chars = ai_config.max_tokens if ai_config.max_tokens else 100000
+            data_for_ai = full_data[:max_chars]
+            data_truncated = len(full_data) > max_chars
+
+            # Load Prompts
+            global_prompt = ""
+            global_prompt_config = db.query(SystemConfig).filter(SystemConfig.key == "global_prompt").first()
+            if global_prompt_config and global_prompt_config.value:
+                try:
+                    raw_value = global_prompt_config.value
+                    prompt_text = raw_value
+                    try:
+                        parsed = json.loads(raw_value)
+                        if isinstance(parsed, dict):
+                            prompt_text = str(parsed.get("prompt_template") or "")
+                    except Exception:
+                        pass
+
+                    from jinja2 import Template
+
+                    global_prompt = Template(prompt_text).render(symbol=stock.symbol, name=stock.name)
+                except Exception:
                     global_prompt = ""
-                    global_prompt_config = db.query(SystemConfig).filter(SystemConfig.key == "global_prompt").first()
-                    if global_prompt_config and global_prompt_config.value:
-                        try:
-                            raw_value = global_prompt_config.value
-                            prompt_text = raw_value
-                            try:
-                                parsed = json.loads(raw_value)
-                                if isinstance(parsed, dict):
-                                    prompt_text = str(parsed.get("prompt_template") or "")
-                            except Exception:
-                                pass
 
-                            from jinja2 import Template
+            stock_prompt = stock.prompt_template
 
-                            global_prompt = Template(prompt_text).render(symbol=stock.symbol, name=stock.name)
-                        except Exception:
-                            global_prompt = ""
-                    
-                    stock_prompt = stock.prompt_template
-                    
-                    prompt = ""
-                    prompt_source = "system_default"
-                    
-                    if global_prompt and stock_prompt:
-                        prompt = f"{global_prompt}\n\n【个股特别设定/持仓信息】\n{stock_prompt}"
-                        prompt_source = "global_plus_stock"
-                    elif stock_prompt:
-                        prompt = stock_prompt
-                        prompt_source = "stock_specific"
-                    elif global_prompt:
-                        prompt = global_prompt
-                        prompt_source = "global_setting"
-                    else:
-                        prompt = "Analyze the trend."
-                        prompt_source = "system_default"
+            prompt = ""
+            prompt_source = "system_default"
 
-                    # Add script_msg to prompt if hybrid
-                    if monitoring_mode == "hybrid":
-                        prompt += f"\n\n【硬规则触发信息】\n{script_msg}"
+            if global_prompt and stock_prompt:
+                prompt = f"{global_prompt}\n\n【个股特别设定/持仓信息】\n{stock_prompt}"
+                prompt_source = "global_plus_stock"
+            elif stock_prompt:
+                prompt = stock_prompt
+                prompt_source = "stock_specific"
+            elif global_prompt:
+                prompt = global_prompt
+                prompt_source = "global_setting"
+            else:
+                prompt = "Analyze the trend."
+                prompt_source = "system_default"
 
-                    ai_start = time.time()
-                    analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict)
-                    ai_duration_ms = int((time.time() - ai_start) * 1000)
-                    
-                    signal = analysis_json.get("signal", "WAIT")
-                    canonical_signal = _canonicalize_signal(signal)
-                    analysis_json["signal"] = canonical_signal
-                    is_alert = (analysis_json.get("type") == "warning") or (canonical_signal != "WAIT")
+            if monitoring_mode == "hybrid":
+                prompt += f"\n\n【硬规则触发信息】\n{script_msg}"
+
+            ai_start = time.time()
+            if return_result:
+                analysis_json, raw_response, prompt_debug = ai_service.analyze_debug(data_for_ai, prompt, config_dict)
+            else:
+                analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict)
+            ai_duration_ms = int((time.time() - ai_start) * 1000)
+
+            signal = analysis_json.get("signal", "WAIT")
+            canonical_signal = _canonicalize_signal(signal)
+            analysis_json["signal"] = canonical_signal
+            is_alert = (analysis_json.get("type") == "warning") or (canonical_signal != "WAIT")
 
         # 3. Log Result
         signal = analysis_json.get("signal", "WAIT")
@@ -391,7 +636,11 @@ def process_stock(stock_id: int):
         
         log_entry = Log(
             stock_id=stock.id,
-            raw_data=f"Mode: {monitoring_mode}\nScript Msg: {script_msg}\nPrompt: {prompt}\nData: {full_data[:1000]}...",
+            raw_data=(
+                f"Mode: {monitoring_mode}\nRule Script ID: {stock.rule_script_id if needs_rule else '-'}\n"
+                f"Script Triggered: {script_triggered if needs_rule else '-'}\nScript Msg: {script_msg}\n"
+                f"Script Log:\n{(script_log or '')[:5000]}\n\nPrompt: {prompt}\nData: {full_data[:1000]}..."
+            ),
             ai_response=raw_response,
             ai_analysis=analysis_json,
             is_alert=is_alert
@@ -436,7 +685,7 @@ def process_stock(stock_id: int):
                 should_send_email = False
                 print(f"Duplicate alert suppressed for {stock.symbol}")
 
-        if should_send_email:
+        if should_send_email and send_alerts:
             alert_attempted = True
             
             email_body = f"""
@@ -535,14 +784,15 @@ def process_stock(stock_id: int):
                 print(f"Alert sent for {stock.symbol}")
         
         # 5. Cleanup Logs
-        try:
-            cutoff_date = datetime.datetime.now() - datetime.timedelta(days=3)
-            deleted_count = db.query(Log).filter(Log.stock_id == stock.id, Log.timestamp < cutoff_date).delete()
-            if deleted_count > 0:
-                print(f"Cleaned up {deleted_count} old logs for {stock.symbol}")
-                db.commit()
-        except Exception as e:
-            print(f"Error cleaning up logs: {e}")
+        if not is_test:
+            try:
+                cutoff_date = datetime.datetime.now() - datetime.timedelta(days=3)
+                deleted_count = db.query(Log).filter(Log.stock_id == stock.id, Log.timestamp < cutoff_date).delete()
+                if deleted_count > 0:
+                    print(f"Cleaned up {deleted_count} old logs for {stock.symbol}")
+                    db.commit()
+            except Exception as e:
+                print(f"Error cleaning up logs: {e}")
 
         duration = time.time() - start_time_perf
         print(f"Finished processing {stock.symbol} in {duration:.2f}s")
@@ -569,6 +819,34 @@ def process_stock(stock_id: int):
                 "alert_result": alert_result,
             },
         )
+        if return_result:
+            return {
+                "ok": True,
+                "run_id": run_id,
+                "stock_id": stock.id,
+                "stock_symbol": stock.symbol,
+                "monitoring_mode": monitoring_mode,
+                "script_triggered": script_triggered if needs_rule else None,
+                "script_message": script_msg if needs_rule else None,
+                "script_log": script_log if needs_rule else None,
+                "model_name": ai_model_name if monitoring_mode != "script_only" else None,
+                "base_url": ai_base_url if monitoring_mode != "script_only" else None,
+                "system_prompt": (prompt_debug or {}).get("system_prompt", "") if monitoring_mode != "script_only" else None,
+                "user_prompt": (prompt_debug or {}).get("user_prompt", "") if monitoring_mode != "script_only" else None,
+                "ai_reply": analysis_json,
+                "raw_response": raw_response,
+                "data_truncated": data_truncated,
+                "data_char_limit": (max_chars if data_truncated else None) if monitoring_mode != "script_only" else None,
+                "fetch_ok": fetch_ok,
+                "fetch_error": fetch_error,
+                "fetch_errors": fetch_errors,
+                "ai_duration_ms": ai_duration_ms,
+                "is_alert": is_alert,
+                "alert_attempted": alert_attempted,
+                "alert_suppressed": alert_suppressed,
+                "alert_result": alert_result,
+                "prompt_source": prompt_source,
+            }
 
     except Exception as e:
         print(f"Error processing stock {stock_id}: {e}")
@@ -581,8 +859,17 @@ def process_stock(stock_id: int):
                 "error": str(e),
             },
         )
+        if return_result:
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "stock_id": stock_id,
+                "stock_symbol": "",
+                "error": str(e),
+            }
     finally:
-        db.close()
+        if owns_db:
+            db.close()
 
 def start_scheduler():
     scheduler.start()
