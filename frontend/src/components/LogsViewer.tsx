@@ -9,12 +9,31 @@ interface Props {
   stockId?: number;
 }
 
+const GROUP_BY_STOCK_STORAGE_KEY = 'ai_watch_stock.logsViewer.groupByStock';
+
 const LogsViewer: React.FC<Props> = ({ stockId }) => {
   const [logs, setLogs] = useState<Log[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
-  const [groupByStock, setGroupByStock] = useState(false);
+  const [groupByStock, setGroupByStock] = useState(() => {
+    try {
+      const raw = localStorage.getItem(GROUP_BY_STOCK_STORAGE_KEY);
+      if (raw == null) return false;
+      const parsed = JSON.parse(raw);
+      return Boolean(parsed);
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(GROUP_BY_STOCK_STORAGE_KEY, JSON.stringify(groupByStock));
+    } catch {
+      return;
+    }
+  }, [groupByStock]);
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);
