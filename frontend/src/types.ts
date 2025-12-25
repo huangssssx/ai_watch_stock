@@ -162,7 +162,6 @@ export interface AlertRateLimitConfig {
   max_per_hour_per_stock: number;
   allowed_signals?: string[];
   allowed_urgencies?: string[];
-  suppress_duplicates?: boolean;
   bypass_rate_limit_for_strong_signals?: boolean;
 }
 

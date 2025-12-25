@@ -19,7 +19,6 @@ import numpy as np
 
 scheduler = BackgroundScheduler()
 _alert_history_by_stock_id = {}
-_last_alert_content_by_stock_id = {}
 
 # Cache for trade day check
 _is_trade_day_cache = {"date": None, "is_trade": True}
@@ -67,7 +66,6 @@ def _get_alert_config(db: Session):
         "max_per_hour_per_stock": 0,
         "allowed_signals": ["STRONG_BUY", "BUY", "SELL", "STRONG_SELL"],
         "allowed_urgencies": ["紧急", "一般", "不紧急"],
-        "suppress_duplicates": True,
         "bypass_rate_limit_for_strong_signals": True
     }
 
@@ -78,7 +76,6 @@ def _get_alert_config(db: Session):
             if "max_per_hour_per_stock" in data: result["max_per_hour_per_stock"] = int(data["max_per_hour_per_stock"] or 0)
             if "allowed_signals" in data: result["allowed_signals"] = data["allowed_signals"]
             if "allowed_urgencies" in data: result["allowed_urgencies"] = data["allowed_urgencies"]
-            if "suppress_duplicates" in data: result["suppress_duplicates"] = bool(data["suppress_duplicates"])
             if "bypass_rate_limit_for_strong_signals" in data: result["bypass_rate_limit_for_strong_signals"] = bool(data["bypass_rate_limit_for_strong_signals"])
         except Exception as e:
             print(f"Error parsing alert config: {e}")
@@ -762,20 +759,23 @@ def process_stock(
         allowed_signals = alert_config.get("allowed_signals", ["BUY", "SELL", "STRONG_BUY", "STRONG_SELL"])
         should_send_email = canonical_signal in allowed_signals
         
-        alert_content_key = f"{canonical_signal}-{(action_advice or '').strip()}"
+        # Filter 2: Signal Change (Primary Trigger)
+        # For script_only, we already calculated is_signal_changed.
+        # For ai_only or hybrid, we need to compare canonical_signal with last_signal
+        if monitoring_mode == "script_only":
+             # Already set in analysis_json construction
+             is_signal_changed = is_alert 
+        else:
+             is_signal_changed = canonical_signal != last_signal
         
-        # Filter 2: Urgency
+        if not is_signal_changed:
+            should_send_email = False
+
+        # Filter 3: Urgency
         if should_send_email:
             allowed_urgencies = alert_config.get("allowed_urgencies", ["紧急", "一般", "不紧急"])
             if duration_level not in allowed_urgencies:
                 should_send_email = False
-
-        # Filter 3: Deduplication
-        if should_send_email and alert_config.get("suppress_duplicates", True):
-            last_content = _last_alert_content_by_stock_id.get(stock.id)
-            if last_content == alert_content_key:
-                should_send_email = False
-                print(f"Duplicate alert suppressed for {stock.symbol}")
 
         if should_send_email and send_alerts:
             alert_attempted = True
@@ -864,7 +864,6 @@ def process_stock(
                     alert_result = alert_service.send_email(subject=subject, body=email_body, is_html=True)
                     history.append(now_ts)
                     _alert_history_by_stock_id[stock.id] = history
-                    _last_alert_content_by_stock_id[stock.id] = alert_content_key
                     print(f"Alert sent for {stock.symbol}")
             else:
                 subject = f"【AI盯盘】{stock.symbol} {stock.name} - {signal_cn}"
@@ -872,7 +871,6 @@ def process_stock(
                 history = _alert_history_by_stock_id.get(stock.id, [])
                 history.append(time.time())
                 _alert_history_by_stock_id[stock.id] = history
-                _last_alert_content_by_stock_id[stock.id] = alert_content_key
                 print(f"Alert sent for {stock.symbol}")
         
         # 5. Cleanup Logs

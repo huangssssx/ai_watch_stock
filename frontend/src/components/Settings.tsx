@@ -218,7 +218,6 @@ const AlertSettings: React.FC = () => {
         max_per_hour_per_stock: Number(values.max_per_hour_per_stock || 0),
         allowed_signals: values.allowed_signals || [],
         allowed_urgencies: values.allowed_urgencies || [],
-        suppress_duplicates: Boolean(values.suppress_duplicates),
         bypass_rate_limit_for_strong_signals: Boolean(values.bypass_rate_limit_for_strong_signals),
       };
       await updateAlertRateLimitConfig(payload);
@@ -241,7 +240,6 @@ const AlertSettings: React.FC = () => {
             max_per_hour_per_stock: 0,
             allowed_signals: ["STRONG_BUY", "BUY", "SELL", "STRONG_SELL"],
             allowed_urgencies: ["紧急", "一般", "不紧急"],
-            suppress_duplicates: true,
             bypass_rate_limit_for_strong_signals: true
         }}
       >
@@ -265,10 +263,6 @@ const AlertSettings: React.FC = () => {
                 <Checkbox value="一般">一般</Checkbox>
                 <Checkbox value="不紧急">不紧急</Checkbox>
             </Checkbox.Group>
-        </Form.Item>
-
-        <Form.Item name="suppress_duplicates" label="内容去重" valuePropName="checked" help="如果连续两次分析内容完全一致，则不发送邮件">
-            <Switch checkedChildren="开启" unCheckedChildren="关闭" />
         </Form.Item>
 
         <Divider>频次限制</Divider>
