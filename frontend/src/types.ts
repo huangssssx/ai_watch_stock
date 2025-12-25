@@ -35,10 +35,10 @@ export interface RuleTestResponse {
 export interface IndicatorDefinition {
   id: number;
   name: string;
-  akshare_api: string;
-  params_json: string;
-  post_process_json?: string;
-  python_code?: string;
+  akshare_api?: string | null;
+  params_json?: string | null;
+  post_process_json?: string | null;
+  python_code?: string | null;
 }
 
 export interface IndicatorTestRequest {

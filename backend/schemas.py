@@ -52,8 +52,8 @@ class AIConfigTestResponse(BaseModel):
 # Indicator Definition
 class IndicatorDefinitionBase(BaseModel):
     name: str
-    akshare_api: str
-    params_json: str
+    akshare_api: Optional[str] = None
+    params_json: Optional[str] = None
     post_process_json: Optional[str] = None
     python_code: Optional[str] = None
 

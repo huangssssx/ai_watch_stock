@@ -45,6 +45,46 @@ df = df[['date', 'mean_close']]
         self.assertEqual(result_df['mean_close'].iloc[0], 103.5)
 
     @patch('services.data_fetcher.ak')
+    def test_post_process_has_context_dict(self, mock_ak):
+        mock_df = pd.DataFrame(
+            {
+                "date": ["2023-01-01", "2023-01-02"],
+                "close": [102, 105],
+            }
+        )
+        mock_ak.stock_zh_a_hist.return_value = mock_df
+
+        python_code = """
+symbol = context["symbol"]
+df["symbol"] = symbol
+"""
+
+        result_json = self.fetcher.fetch(
+            api_name="stock_zh_a_hist",
+            params_json="{}",
+            context={"symbol": "600000"},
+            python_code=python_code,
+        )
+
+        result_df = pd.read_json(result_json)
+        self.assertIn("symbol", result_df.columns)
+        self.assertEqual(str(result_df["symbol"].iloc[0]), "600000")
+
+    def test_pure_script_injects_context_keys(self):
+        python_code = """
+result = {"symbol": symbol, "name": name}
+"""
+        result_json = self.fetcher.fetch(
+            api_name=None,
+            params_json=None,
+            context={"symbol": "600000", "name": "浦发银行"},
+            python_code=python_code,
+        )
+        result = __import__("json").loads(result_json)
+        self.assertEqual(result["symbol"], "600000")
+        self.assertEqual(result["name"], "浦发银行")
+
+    @patch('services.data_fetcher.ak')
     def test_fetch_atr_logic(self, mock_ak):
         # Mock akshare API for ATR calculation with Chinese columns
         mock_df = pd.DataFrame({

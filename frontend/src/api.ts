@@ -29,7 +29,8 @@ export const testRunStock = (id: number, options?: { send_alerts?: boolean; bypa
 
 export const getIndicators = () => api.get<IndicatorDefinition[]>('/indicators/');
 export const createIndicator = (
-  indicator: Pick<IndicatorDefinition, 'name' | 'akshare_api' | 'params_json' | 'post_process_json' | 'python_code'>,
+  indicator: Pick<IndicatorDefinition, 'name'> &
+    Partial<Pick<IndicatorDefinition, 'akshare_api' | 'params_json' | 'post_process_json' | 'python_code'>>,
 ) =>
   api.post<IndicatorDefinition>('/indicators/', indicator);
 export const updateIndicator = (
