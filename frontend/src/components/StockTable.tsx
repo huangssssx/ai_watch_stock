@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag, Card } from 'antd';
-import type { Stock, AIConfig, StockTestRunResponse } from '../types';
-import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock } from '../api';
+import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag, Card, Space } from 'antd';
+import type { Stock, AIConfig, StockTestRunResponse, IndicatorDefinition } from '../types';
+import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock, getIndicators } from '../api';
 import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined } from '@ant-design/icons';
 import StockConfigModal from './StockConfigModal.tsx';
 import LogsViewer from './LogsViewer.tsx';
@@ -12,12 +12,15 @@ type StockCreateFormValues = {
   name?: string;
   interval_seconds: number;
   ai_provider_id?: number;
+  indicator_ids?: number[];
 };
 
 const StockTable: React.FC = () => {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [loading, setLoading] = useState(false);
   const [aiConfigs, setAiConfigs] = useState<AIConfig[]>([]);
+  const [allIndicators, setAllIndicators] = useState<IndicatorDefinition[]>([]);
+  const [loadingIndicators, setLoadingIndicators] = useState(false);
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [configModalVisible, setConfigModalVisible] = useState(false);
   const [currentStock, setCurrentStock] = useState<Stock | null>(null);
@@ -30,6 +33,18 @@ const StockTable: React.FC = () => {
   const [logsStock, setLogsStock] = useState<Stock | null>(null);
 
   const [form] = Form.useForm();
+
+  const fetchIndicators = async () => {
+    setLoadingIndicators(true);
+    try {
+      const res = await getIndicators();
+      setAllIndicators(res.data);
+    } catch {
+      message.error('加载指标列表失败');
+    } finally {
+      setLoadingIndicators(false);
+    }
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -50,6 +65,11 @@ const StockTable: React.FC = () => {
     }, 0);
     return () => window.clearTimeout(id);
   }, []);
+
+  useEffect(() => {
+    if (!isModalVisible) return;
+    void fetchIndicators();
+  }, [isModalVisible]);
 
   const handleToggleMonitor = async (stock: Stock) => {
     try {
@@ -167,6 +187,32 @@ const StockTable: React.FC = () => {
             <Select>
               {aiConfigs.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
             </Select>
+          </Form.Item>
+          <Form.Item
+            name="indicator_ids"
+            label={
+              <Space size={8}>
+                <span>投喂指标（Context Data）</span>
+                <Button
+                  type="link"
+                  size="small"
+                  disabled={loadingIndicators || allIndicators.length === 0}
+                  onClick={() => form.setFieldValue('indicator_ids', allIndicators.map((x) => x.id))}
+                >
+                  全部选择
+                </Button>
+              </Space>
+            }
+          >
+            <Select
+              mode="multiple"
+              placeholder="请选择投喂给 AI 的指标数据"
+              loading={loadingIndicators}
+              options={allIndicators.map((x) => ({
+                value: x.id,
+                label: `${x.name}（${x.akshare_api || '纯脚本'}）`,
+              }))}
+            />
           </Form.Item>
         </Form>
       </Modal>

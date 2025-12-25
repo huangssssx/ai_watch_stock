@@ -225,7 +225,22 @@ const StockConfigModal: React.FC<Props> = ({ visible, stock, onClose }) => {
               </Select>
             </Form.Item>
             
-            <Form.Item name="indicator_ids" label="投喂指标（Context Data）">
+            <Form.Item
+              name="indicator_ids"
+              label={
+                <Space size={8}>
+                  <span>投喂指标（Context Data）</span>
+                  <Button
+                    type="link"
+                    size="small"
+                    disabled={loadingIndicators || allIndicators.length === 0}
+                    onClick={() => form.setFieldValue('indicator_ids', allIndicators.map((x) => x.id))}
+                  >
+                    全部选择
+                  </Button>
+                </Space>
+              }
+            >
               <Select
                 mode="multiple"
                 placeholder="请选择投喂给 AI 的指标数据"
