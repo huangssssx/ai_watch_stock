@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Form, Input, Modal, Table, message, Space, Collapse, Radio } from 'antd';
+import { Button, Form, Input, Modal, Table, message, Space, Collapse, Radio, Tag, Tooltip, Typography } from 'antd';
 import { DeleteOutlined, EditOutlined, CodeOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import type { IndicatorDefinition, IndicatorTestResponse } from '../types';
 import { createIndicator, deleteIndicator, getIndicators, testIndicator, updateIndicator } from '../api';
@@ -156,22 +156,133 @@ const IndicatorLibrary: React.FC = () => {
     return testResult.error || testResult.raw || '';
   })();
 
+  const getRowMode = (record: IndicatorDefinition) => (record.akshare_api ? 'akshare' : 'pure_script');
+
+  const formatJsonMaybe = (text?: string | null) => {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    try {
+      const obj = JSON.parse(raw) as unknown;
+      return JSON.stringify(obj, null, 2);
+    } catch {
+      return raw;
+    }
+  };
+
+  const tryParseObject = (text?: string | null) => {
+    const raw = String(text || '').trim();
+    if (!raw) return null;
+    try {
+      const obj = JSON.parse(raw) as unknown;
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) return obj as Record<string, unknown>;
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const getParamsPreview = (record: IndicatorDefinition) => {
+    const obj = tryParseObject(record.params_json);
+    if (!obj) return '';
+    const keys = ['symbol', 'market', 'period', 'start_date', 'end_date', 'begin', 'end', 'date', 'adjust'];
+    const pairs: string[] = [];
+    for (const k of keys) {
+      if (k in obj) {
+        const v = obj[k];
+        pairs.push(`${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
+      }
+      if (pairs.length >= 4) break;
+    }
+    return pairs.join('  ');
+  };
+
+  const getScriptStats = (code?: string | null) => {
+    const raw = String(code || '').trim();
+    if (!raw) return { ok: false, lines: 0, chars: 0 };
+    return { ok: true, lines: raw.split(/\r?\n/).length, chars: raw.length };
+  };
+
   const columns: ColumnsType<IndicatorDefinition> = [
     { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
     {
-      title: 'AkShare 接口名',
-      dataIndex: 'akshare_api',
-      key: 'akshare_api',
-      width: 200,
-      render: (val: IndicatorDefinition['akshare_api']) => val || '-',
+      title: '模式',
+      key: 'mode',
+      width: 110,
+      render: (_: unknown, record: IndicatorDefinition) => {
+        const modeValue = getRowMode(record);
+        return modeValue === 'akshare' ? <Tag color="blue">AkShare</Tag> : <Tag color="purple">纯脚本</Tag>;
+      },
     },
-    { title: '参数 JSON', dataIndex: 'params_json', key: 'params_json', ellipsis: true },
     {
-      title: 'Python 代码',
-      dataIndex: 'python_code',
-      key: 'python_code',
-      width: 100,
-      render: (code: IndicatorDefinition['python_code']) => (code ? <CodeOutlined style={{ color: '#1890ff' }} /> : '-'),
+      title: '来源/接口',
+      key: 'source',
+      width: 220,
+      render: (_: unknown, record: IndicatorDefinition) => {
+        if (getRowMode(record) === 'pure_script') return <Typography.Text type="secondary">Script</Typography.Text>;
+        return <Typography.Text code>{record.akshare_api}</Typography.Text>;
+      },
+    },
+    {
+      title: '配置摘要',
+      key: 'summary',
+      ellipsis: true,
+      render: (_: unknown, record: IndicatorDefinition) => {
+        if (getRowMode(record) === 'pure_script') {
+          const st = getScriptStats(record.python_code);
+          return (
+            <Space size={6} wrap>
+              <Tag color={st.ok ? 'green' : 'red'}>{st.ok ? '脚本✅' : '脚本❌'}</Tag>
+              {st.ok ? (
+                <Typography.Text type="secondary">
+                  {st.lines} 行 / {st.chars} 字符
+                </Typography.Text>
+              ) : null}
+            </Space>
+          );
+        }
+
+        const obj = tryParseObject(record.params_json);
+        const ok = Boolean(obj);
+        const preview = ok ? getParamsPreview(record) : '';
+        return (
+          <Space size={6} wrap>
+            <Tag color={ok ? 'green' : 'red'}>{ok ? 'JSON✅' : 'JSON❌'}</Tag>
+            {preview ? (
+              <Tooltip title={preview}>
+                <Typography.Text type="secondary" ellipsis style={{ maxWidth: 420 }}>
+                  {preview}
+                </Typography.Text>
+              </Tooltip>
+            ) : null}
+          </Space>
+        );
+      },
+    },
+    {
+      title: '脚本',
+      key: 'scripts',
+      width: 140,
+      render: (_: unknown, record: IndicatorDefinition) => {
+        const hasPython = Boolean(String(record.python_code || '').trim());
+        const hasPost = Boolean(String(record.post_process_json || '').trim());
+        if (!hasPython && !hasPost) return <Typography.Text type="secondary">-</Typography.Text>;
+        return (
+          <Space size={6} wrap>
+            {hasPython ? (
+              <Tooltip title="python_code">
+                <Tag icon={<CodeOutlined />} color="geekblue">
+                  py
+                </Tag>
+              </Tooltip>
+            ) : null}
+            {hasPost ? (
+              <Tooltip title="post_process_json">
+                <Tag color="gold">post</Tag>
+              </Tooltip>
+            ) : null}
+          </Space>
+        );
+      },
     },
     {
       title: '操作',
@@ -194,7 +305,59 @@ const IndicatorLibrary: React.FC = () => {
           添加指标
         </Button>
       </div>
-      <Table rowKey="id" loading={loading} dataSource={items} columns={columns} />
+      <Table
+        rowKey="id"
+        loading={loading}
+        dataSource={items}
+        columns={columns}
+        expandable={{
+          rowExpandable: (record) => Boolean(record.akshare_api || record.params_json || record.python_code || record.post_process_json),
+          expandedRowRender: (record) => {
+            const modeValue = getRowMode(record);
+            const parts: { title: string; content: string }[] = [];
+            if (modeValue === 'akshare') {
+              parts.push({ title: 'AkShare 接口名', content: String(record.akshare_api || '') });
+              parts.push({ title: '参数 JSON', content: formatJsonMaybe(record.params_json) });
+            } else {
+              parts.push({ title: '纯脚本', content: String(record.python_code || '').trim() });
+            }
+            if (modeValue === 'akshare' && String(record.python_code || '').trim()) {
+              parts.push({ title: 'Python 处理脚本', content: String(record.python_code || '').trim() });
+            }
+            if (String(record.post_process_json || '').trim()) {
+              parts.push({ title: 'Post Process JSON', content: formatJsonMaybe(record.post_process_json) });
+            }
+
+            return (
+              <div style={{ padding: 8 }}>
+                <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  {parts.map((p) => (
+                    <div key={p.title}>
+                      <Typography.Text strong>{p.title}</Typography.Text>
+                      <pre
+                        style={{
+                          marginTop: 6,
+                          marginBottom: 0,
+                          padding: 10,
+                          border: '1px solid #f0f0f0',
+                          borderRadius: 6,
+                          background: '#fafafa',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          maxHeight: 260,
+                          overflow: 'auto',
+                        }}
+                      >
+                        {p.content || '-'}
+                      </pre>
+                    </div>
+                  ))}
+                </Space>
+              </div>
+            );
+          },
+        }}
+      />
 
       <Modal
         title={editingId ? '编辑指标' : '添加指标'}
