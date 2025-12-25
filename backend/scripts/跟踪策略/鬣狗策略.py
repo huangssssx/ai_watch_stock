@@ -128,5 +128,6 @@ try:
 
 except Exception as e:
     triggered = False
+    signal = "WAIT"
     message = f"错误：{str(e)}"
     print(f"[error] {e}")

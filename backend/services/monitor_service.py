@@ -109,6 +109,22 @@ def _canonicalize_signal(signal_value) -> str:
 
     return upper
 
+def _infer_signal_from_text(text_value) -> Optional[str]:
+    text = str(text_value or "").strip()
+    if not text:
+        return None
+    if any(k in text for k in ["强烈卖出", "强卖", "清仓", "全部卖出"]):
+        return "STRONG_SELL"
+    if any(k in text for k in ["强烈买入", "强买", "重仓买入"]):
+        return "STRONG_BUY"
+    if any(k in text for k in ["卖出", "建议卖出", "减仓", "做空", "平仓"]):
+        return "SELL"
+    if any(k in text for k in ["买入", "建议买入", "做多", "开多"]):
+        return "BUY"
+    if any(k in text for k in ["观望", "空仓观望", "持币观望", "等待", "继续观望", "谨慎观望"]):
+        return "WAIT"
+    return None
+
 def _signal_display(canonical_signal: str):
     mapping = {
         "STRONG_BUY": ("强烈买入", "#16A34A"),
@@ -162,13 +178,15 @@ def _execute_rule_script(stock, rule_script):
             exec(rule_script.code, {}, local_scope)
             triggered = bool(local_scope.get("triggered", False))
             message = str(local_scope.get("message", ""))
+            signal = local_scope.get("signal", None)
         except Exception as e:
             print(f"Error executing script: {e}")
             triggered = False
             message = f"Error: {e}"
+            signal = None
         output_log = new_stdout.getvalue()
         sys.stdout = old_stdout
-        return triggered, message, output_log
+        return triggered, message, output_log, signal
         
     except Exception as e:
         try:
@@ -176,7 +194,31 @@ def _execute_rule_script(stock, rule_script):
         except Exception:
             pass
         print(f"Error executing rule script for {stock.symbol}: {e}")
-        return False, f"Error: {e}", ""
+        return False, f"Error: {e}", "", None
+
+def _get_last_signal_from_db(stock_id: int, db: Session) -> str:
+    """
+    Get the last signal from the DB logs for a specific stock.
+    Returns "WAIT" if no logs found or signal is missing.
+    """
+    try:
+        last_log = db.query(Log).filter(Log.stock_id == stock_id).order_by(Log.timestamp.desc()).first()
+        if last_log and last_log.ai_analysis:
+            # ai_analysis is stored as JSON
+            analysis = last_log.ai_analysis
+            if isinstance(analysis, str):
+                 try:
+                     analysis = json.loads(analysis)
+                 except:
+                     pass
+            
+            if isinstance(analysis, dict):
+                signal = analysis.get("signal")
+                return _canonicalize_signal(signal)
+    except Exception as e:
+        print(f"Error fetching last signal for stock {stock_id}: {e}")
+    
+    return "WAIT"
 
 def process_stock(
     stock_id: int,
@@ -292,6 +334,9 @@ def process_stock(
         # Determine Mode
         monitoring_mode = getattr(stock, "monitoring_mode", "ai_only") or "ai_only"
         
+        # Get Last Signal from DB
+        last_signal = _get_last_signal_from_db(stock.id, db)
+        
         _emit(
             "monitor_start",
             {
@@ -302,19 +347,24 @@ def process_stock(
                 "interval_seconds": stock.interval_seconds,
                 "in_schedule": is_in_schedule,
                 "schedule": parsed_schedule,
-                "mode": monitoring_mode
+                "mode": monitoring_mode,
+                "last_signal": last_signal
             },
         )
 
-        print(f"Processing stock: {stock.symbol} ({stock.name}) Mode: {monitoring_mode}")
+        print(f"Processing stock: {stock.symbol} ({stock.name}) Mode: {monitoring_mode} Last Signal: {last_signal}")
 
         # Rule Execution (for script_only and hybrid)
         script_triggered = False
         script_msg = ""
         script_log = ""
+        script_signal = None
         
         needs_rule = monitoring_mode in ["script_only", "hybrid"]
         needs_ai = monitoring_mode in ["ai_only", "hybrid"]
+        
+        # In hybrid mode, we might skip AI if rule result matches last signal
+        skip_ai_in_hybrid = False 
 
         if needs_rule:
             if not stock.rule_script_id:
@@ -390,16 +440,30 @@ def process_stock(
                     }
                 return
 
-            script_triggered, script_msg, script_log = _execute_rule_script(stock, rule)
-            if not script_triggered:
-                is_script_error = str(script_msg or "").startswith("Error:")
-                should_log = is_test or is_script_error
-                if should_log:
+            script_triggered, script_msg, script_log, script_signal = _execute_rule_script(stock, rule)
+            
+            # Hybrid Mode Logic: Check if we should call AI
+            if monitoring_mode == "hybrid":
+                # Derive rule signal
+                rule_derived_signal = "WAIT"
+                if script_signal is not None:
+                    rule_derived_signal = _canonicalize_signal(script_signal)
+                else:
+                    inferred = _infer_signal_from_text(script_msg)
+                    if inferred is not None:
+                        rule_derived_signal = inferred
+                    elif script_triggered:
+                        rule_derived_signal = "BUY"
+                
+                # Compare with last DB signal
+                if rule_derived_signal == last_signal:
+                    skip_ai_in_hybrid = True
+                    # Log skip
                     analysis_json = {
-                        "type": "error" if is_script_error else "info",
-                        "signal": "WAIT",
-                        "action_advice": "-",
-                        "message": script_msg or ("Rule not triggered" if not is_script_error else "Rule error"),
+                        "type": "info",
+                        "signal": rule_derived_signal,
+                        "action_advice": "Rule Consistent with Last Signal",
+                        "message": f"Rule signal ({rule_derived_signal}) consistent with last DB signal ({last_signal}). AI Skipped.",
                         "duration": "-",
                         "suggested_position": "-",
                         "stop_loss_price": "-",
@@ -407,8 +471,9 @@ def process_stock(
                     log_entry = Log(
                         stock_id=stock.id,
                         raw_data=(
-                            f"Mode: {monitoring_mode}\nSkip Reason: rule_not_triggered\nRule Script ID: {stock.rule_script_id}\n"
-                            f"Script Triggered: {script_triggered}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')[:5000]}"
+                            f"Mode: {monitoring_mode}\nSkip Reason: signal_consistent\nRule Script ID: {stock.rule_script_id}\n"
+                            f"Script Triggered: {script_triggered}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')[:5000]}\n"
+                            f"Last DB Signal: {last_signal}\nRule Derived Signal: {rule_derived_signal}"
                         ),
                         ai_response="",
                         ai_analysis=analysis_json,
@@ -416,24 +481,33 @@ def process_stock(
                     )
                     db.add(log_entry)
                     db.commit()
-                _emit(
-                    "monitor_skip",
-                    {"run_id": run_id, "stock_id": stock_id, "reason": "rule_not_triggered", "msg": script_msg},
-                )
-                if return_result:
-                    return {
-                        "ok": True,
-                        "run_id": run_id,
-                        "stock_id": stock.id,
-                        "stock_symbol": stock.symbol,
-                        "monitoring_mode": monitoring_mode,
-                        "skipped_reason": "rule_not_triggered",
-                        "script_triggered": False,
-                        "script_message": script_msg,
-                        "script_log": script_log,
-                        "ai_reply": None,
-                    }
-                return
+                    
+                    _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "reason": "signal_consistent", "signal": rule_derived_signal})
+                    
+                    if return_result:
+                        return {
+                            "ok": True,
+                            "run_id": run_id,
+                            "stock_id": stock.id,
+                            "stock_symbol": stock.symbol,
+                            "monitoring_mode": monitoring_mode,
+                            "skipped_reason": "signal_consistent",
+                            "script_triggered": script_triggered,
+                            "script_message": script_msg,
+                            "script_log": script_log,
+                            "ai_reply": analysis_json,
+                        }
+                    return
+
+            # Note: For script_only, we don't return early here if not triggered, 
+            # because we might need to log the "WAIT" signal if last signal was "BUY".
+            # The original logic skipped logging if not triggered unless error, 
+            # but now we need to track signal changes.
+            
+            # However, if script failed, we still log error
+            if not script_triggered and not monitoring_mode == "hybrid":
+                 # Check if we need to update signal to WAIT from something else
+                 pass 
 
         # Prepare for Alert/AI
         analysis_json = {}
@@ -453,21 +527,39 @@ def process_stock(
 
         # SCRIPT ONLY: Bypass AI
         if monitoring_mode == "script_only":
+            final_signal = None
+            if script_signal is not None:
+                final_signal = _canonicalize_signal(script_signal)
+            else:
+                inferred = _infer_signal_from_text(script_msg)
+                if inferred is not None:
+                    final_signal = inferred
+                elif script_triggered:
+                    final_signal = "BUY"
+                else:
+                    final_signal = "WAIT"
+
+            # Check for signal change
+            is_signal_changed = final_signal != last_signal
+            
             analysis_json = {
-                "type": "warning",
-                "signal": "BUY", # Default to BUY if triggered
-                "action_advice": "Hard Rule Triggered",
-                "message": script_msg or "Rule triggered",
+                "type": "warning" if is_signal_changed else "info",
+                "signal": final_signal, 
+                "action_advice": "Hard Rule Triggered" if script_triggered else "Rule Not Triggered",
+                "message": script_msg or ("Rule triggered" if script_triggered else "No trigger"),
                 "duration": "Immediate",
                 "suggested_position": "Check Manually",
                 "stop_loss_price": "-"
             }
-            is_alert = True
-            raw_response = f"Script Triggered: {script_msg}"
+            is_alert = is_signal_changed # Alert if signal changed
+            raw_response = f"Script Triggered: {script_msg} Signal: {final_signal} Last: {last_signal}"
 
-        # AI ONLY or HYBRID (if triggered)
+        # AI ONLY or HYBRID (if triggered and not skipped)
         else:
-            if needs_ai and (not stock.ai_provider_id):
+            if skip_ai_in_hybrid:
+                # Should not reach here due to early return above, but safe guard
+                pass
+            elif needs_ai and (not stock.ai_provider_id):
                 msg = f"No AI provider configured for {stock.symbol}"
                 print(msg)
                 if is_test:

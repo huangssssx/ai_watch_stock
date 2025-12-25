@@ -94,10 +94,12 @@ def test_rule(rule_id: int, payload: schemas.RuleTestPayload, db: Session = Depe
             exec(script_code, {}, local_scope)
             triggered = bool(local_scope.get("triggered", False))
             message = str(local_scope.get("message", ""))
+            signal = local_scope.get("signal", None)
         except Exception as e:
             print(f"Error executing script: {e}")
             triggered = False
             message = f"Error: {e}"
+            signal = None
             
         output_log = new_stdout.getvalue()
         sys.stdout = old_stdout
@@ -105,7 +107,8 @@ def test_rule(rule_id: int, payload: schemas.RuleTestPayload, db: Session = Depe
         return {
             "triggered": triggered,
             "message": message,
-            "log": output_log
+            "log": output_log,
+            "signal": signal
         }
         
     except Exception as e:

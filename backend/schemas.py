@@ -248,3 +248,4 @@ class RuleTestResponse(BaseModel):
     triggered: bool
     message: str
     log: str
+    signal: Optional[str] = None
