@@ -439,9 +439,7 @@ def process_stock(
 
             script_triggered, script_msg, script_log, script_signal = _execute_rule_script(stock, rule)
             
-            # Hybrid Mode Logic: Check if we should call AI
             if monitoring_mode == "hybrid":
-                # Derive rule signal
                 rule_derived_signal = "WAIT"
                 if script_signal is not None:
                     rule_derived_signal = _canonicalize_signal(script_signal)
@@ -451,11 +449,62 @@ def process_stock(
                         rule_derived_signal = inferred
                     elif script_triggered:
                         rule_derived_signal = "BUY"
-                
-                # Compare with last DB signal
+
+                if (not script_triggered) and (rule_derived_signal == "WAIT"):
+                    analysis_json = {
+                        "type": "info",
+                        "signal": rule_derived_signal,
+                        "action_advice": "Rule Not Triggered",
+                        "message": f"Rule not triggered (rule signal={rule_derived_signal}). AI Skipped. Last DB signal={last_signal}.",
+                        "duration": "-",
+                        "suggested_position": "-",
+                        "stop_loss_price": "-",
+                        "rule_signal": rule_derived_signal,
+                        "last_signal": last_signal,
+                        "skipped_reason": "rule_not_triggered",
+                    }
+                    log_entry = Log(
+                        stock_id=stock.id,
+                        raw_data=(
+                            f"Mode: {monitoring_mode}\nSkip Reason: rule_not_triggered\nRule Script ID: {stock.rule_script_id}\n"
+                            f"Script Triggered: {script_triggered}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')}\n"
+                            f"Last DB Signal: {last_signal}\nRule Derived Signal: {rule_derived_signal}"
+                        ),
+                        ai_response="",
+                        ai_analysis=analysis_json,
+                        is_alert=False,
+                    )
+                    db.add(log_entry)
+                    db.commit()
+
+                    _emit(
+                        "monitor_skip",
+                        {
+                            "run_id": run_id,
+                            "stock_id": stock_id,
+                            "reason": "rule_not_triggered",
+                            "signal": rule_derived_signal,
+                            "last_signal": last_signal,
+                        },
+                    )
+
+                    if return_result:
+                        return {
+                            "ok": True,
+                            "run_id": run_id,
+                            "stock_id": stock.id,
+                            "stock_symbol": stock.symbol,
+                            "monitoring_mode": monitoring_mode,
+                            "skipped_reason": "rule_not_triggered",
+                            "script_triggered": script_triggered,
+                            "script_message": script_msg,
+                            "script_log": script_log,
+                            "ai_reply": analysis_json,
+                        }
+                    return
+
                 if rule_derived_signal == last_signal:
                     skip_ai_in_hybrid = True
-                    # Log skip
                     analysis_json = {
                         "type": "info",
                         "signal": rule_derived_signal,
@@ -478,9 +527,12 @@ def process_stock(
                     )
                     db.add(log_entry)
                     db.commit()
-                    
-                    _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "reason": "signal_consistent", "signal": rule_derived_signal})
-                    
+
+                    _emit(
+                        "monitor_skip",
+                        {"run_id": run_id, "stock_id": stock_id, "reason": "signal_consistent", "signal": rule_derived_signal},
+                    )
+
                     if return_result:
                         return {
                             "ok": True,
@@ -671,6 +723,7 @@ def process_stock(
 
             # Load Prompts
             global_prompt = ""
+            global_account_info = ""
             global_prompt_config = db.query(SystemConfig).filter(SystemConfig.key == "global_prompt").first()
             if global_prompt_config and global_prompt_config.value:
                 try:
@@ -680,29 +733,69 @@ def process_stock(
                         parsed = json.loads(raw_value)
                         if isinstance(parsed, dict):
                             prompt_text = str(parsed.get("prompt_template") or "")
+                            global_account_info = str(parsed.get("account_info") or "")
                     except Exception:
                         pass
 
                     from jinja2 import Template
 
                     global_prompt = Template(prompt_text).render(symbol=stock.symbol, name=stock.name)
+                    if global_account_info:
+                        global_account_info = Template(global_account_info).render(symbol=stock.symbol, name=stock.name)
                 except Exception:
                     global_prompt = ""
+                    global_account_info = ""
 
             stock_prompt = stock.prompt_template
 
             prompt = ""
             prompt_source = "system_default"
 
-            if global_prompt and stock_prompt:
-                prompt = f"{global_prompt}\n\n【个股特别设定/持仓信息】\n{stock_prompt}"
-                prompt_source = "global_plus_stock"
-            elif stock_prompt:
-                prompt = stock_prompt
-                prompt_source = "stock_specific"
-            elif global_prompt:
-                prompt = global_prompt
-                prompt_source = "global_setting"
+            prompt_parts = []
+            if global_prompt:
+                prompt_parts.append(global_prompt)
+            if global_account_info:
+                prompt_parts.append(f"【账户信息】\n{global_account_info}")
+            if stock_prompt:
+                prompt_parts.append(f"【个股特别设定/持仓信息】\n{stock_prompt}")
+            try:
+                monitored_stocks = (
+                    db.query(Stock)
+                    .filter(Stock.is_monitoring == True)
+                    .order_by(Stock.id.asc())
+                    .limit(200)
+                    .all()
+                )
+                if monitored_stocks:
+                    lines = []
+                    for s in monitored_stocks:
+                        label = f"{s.symbol} {s.name}".strip()
+                        mode = getattr(s, "monitoring_mode", None) or "ai_only"
+                        if s.id == stock.id:
+                            lines.append(f"- {label}（当前） mode={mode}")
+                        else:
+                            lines.append(f"- {label} mode={mode}")
+                    monitored_text = "\n".join(lines)
+                    if len(monitored_text) > 2000:
+                        monitored_text = monitored_text[:2000] + "..."
+                    prompt_parts.append(f"【当前监控股票】\n{monitored_text}")
+            except Exception:
+                pass
+
+            if prompt_parts:
+                prompt = "\n\n".join(prompt_parts)
+                if global_prompt and global_account_info and stock_prompt:
+                    prompt_source = "global_plus_account_plus_stock"
+                elif global_prompt and stock_prompt:
+                    prompt_source = "global_plus_stock"
+                elif global_prompt and global_account_info:
+                    prompt_source = "global_plus_account"
+                elif stock_prompt and global_account_info:
+                    prompt_source = "stock_plus_account"
+                elif stock_prompt:
+                    prompt_source = "stock_specific"
+                else:
+                    prompt_source = "global_setting"
             else:
                 prompt = "Analyze the trend."
                 prompt_source = "system_default"
