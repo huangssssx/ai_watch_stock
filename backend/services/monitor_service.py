@@ -469,7 +469,7 @@ def process_stock(
                         stock_id=stock.id,
                         raw_data=(
                             f"Mode: {monitoring_mode}\nSkip Reason: signal_consistent\nRule Script ID: {stock.rule_script_id}\n"
-                            f"Script Triggered: {script_triggered}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')[:5000]}\n"
+                            f"Script Triggered: {script_triggered}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')}\n"
                             f"Last DB Signal: {last_signal}\nRule Derived Signal: {rule_derived_signal}"
                         ),
                         ai_response="",
@@ -518,6 +518,9 @@ def process_stock(
         prompt_source = ""
         prompt = ""
         data_truncated = False
+        max_chars = 0
+        data_for_ai = ""
+        ai_request_payload_text = ""
         ai_model_name = "-"
         prompt_debug = {"system_prompt": "", "user_prompt": ""}
         ai_base_url = ""
@@ -573,7 +576,7 @@ def process_stock(
                         stock_id=stock.id,
                         raw_data=(
                             f"Mode: {monitoring_mode}\nSkip Reason: ai_provider_missing\nRule Script ID: {stock.rule_script_id}\n"
-                            f"Script Triggered: {script_triggered if needs_rule else '-'}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')[:5000]}"
+                            f"Script Triggered: {script_triggered if needs_rule else '-'}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')}"
                         ),
                         ai_response="",
                         ai_analysis=analysis_json,
@@ -630,8 +633,8 @@ def process_stock(
                         stock_id=stock.id,
                         raw_data=(
                             f"Mode: {monitoring_mode}\nSkip Reason: ai_config_not_found\nRule Script ID: {stock.rule_script_id}\n"
-                            f"Script Triggered: {script_triggered if needs_rule else '-'}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')[:5000]}"
-                            f"\nData: {(full_data or '')[:1000]}..."
+                            f"Script Triggered: {script_triggered if needs_rule else '-'}\nScript Msg: {script_msg}\nScript Log:\n{(script_log or '')}"
+                            f"\nData:\n{(full_data or '')}"
                         ),
                         ai_response="",
                         ai_analysis=analysis_json,
@@ -707,11 +710,23 @@ def process_stock(
             if monitoring_mode == "hybrid":
                 prompt += f"\n\n【硬规则触发信息】\n{script_msg}"
 
+            ai_request_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ai_request_payload = {
+                "model": ai_config.model_name,
+                "temperature": config_dict.get("temperature", 0.1),
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": ai_service._build_system_prompt()},
+                    {"role": "user", "content": ai_service._build_user_content(data_for_ai, prompt, current_time_str=ai_request_time_str)},
+                ],
+            }
+            ai_request_payload_text = json.dumps(ai_request_payload, ensure_ascii=False, indent=2)
+
             ai_start = time.time()
             if return_result:
-                analysis_json, raw_response, prompt_debug = ai_service.analyze_debug(data_for_ai, prompt, config_dict)
+                analysis_json, raw_response, prompt_debug = ai_service.analyze_debug(data_for_ai, prompt, config_dict, current_time_str=ai_request_time_str)
             else:
-                analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict)
+                analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict, current_time_str=ai_request_time_str)
             ai_duration_ms = int((time.time() - ai_start) * 1000)
 
             signal = analysis_json.get("signal", "WAIT")
@@ -728,7 +743,8 @@ def process_stock(
             raw_data=(
                 f"Mode: {monitoring_mode}\nRule Script ID: {stock.rule_script_id if needs_rule else '-'}\n"
                 f"Script Triggered: {script_triggered if needs_rule else '-'}\nScript Msg: {script_msg}\n"
-                f"Script Log:\n{(script_log or '')[:5000]}\n\nPrompt: {prompt}\nData: {full_data[:1000]}..."
+                f"Script Log:\n{(script_log or '')}\n\n"
+                f"AI Request Payload:\n{ai_request_payload_text}"
             ),
             ai_response=raw_response,
             ai_analysis=analysis_json,

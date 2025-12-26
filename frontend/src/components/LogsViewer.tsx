@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Table, Tag, Button, Tooltip, Space, Input, message, Popconfirm, Switch, Collapse } from 'antd';
+import { Table, Tag, Button, Tooltip, Space, Input, message, Popconfirm, Switch, Collapse, Modal } from 'antd';
 import type { Log } from '../types';
 import { getLogs, clearLogs } from '../api';
 import { ReloadOutlined, DeleteOutlined, SearchOutlined, CopyOutlined } from '@ant-design/icons';
@@ -10,12 +10,92 @@ interface Props {
 }
 
 const GROUP_BY_STOCK_STORAGE_KEY = 'ai_watch_stock.logsViewer.groupByStock';
+const AI_REQUEST_PAYLOAD_MARKER = 'AI Request Payload:\n';
+
+const parseAiRequestPayloadFromRawData = (text: string) => {
+  const raw = text ?? '';
+  const idx = raw.indexOf(AI_REQUEST_PAYLOAD_MARKER);
+  if (idx < 0) return { ok: false as const, preamble: raw, payload: null as unknown };
+
+  const preamble = raw.slice(0, idx).trimEnd();
+  const payloadText = raw.slice(idx + AI_REQUEST_PAYLOAD_MARKER.length).trim();
+  try {
+    const payload = JSON.parse(payloadText) as unknown;
+    return { ok: true as const, preamble, payload };
+  } catch {
+    return { ok: false as const, preamble: raw, payload: null as unknown };
+  }
+};
+
+const RenderRawData: React.FC<{ text: string }> = ({ text }) => {
+  const parsed = parseAiRequestPayloadFromRawData(text);
+  if (!parsed.ok) {
+    return <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>{text}</pre>;
+  }
+
+  const payload = parsed.payload as Partial<{
+    model: string;
+    temperature: number;
+    response_format: { type?: string };
+    messages: { role?: string; content?: string }[];
+  }>;
+
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {parsed.preamble ? (
+        <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>{parsed.preamble}</pre>
+      ) : null}
+
+      <div style={{ fontFamily: 'monospace', color: '#374151' }}>
+        <div>model: {payload.model ?? '-'}</div>
+        <div>temperature: {payload.temperature ?? '-'}</div>
+        <div>response_format: {payload.response_format?.type ?? '-'}</div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {messages.map((m, i) => (
+          <div
+            key={`${m.role ?? 'unknown'}-${i}`}
+            style={{
+              border: '1px solid #E5E7EB',
+              borderRadius: 8,
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                padding: '6px 10px',
+                background: '#F9FAFB',
+                borderBottom: '1px solid #E5E7EB',
+                fontFamily: 'monospace',
+                fontWeight: 700,
+                color: '#111827',
+              }}
+            >
+              {m.role ?? 'message'}
+            </div>
+            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, padding: 10 }}>
+              {m.content ?? ''}
+            </pre>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const LogsViewer: React.FC<Props> = ({ stockId }) => {
   const [logs, setLogs] = useState<Log[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [detailModal, setDetailModal] = useState<{ open: boolean; title: string; content: string }>({
+    open: false,
+    title: '',
+    content: '',
+  });
   const [groupByStock, setGroupByStock] = useState(() => {
     try {
       const raw = localStorage.getItem(GROUP_BY_STOCK_STORAGE_KEY);
@@ -103,6 +183,10 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
     navigator.clipboard.writeText(content).then(() => {
       message.success('日志信息已复制');
     });
+  };
+
+  const openDetailModal = (title: string, content: string) => {
+    setDetailModal({ open: true, title, content: content ?? '' });
   };
 
   const columns: ColumnsType<Log> = [
@@ -241,23 +325,38 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       dataIndex: 'raw_data',
       key: 'raw_data',
       width: 200,
-      render: (text) => (
-        <Tooltip title={<div style={{ whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>{text}</div>} placement="topLeft" overlayStyle={{ maxWidth: 600 }}>
-           <div style={{
-            display: '-webkit-box',
-            WebkitLineClamp: 3,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            wordBreak: 'break-all', // 包含 JSON 或长字符串，需要 break-all
-            cursor: 'help',
-            fontFamily: 'monospace',
-            color: '#666'
-          }}>
-            {text}
-          </div>
-        </Tooltip>
-      )
+      render: (text, record) => (
+        <Space direction="vertical" size={0}>
+          <Button type="link" size="small" onClick={() => openDetailModal(`发送内容：${record.stock?.symbol ?? record.stock_id}`, text)}>
+            查看完整
+          </Button>
+          <Tooltip
+            title={
+              <div style={{ maxHeight: 500, overflow: 'auto' }}>
+                <RenderRawData text={text} />
+              </div>
+            }
+            placement="topLeft"
+            overlayStyle={{ maxWidth: 600 }}
+          >
+            <div
+              style={{
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                wordBreak: 'break-all',
+                cursor: 'help',
+                fontFamily: 'monospace',
+                color: '#666',
+              }}
+            >
+              {text}
+            </div>
+          </Tooltip>
+        </Space>
+      ),
     },
     {
       title: '操作',
@@ -276,6 +375,18 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
 
   return (
     <div>
+      <Modal
+        title={detailModal.title}
+        open={detailModal.open}
+        onCancel={() => setDetailModal((s) => ({ ...s, open: false }))}
+        footer={null}
+        width="95%"
+        style={{ top: 20 }}
+        styles={{ body: { height: 'calc(100vh - 200px)', overflow: 'auto' } }}
+        destroyOnHidden={true}
+      >
+        <RenderRawData text={detailModal.content} />
+      </Modal>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
         <Space>
           <Switch 

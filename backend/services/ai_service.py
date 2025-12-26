@@ -13,7 +13,50 @@ class AIService:
             return False
         return True
 
-    def analyze(self, data_context: str, prompt_template: str, ai_config: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_system_prompt(self) -> str:
+        return (
+            "你是一位拥有20年经验的资深量化基金经理，擅长短线博弈和趋势跟踪。"
+            "你的任务是根据提供的股票实时数据和技术指标，给出当前时间点明确的、可执行的交易指令。"
+            "\n\n"
+            "【分析原则】\n"
+            "1. 客观：只基于提供的数据说话，不要幻想未提供的新闻。\n"
+            "2. 果断：必须给出明确的方向（买入/卖出/观望），禁止模棱两可。\n"
+            "3. 风控：任何开仓建议必须包含止损位。\n"
+            "\n\n"
+            "【输出要求】\n"
+            "请严格只输出一个合法的 JSON 对象，不要包含 Markdown 代码块标记（如 ```json），格式如下：\n"
+            "{\n"
+            "  \"type\": \"info\" | \"warning\" | \"error\",  // info=正常分析, warning=数据不足或风险极高, error=无法分析\n"
+            "  \"signal\": \"STRONG_BUY\" | \"BUY\" | \"WAIT\" | \"SELL\" | \"STRONG_SELL\", // 明确的信号\n"
+            "  \"action_advice\": \"...\", // 一句话的大白话操作建议，例如：'现价25.5元立即买入，目标27元'\n"
+            "  \"suggested_position\": \"...\", // 建议仓位，例如：'3成仓' 或 '空仓观望'\n"
+            "  \"duration\": \"...\", // 建议持仓时间，例如：'短线T+1' 或 '中线持股2周'\n"
+            "  \"support_pressure\": {\"support\": 价格, \"pressure\": 价格}, // 支撑压力位\n"
+            "  \"stop_loss_price\": 价格, // 严格的止损价格\n"
+            "  \"message\": \"...\" // 详细的逻辑分析摘要，解释为什么这么做，不超过100字\n"
+            "}"
+        )
+
+    def _build_user_content(self, data_context: str, prompt_template: str, current_time_str: Optional[str] = None) -> str:
+        import datetime
+
+        now_str = current_time_str or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return (
+            "Current Time: "
+            + now_str
+            + "\n\n"
+            + "Task: Analyze the following market data and generate an investment decision JSON.\n\n"
+            + "Analysis Instructions (Strategy):\n"
+            + (prompt_template or "")
+            + "\n\n"
+            + "Real-time Indicators Data:\n"
+            + (data_context or "")
+            + "\n\n"
+            + "Remember: Be decisive. If the signal is strictly strictly strictly unclear, allow 'WAIT'. Otherwise, give a direction.\n"
+            + "Return strictly JSON format."
+        )
+
+    def analyze(self, data_context: str, prompt_template: str, ai_config: Dict[str, Any], current_time_str: Optional[str] = None) -> Dict[str, Any]:
         """
         Send data to AI and get analysis result.
         ai_config: {api_key, base_url, model_name}
@@ -24,46 +67,8 @@ class AIService:
                 base_url=ai_config["base_url"]
             )
             
-            system_prompt = (
-                "你是一位拥有20年经验的资深量化基金经理，擅长短线博弈和趋势跟踪。"
-                "你的任务是根据提供的股票实时数据和技术指标，给出当前时间点明确的、可执行的交易指令。"
-                "\n\n"
-                "【分析原则】\n"
-                "1. 客观：只基于提供的数据说话，不要幻想未提供的新闻。\n"
-                "2. 果断：必须给出明确的方向（买入/卖出/观望），禁止模棱两可。\n"
-                "3. 风控：任何开仓建议必须包含止损位。\n"
-                "\n\n"
-                "【输出要求】\n"
-                "请严格只输出一个合法的 JSON 对象，不要包含 Markdown 代码块标记（如 ```json），格式如下：\n"
-                "{\n"
-                "  \"type\": \"info\" | \"warning\" | \"error\",  // info=正常分析, warning=数据不足或风险极高, error=无法分析\n"
-                "  \"signal\": \"STRONG_BUY\" | \"BUY\" | \"WAIT\" | \"SELL\" | \"STRONG_SELL\", // 明确的信号\n"
-                "  \"action_advice\": \"...\", // 一句话的大白话操作建议，例如：'现价25.5元立即买入，目标27元'\n"
-                "  \"suggested_position\": \"...\", // 建议仓位，例如：'3成仓' 或 '空仓观望'\n"
-                "  \"duration\": \"...\", // 建议持仓时间，例如：'短线T+1' 或 '中线持股2周'\n"
-                "  \"support_pressure\": {\"support\": 价格, \"pressure\": 价格}, // 支撑压力位\n"
-                "  \"stop_loss_price\": 价格, // 严格的止损价格\n"
-                "  \"message\": \"...\" // 详细的逻辑分析摘要，解释为什么这么做，不超过100字\n"
-                "}"
-            )
-            
-            import datetime
-            current_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            user_content = f"""
-            Current Time: {current_time_str}
-            
-            Task: Analyze the following market data and generate an investment decision JSON.
-            
-            Analysis Instructions (Strategy):
-            {prompt_template}
-            
-            Real-time Indicators Data:
-            {data_context}
-            
-            Remember: Be decisive. If the signal is strictly strictly strictly unclear, allow 'WAIT'. Otherwise, give a direction.
-            Return strictly JSON format.
-            """
+            system_prompt = self._build_system_prompt()
+            user_content = self._build_user_content(data_context, prompt_template, current_time_str=current_time_str)
             
             response = client.chat.completions.create(
                 model=ai_config["model_name"],
@@ -98,43 +103,15 @@ class AIService:
         except Exception as e:
             return {"type": "error", "message": f"AI Error: {str(e)}"}, str(e)
 
-    def analyze_debug(self, data_context: str, prompt_template: str, ai_config: Dict[str, Any]) -> Tuple[Dict[str, Any], str, Dict[str, str]]:
+    def analyze_debug(self, data_context: str, prompt_template: str, ai_config: Dict[str, Any], current_time_str: Optional[str] = None) -> Tuple[Dict[str, Any], str, Dict[str, str]]:
         try:
             client = OpenAI(
                 api_key=ai_config["api_key"],
                 base_url=ai_config["base_url"]
             )
             
-            system_prompt = (
-                "你是一位拥有20年经验的资深量化基金经理，擅长短线博弈和趋势跟踪。"
-                "你的任务是根据提供的股票实时数据和技术指标，给出当前时间点明确的、可执行的交易指令。"
-                "\n\n"
-                "【分析原则】\n"
-                "1. 客观：只基于提供的数据说话，不要幻想未提供的新闻。\n"
-                "2. 果断：必须给出明确的方向（买入/卖出/观望），禁止模棱两可。\n"
-                "3. 风控：任何开仓建议必须包含止损位。\n"
-                "\n\n"
-                "【输出要求】\n"
-                "请严格只输出一个合法的 JSON 对象，不要包含 Markdown 代码块标记（如 ```json），格式如下：\n"
-                "{\n"
-                "  \"type\": \"info\" | \"warning\" | \"error\",  // info=正常分析, warning=数据不足或风险极高, error=无法分析\n"
-                "  \"signal\": \"STRONG_BUY\" | \"BUY\" | \"WAIT\" | \"SELL\" | \"STRONG_SELL\", // 明确的信号\n"
-                "  \"action_advice\": \"...\", // 一句话的大白话操作建议，例如：'现价25.5元立即买入，目标27元'\n"
-                "  \"suggested_position\": \"...\", // 建议仓位，例如：'3成仓' 或 '空仓观望'\n"
-                "  \"duration\": \"...\", // 建议持仓时间，例如：'短线T+1' 或 '中线持股2周'\n"
-                "  \"support_pressure\": {\"support\": 价格, \"pressure\": 价格}, // 支撑压力位\n"
-                "  \"stop_loss_price\": 价格, // 严格的止损价格\n"
-                "  \"message\": \"...\" // 详细的逻辑分析摘要，解释为什么这么做，不超过100字\n"
-                "}"
-            )
-
-            user_content = (
-                "数据:\n"
-                f"{data_context}\n\n"
-                "分析要求:\n"
-                f"{prompt_template}\n\n"
-                "请严格输出 JSON 格式。"
-            )
+            system_prompt = self._build_system_prompt()
+            user_content = self._build_user_content(data_context, prompt_template, current_time_str=current_time_str)
 
             response = client.chat.completions.create(
                 model=ai_config["model_name"],
