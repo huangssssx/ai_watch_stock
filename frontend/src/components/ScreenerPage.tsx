@@ -106,6 +106,7 @@ const ScreenerPage: React.FC = () => {
           
           if (selectedId) {
               await api.put(`/screeners/${selectedId}`, payload);
+               message.success(`Successfully`);
           } else {
               const createdRes = await api.post<Screener>('/screeners/', payload);
               const created = createdRes.data;

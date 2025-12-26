@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { Layout, Menu, Button, Input, Tabs, Table, message, Modal, Splitter, Typography, Space } from 'antd';
 import { PlusOutlined, SaveOutlined, PlayCircleOutlined, DeleteOutlined, CodeOutlined } from '@ant-design/icons';
 import Editor from '@monaco-editor/react';
@@ -20,6 +20,39 @@ type ResearchChartConfig = {
   series?: ResearchChartSeries[];
 };
 
+const stableStringify = (value: unknown): string => {
+  if (value === null) return 'null';
+  const t = typeof value;
+  if (t === 'string') return JSON.stringify(value);
+  if (t === 'number' || t === 'boolean') return String(value);
+  if (t !== 'object') return JSON.stringify(value);
+
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
+};
+
+const fnv1a32Hex = (input: string): string => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16);
+};
+
+const pickRowId = (record: Record<string, unknown>): string | null => {
+  const candidates = ['id', 'key', 'symbol', '代码', '股票代码'];
+  for (const k of candidates) {
+    const v = record[k];
+    if (typeof v === 'string' && v.trim()) return v;
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  }
+  return null;
+};
+
 const ResearchPage: React.FC = () => {
   const [scripts, setScripts] = useState<ResearchScript[]>([]);
   const [currentScript, setCurrentScript] = useState<Partial<ResearchScript>>({ title: 'New Script', script_content: '' });
@@ -29,6 +62,23 @@ const ResearchPage: React.FC = () => {
   const [log, setLog] = useState('');
   const [chartData, setChartData] = useState<ResearchChartConfig | null>(null);
   const [activeTab, setActiveTab] = useState('log');
+
+  const tableData = useMemo(() => {
+    const seen = new Map<string, number>();
+    return result.map((r) => {
+      const base = (() => {
+        const picked = pickRowId(r);
+        if (picked) return `id:${picked}`;
+        return `h:${fnv1a32Hex(stableStringify(r))}`;
+      })();
+
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+
+      const rowKey = n === 0 ? base : `${base}:${n}`;
+      return { ...r, __rowKey: rowKey };
+    });
+  }, [result]);
 
   useEffect(() => {
     fetchScripts();
@@ -219,7 +269,7 @@ const ResearchPage: React.FC = () => {
                   {
                     key: 'table',
                     label: `Data (${result?.length || 0})`,
-                    children: <Table dataSource={result} columns={getColumns()} size="small" scroll={{ x: 'max-content', y: 400 }} pagination={{ pageSize: 50 }} rowKey={(_, i) => String(i)} />
+                    children: <Table dataSource={tableData} columns={getColumns()} size="small" scroll={{ x: 'max-content', y: 400 }} pagination={{ pageSize: 50 }} rowKey="__rowKey" />
                   },
                   {
                     key: 'chart',
