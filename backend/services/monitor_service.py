@@ -217,6 +217,10 @@ def _get_last_signal_from_db(stock_id: int, db: Session) -> str:
     
     return "WAIT"
 
+def _log_chain(run_id, message):
+    """Log execution chain step for debugging"""
+    print(f"[ExecChain][{run_id}] {message}")
+
 def process_stock(
     stock_id: int,
     bypass_checks: bool = False,
@@ -230,9 +234,11 @@ def process_stock(
     if db is None:
         db = SessionLocal()
     run_id = f"{stock_id}-{time.time_ns()}"
+    _log_chain(run_id, f"START process_stock stock_id={stock_id}")
     try:
         stock = db.query(Stock).filter(Stock.id == stock_id).first()
         if not stock:
+            _log_chain(run_id, "SKIP: stock_not_found")
             _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "reason": "stock_not_found"})
             if return_result:
                 return {
@@ -243,7 +249,11 @@ def process_stock(
                     "error": "stock_not_found",
                 }
             return
+        
+        _log_chain(run_id, f"Processing {stock.symbol} ({stock.name})")
+
         if (not bypass_checks) and (not stock.is_monitoring):
+            _log_chain(run_id, "SKIP: monitoring_disabled")
             _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "symbol": stock.symbol, "reason": "monitoring_disabled"})
             if return_result:
                 return {
@@ -259,6 +269,7 @@ def process_stock(
         # Check trading day
         if (not bypass_checks) and getattr(stock, "only_trade_days", True):
             if not _check_is_trade_day():
+                 _log_chain(run_id, "SKIP: not_trade_day")
                  _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "symbol": stock.symbol, "reason": "not_trade_day"})
                  if return_result:
                      return {
@@ -304,6 +315,7 @@ def process_stock(
                                 continue
                     
                     if not is_in_schedule:
+                        _log_chain(run_id, f"SKIP: outside_schedule. Now={now.strftime('%H:%M')}, Schedule={schedule}")
                         _emit(
                             "monitor_skip",
                             {
@@ -327,12 +339,16 @@ def process_stock(
                         return
             except Exception as e:
                 print(f"Error checking schedule for {stock.symbol}: {e}")
+                _log_chain(run_id, f"Error checking schedule: {e}")
 
         # Determine Mode
         monitoring_mode = getattr(stock, "monitoring_mode", "ai_only") or "ai_only"
         
         # Get Last Signal from DB
         last_signal = _get_last_signal_from_db(stock.id, db)
+        
+        _log_chain(run_id, f"Step: Mode Check. Mode={monitoring_mode}, LastSignal={last_signal}")
+
         
         _emit(
             "monitor_start",
@@ -402,6 +418,7 @@ def process_stock(
 
             rule = db.query(RuleScript).filter(RuleScript.id == stock.rule_script_id).first()
             if not rule:
+                _log_chain(run_id, f"SKIP: rule_not_found ID={stock.rule_script_id}")
                 msg = f"Rule script {stock.rule_script_id} not found"
                 _emit("monitor_skip", {"run_id": run_id, "stock_id": stock_id, "reason": "rule_not_found"})
                 if is_test:
@@ -437,7 +454,9 @@ def process_stock(
                     }
                 return
 
+            _log_chain(run_id, f"Executing Rule Script ID={rule.id}")
             script_triggered, script_msg, script_log, script_signal = _execute_rule_script(stock, rule)
+            _log_chain(run_id, f"Rule Result: Triggered={script_triggered}, Signal={script_signal}, Msg={script_msg}")
             
             if monitoring_mode == "hybrid":
                 rule_derived_signal = "WAIT"
@@ -451,6 +470,7 @@ def process_stock(
                         rule_derived_signal = "BUY"
 
                 if (not script_triggered) and (rule_derived_signal == "WAIT"):
+                    _log_chain(run_id, "SKIP: rule_not_triggered (Hybrid Mode)")
                     analysis_json = {
                         "type": "info",
                         "signal": rule_derived_signal,
@@ -504,6 +524,7 @@ def process_stock(
                     return
 
                 if rule_derived_signal == last_signal:
+                    _log_chain(run_id, f"SKIP: signal_consistent (Hybrid Mode). Rule={rule_derived_signal} Last={last_signal}")
                     skip_ai_in_hybrid = True
                     analysis_json = {
                         "type": "info",
@@ -594,6 +615,8 @@ def process_stock(
             # Check for signal change
             is_signal_changed = final_signal != last_signal
             
+            _log_chain(run_id, f"Script Mode Result: Signal={final_signal}, Changed={is_signal_changed}, Last={last_signal}")
+            
             analysis_json = {
                 "type": "warning" if is_signal_changed else "info",
                 "signal": final_signal, 
@@ -614,6 +637,7 @@ def process_stock(
             elif needs_ai and (not stock.ai_provider_id):
                 msg = f"No AI provider configured for {stock.symbol}"
                 print(msg)
+                _log_chain(run_id, "SKIP: ai_provider_missing")
                 if is_test:
                     analysis_json = {
                         "type": "error",
@@ -654,6 +678,7 @@ def process_stock(
             context = {"symbol": stock.symbol, "name": stock.name}
             data_parts = []
             
+            _log_chain(run_id, f"Fetching data for {len(stock.indicators)} indicators")
             for indicator in stock.indicators:
                 fetch_start = time.time()
                 data = data_fetcher.fetch(indicator.akshare_api, indicator.params_json, context, indicator.post_process_json, indicator.python_code)
@@ -665,6 +690,7 @@ def process_stock(
                     fetch_ok += 1
                 data_parts.append(f"--- Indicator: {indicator.name} ---\n{data}\n")
             
+            _log_chain(run_id, f"Data fetch done. OK={fetch_ok}, Err={fetch_error}")
             full_data = "\n".join(data_parts)
 
             # 2. AI Analysis
@@ -816,14 +842,17 @@ def process_stock(
             ai_request_payload_text = json.dumps(ai_request_payload, ensure_ascii=False, indent=2)
 
             ai_start = time.time()
+            _log_chain(run_id, f"Calling AI Model: {ai_model_name}")
             if return_result:
                 analysis_json, raw_response, prompt_debug = ai_service.analyze_debug(data_for_ai, prompt, config_dict, current_time_str=ai_request_time_str)
             else:
                 analysis_json, raw_response = ai_service.analyze(data_for_ai, prompt, config_dict, current_time_str=ai_request_time_str)
             ai_duration_ms = int((time.time() - ai_start) * 1000)
-
+            
             signal = analysis_json.get("signal", "WAIT")
             canonical_signal = _canonicalize_signal(signal)
+            _log_chain(run_id, f"AI Result: Signal={canonical_signal} (Raw={signal}), Duration={ai_duration_ms}ms")
+            
             analysis_json["signal"] = canonical_signal
             is_alert = (analysis_json.get("type") == "warning") or (canonical_signal != "WAIT")
 
@@ -885,6 +914,8 @@ def process_stock(
             allowed_urgencies = alert_config.get("allowed_urgencies", ["紧急", "一般", "不紧急"])
             if duration_level not in allowed_urgencies:
                 should_send_email = False
+        
+        _log_chain(run_id, f"Alert Decision: Signal={canonical_signal}, Changed={is_signal_changed}, AllowedSig={canonical_signal in allowed_signals}, Urgency={duration_level}, Send={should_send_email}")
 
         if should_send_email and send_alerts:
             alert_attempted = True

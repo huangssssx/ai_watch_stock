@@ -1,10 +1,10 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { Layout, Menu, Button, Input, Tabs, Table, message, Modal, Splitter, Typography, Space } from 'antd';
-import { PlusOutlined, SaveOutlined, PlayCircleOutlined, DeleteOutlined, CodeOutlined } from '@ant-design/icons';
+import { Layout, Menu, Button, Input, Tabs, Table, message, Modal, Splitter, Typography, Space, Tooltip } from 'antd';
+import { PlusOutlined, SaveOutlined, PlayCircleOutlined, DeleteOutlined, CodeOutlined, FullscreenOutlined, FullscreenExitOutlined } from '@ant-design/icons';
 import Editor from '@monaco-editor/react';
 import { getResearchScripts, createResearchScript, updateResearchScript, deleteResearchScript, runResearchScript } from '../api';
 import type { ResearchScript } from '../types';
-import { ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 import type { ColumnsType } from 'antd/es/table';
 
 const { Sider, Content } = Layout;
@@ -54,6 +54,7 @@ const pickRowId = (record: Record<string, unknown>): string | null => {
 };
 
 const ResearchPage: React.FC = () => {
+  const [fullscreenPanel, setFullscreenPanel] = useState<'code' | 'result' | null>(null);
   const [scripts, setScripts] = useState<ResearchScript[]>([]);
   const [currentScript, setCurrentScript] = useState<Partial<ResearchScript>>({ title: 'New Script', script_content: '' });
   const [loading, setLoading] = useState(false);
@@ -83,6 +84,19 @@ const ResearchPage: React.FC = () => {
   useEffect(() => {
     fetchScripts();
   }, []);
+
+  useEffect(() => {
+    if (!fullscreenPanel) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFullscreenPanel(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [fullscreenPanel]);
+
+  useEffect(() => {
+    window.dispatchEvent(new Event('resize'));
+  }, [fullscreenPanel]);
 
   const fetchScripts = async () => {
     try {
@@ -179,21 +193,69 @@ const ResearchPage: React.FC = () => {
     if (!chartData || result.length === 0) return <div style={{ padding: 20 }}>No chart data available. Define 'chart' variable in script.</div>;
 
     const { xKey, series = [] } = chartData;
+    const dataLen = result.length;
+    const maxLabelLength = result.reduce((max, row) => {
+      const v = row?.[xKey];
+      const s = v === undefined || v === null ? '' : String(v);
+      return Math.max(max, s.length);
+    }, 0);
+    const shouldRotate = dataLen > 12 || maxLabelLength > 10;
+    const tickAngle = shouldRotate ? -45 : 0;
+    const xAxisHeight = shouldRotate ? 90 : 40;
+    const enableScroll = dataLen > 20;
+    const minChartWidth = 900;
+    const perItemWidth = Math.min(100, Math.max(36, maxLabelLength * 6));
+    const chartWidth = enableScroll ? Math.max(minChartWidth, dataLen * perItemWidth) : '100%';
+    const chartHeight = 520;
+
+    const AxisTick = (props: {
+      x?: number;
+      y?: number;
+      payload?: { value?: unknown };
+    }) => {
+      const x = props.x ?? 0;
+      const y = props.y ?? 0;
+      const raw = props.payload?.value;
+      const label = raw === undefined || raw === null ? '' : String(raw);
+      return (
+        <g transform={`translate(${x},${y})`}>
+          <text
+            x={0}
+            y={0}
+            dy={shouldRotate ? 16 : 10}
+            textAnchor={shouldRotate ? 'end' : 'middle'}
+            fill="#666"
+            fontSize={12}
+            transform={shouldRotate ? `rotate(${tickAngle})` : undefined}
+          >
+            <title>{label}</title>
+            {label}
+          </text>
+        </g>
+      );
+    };
 
     return (
-      <ResponsiveContainer width="100%" height={500}>
-        <ComposedChart data={result}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey={xKey} />
-          <YAxis />
-          <Tooltip />
-          <Legend />
-          {series.map((s, idx) => {
-            if (s.type === 'bar') return <Bar key={idx} dataKey={s.key} fill={s.color || '#82ca9d'} />;
-            return <Line key={idx} type="monotone" dataKey={s.key} stroke={s.color || '#8884d8'} />;
-          })}
-        </ComposedChart>
-      </ResponsiveContainer>
+      <div style={{ width: '100%', height: chartHeight, overflowX: enableScroll ? 'auto' : 'hidden', overflowY: 'hidden' }}>
+        <div style={{ width: chartWidth, height: chartHeight }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart
+              data={result}
+              margin={{ top: 20, right: 20, left: 0, bottom: shouldRotate ? 70 : 30 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey={xKey} height={xAxisHeight} interval={0} tick={AxisTick} />
+              <YAxis />
+              <RechartsTooltip />
+              <Legend />
+              {series.map((s, idx) => {
+                if (s.type === 'bar') return <Bar key={idx} dataKey={s.key} fill={s.color || '#82ca9d'} />;
+                return <Line key={idx} type="monotone" dataKey={s.key} stroke={s.color || '#8884d8'} />;
+              })}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
     );
   };
 
@@ -207,6 +269,15 @@ const ResearchPage: React.FC = () => {
       render: (val: unknown) => (typeof val === 'object' ? JSON.stringify(val) : String(val)),
     }));
   };
+
+  const toggleFullscreen = (panel: 'code' | 'result') => {
+    setFullscreenPanel((prev) => (prev === panel ? null : panel));
+  };
+
+  const codePanelSize =
+    fullscreenPanel === 'code' ? '100%' : fullscreenPanel === 'result' ? 0 : undefined;
+  const resultPanelSize =
+    fullscreenPanel === 'result' ? '100%' : fullscreenPanel === 'code' ? 0 : undefined;
 
   return (
     <Layout style={{ height: 'calc(100vh - 64px)' }}>
@@ -244,38 +315,93 @@ const ResearchPage: React.FC = () => {
           </Space>
         </div>
         
-        <Splitter style={{ flex: 1 }}>
-          <Splitter.Panel defaultSize="40%" min="20%" max="80%">
-             <Editor
-               height="100%"
-               defaultLanguage="python"
-               value={currentScript.script_content}
-               onChange={val => setCurrentScript({ ...currentScript, script_content: val || '' })}
-               options={{ minimap: { enabled: false }, fontSize: 14 }}
-             />
+        <Splitter style={{ flex: 1, minHeight: 0 }}>
+          <Splitter.Panel
+            defaultSize="40%"
+            min="20%"
+            max="80%"
+            size={codePanelSize}
+            resizable={!fullscreenPanel}
+          >
+            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0, background: '#fff' }}>
+              <div
+                style={{
+                  padding: '8px 12px',
+                  borderBottom: '1px solid #f0f0f0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  background: '#fafafa',
+                }}
+              >
+                <Typography.Text strong>代码</Typography.Text>
+                <Tooltip title={fullscreenPanel === 'code' ? '退出全屏 (Esc)' : '全屏代码'}>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={fullscreenPanel === 'code' ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                    onClick={() => toggleFullscreen('code')}
+                  />
+                </Tooltip>
+              </div>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <Editor
+                  height="100%"
+                  defaultLanguage="python"
+                  value={currentScript.script_content}
+                  onChange={(val) => setCurrentScript({ ...currentScript, script_content: val || '' })}
+                  options={{ minimap: { enabled: false }, fontSize: 14 }}
+                />
+              </div>
+            </div>
           </Splitter.Panel>
-          <Splitter.Panel>
-            <div  style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#fff' }}>
-              <Tabs 
-                activeKey={activeTab} 
-                onChange={setActiveTab} 
-                style={{ padding: '0 16px', flex: 1,height: '100%' }}
+          <Splitter.Panel size={resultPanelSize} resizable={!fullscreenPanel}>
+            <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#fff', minHeight: 0 }}>
+              <Tabs
+                activeKey={activeTab}
+                onChange={setActiveTab}
+                style={{ padding: '0 16px', flex: 1, height: '100%', minHeight: 0 }}
+                tabBarExtraContent={
+                  <Tooltip title={fullscreenPanel === 'result' ? '退出全屏 (Esc)' : '全屏结果'}>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={fullscreenPanel === 'result' ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                      onClick={() => toggleFullscreen('result')}
+                    />
+                  </Tooltip>
+                }
                 items={[
                   {
                     key: 'log',
                     label: 'Log',
-                    children: <Input.TextArea value={log} readOnly style={{ flex:1,height: '100%', minHeight: 500, fontFamily: 'monospace' }} />
+                    children: (
+                      <Input.TextArea
+                        value={log}
+                        readOnly
+                        style={{ flex: 1, height: '100%', minHeight: 500, fontFamily: 'monospace' }}
+                      />
+                    ),
                   },
                   {
                     key: 'table',
                     label: `Data (${result?.length || 0})`,
-                    children: <Table dataSource={tableData} columns={getColumns()} size="small" scroll={{ x: 'max-content', y: 400 }} pagination={{ pageSize: 50 }} rowKey="__rowKey" />
+                    children: (
+                      <Table
+                        dataSource={tableData}
+                        columns={getColumns()}
+                        size="small"
+                        scroll={{ x: 'max-content', y: 400 }}
+                        pagination={{ pageSize: 50 }}
+                        rowKey="__rowKey"
+                      />
+                    ),
                   },
                   {
                     key: 'chart',
                     label: 'Chart',
-                    children: renderChart()
-                  }
+                    children: renderChart(),
+                  },
                 ]}
               />
             </div>
