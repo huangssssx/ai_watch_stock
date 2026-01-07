@@ -27,6 +27,54 @@ BOARD_LIMIT_MIN = 2    # 板块涨停股数阈值 2只
 # 1. 初始化空结果
 df = pd.DataFrame()
 
+def _get_tier_info(level: int):
+    if level == 1:
+        return "T1", "档位T1：日线+分时+板块数据齐全且核心条件全部达标，信号最强，适合进攻型交易。"
+    if level == 2:
+        return "T2", "档位T2：数据齐全但分时承接或尾盘强度略有缺口，强度略弱于T1，可结合盘面确认。"
+    if level == 3:
+        return "T3", "档位T3：分钟级数据缺失或不完整，仅依赖日线与板块，信号偏中性，需提高容错和风控。"
+    if level == 4:
+        return "T4", "档位T4：仅满足日线基础条件，板块或分时信息严重缺失，更适合作为观察名单。"
+    return "T5", "档位T5：数据支撑较弱或环境噪音较大，只做弱关注，不建议直接执行交易。"
+
+def _make_record(symbol: str, name: str, score: float, reason: str, level: int, note: str, **kwargs):
+    tier, tier_tip = _get_tier_info(level)
+    tier_context = tier_tip if not note else f"{tier_tip} 注意事项：{note}"
+    rec = {
+        "symbol": symbol,
+        "name": name,
+        "score": float(score),
+        "tier": tier,
+        "tier_level": int(level),
+        "tier_tip": tier_tip,
+        "tier_context": tier_context,
+        "note": note,
+        "reason": reason,
+    }
+    rec.update(kwargs)
+    return rec
+
+def _fetch_daily_hist(symbol: str):
+    tried = []
+    for adjust in ["qfq", "hfq", ""]:
+        try:
+            hist_df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust=adjust)
+            return hist_df, (adjust if adjust else "none")
+        except Exception as e:
+            tried.append((adjust if adjust else "none", str(e)))
+    raise RuntimeError(f"daily_fetch_failed: {tried[:2]}")
+
+def _fetch_minute_hist(symbol: str):
+    tried = []
+    for period in ["1", "5"]:
+        try:
+            minute_df = ak.stock_zh_a_hist_min_em(symbol=symbol, period=period, adjust="")
+            return minute_df, f"{period}m"
+        except Exception as e:
+            tried.append((period, str(e)))
+    raise RuntimeError(f"minute_fetch_failed: {tried[:2]}")
+
 def get_main_board(symbol: str) -> str:
     """获取个股主营板块（容错处理）"""
     try:
@@ -115,183 +163,296 @@ try:
         "scanned": 0,
         "exception": 0,
         "daily_fetch_error": 0,
+        "daily_fallback_hfq": 0,
+        "daily_fallback_none": 0,
         "minute_fetch_error": 0,
+        "minute_fallback_5m": 0,
         "error_samples": [],
-        "pass_vol_total": 0,
-        "pass_ma": 0,
-        "pass_not_high": 0,
-        "pass_vol": 0,
-        "pass_callback": 0,
-        "pass_end": 0,
-        "pass_board": 0,
-        "pass_all": 0,
-        "stage_vol": 0,
-        "stage_vol_ma": 0,
-        "stage_day": 0,
-        "stage_day_strength": 0,
-        "stage_all": 0,
+        "tier1": 0,
+        "tier2": 0,
+        "tier3": 0,
+        "tier4": 0,
+        "tier5": 0,
     }
 
-    results = []
-    near_results = []
     board_check_enabled = bool(board_dict)
-    for _, row in snapshot_df.iterrows():
+    all_results = []
+
+    amount_series = pd.to_numeric(snapshot_df.get("amount"), errors="coerce")
+    pct_series = pd.to_numeric(snapshot_df.get("pct_chg"), errors="coerce")
+    amount_rank = amount_series.rank(ascending=False, method="min") if amount_series is not None else None
+
+    for idx, row in snapshot_df.iterrows():
         symbol = row["symbol"]
         name = row["name"]
+        diag["scanned"] += 1
+
+        note_parts = []
+        if not board_check_enabled:
+            note_parts.append("板块数据源不可用，已跳过板块联动校验")
+
         try:
-            is_strict = RUN_MODE == "strict"
-            diag["scanned"] += 1
-            # ========== 子步骤1：获取日线数据 ==========
             try:
-                hist_df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="qfq")
+                hist_df, daily_mode = _fetch_daily_hist(symbol)
+                if daily_mode != "qfq":
+                    if daily_mode == "hfq":
+                        diag["daily_fallback_hfq"] += 1
+                        note_parts.append("日线已降级为后复权(hfq)，可能与前复权口径略有差异")
+                    else:
+                        diag["daily_fallback_none"] += 1
+                        note_parts.append("日线已降级为不复权(none)，可能与复权口径略有差异")
             except Exception as e:
                 diag["daily_fetch_error"] += 1
                 if len(diag["error_samples"]) < 10:
                     diag["error_samples"].append({"symbol": symbol, "step": "daily", "error": str(e)})
+                ar = float(amount_rank.loc[idx]) if amount_rank is not None and idx in amount_rank.index and not pd.isna(amount_rank.loc[idx]) else None
+                amt = row.get("amount", None)
+                pct = row.get("pct_chg", None)
+                amt_val = float(amt) if amt is not None and not pd.isna(amt) else 0.0
+                pct_val = float(pct) if pct is not None and not pd.isna(pct) else 0.0
+                score = round((1.0 / (ar or 9999)) * 60 + max(min(pct_val, 9.5), 0) / 9.5 * 40, 2)
+                note_parts.append("日线数据获取失败，仅快照候选，需人工复核")
+                all_results.append(
+                    _make_record(
+                        symbol=symbol,
+                        name=name,
+                        score=score,
+                        reason=f"快照候选：涨跌幅{pct_val:.2f}%；成交额{amt_val/1e8:.2f}亿；日线缺失",
+                        level=5,
+                        note="；".join(note_parts),
+                        price=row.get("price", None),
+                        pct_chg=pct_val,
+                        amount=amt_val,
+                        vol_ratio=None,
+                        board_name="",
+                        data_mode="SnapshotOnly",
+                    )
+                )
+                diag["tier5"] += 1
                 continue
+
             if hist_df is None or len(hist_df) < 20:
+                note_parts.append("日线数据不足，仅快照候选，需人工复核")
+                ar = float(amount_rank.loc[idx]) if amount_rank is not None and idx in amount_rank.index and not pd.isna(amount_rank.loc[idx]) else None
+                amt = row.get("amount", None)
+                pct = row.get("pct_chg", None)
+                amt_val = float(amt) if amt is not None and not pd.isna(amt) else 0.0
+                pct_val = float(pct) if pct is not None and not pd.isna(pct) else 0.0
+                score = round((1.0 / (ar or 9999)) * 60 + max(min(pct_val, 9.5), 0) / 9.5 * 40, 2)
+                all_results.append(
+                    _make_record(
+                        symbol=symbol,
+                        name=name,
+                        score=score,
+                        reason=f"快照候选：涨跌幅{pct_val:.2f}%；成交额{amt_val/1e8:.2f}亿；日线不足",
+                        level=5,
+                        note="；".join(note_parts),
+                        price=row.get("price", None),
+                        pct_chg=pct_val,
+                        amount=amt_val,
+                        vol_ratio=None,
+                        board_name="",
+                        data_mode="SnapshotOnly",
+                    )
+                )
+                diag["tier5"] += 1
                 continue
-            hist_df.rename(
-                columns={"日期": "date", "收盘": "close", "成交量": "volume", "最高": "high", "最低": "low"},
-                inplace=True
-            )
+
+            hist_df.rename(columns={"日期": "date", "收盘": "close", "成交量": "volume", "最高": "high", "最低": "low"}, inplace=True)
             for col in ["close", "volume", "high", "low"]:
                 hist_df[col] = pd.to_numeric(hist_df[col], errors="coerce")
-            today_d = hist_df.iloc[-1]  # 当日日线数据
-            prev_5d = hist_df.iloc[-6:-1]  # 前5日数据
 
-            # ========== 子步骤2：日线维度条件校验 ==========
-            # 1. 量能总量校验：今日量能/前5日均量 1.3-2.0
-            prev_5d_vol_avg = prev_5d["volume"].mean()
-            if prev_5d_vol_avg == 0:
+            today_d = hist_df.iloc[-1]
+            prev_5d = hist_df.iloc[-6:-1]
+            prev_5d_vol_avg = float(prev_5d["volume"].mean()) if prev_5d is not None else 0.0
+            if prev_5d_vol_avg <= 0 or pd.isna(prev_5d_vol_avg):
                 continue
-            vol_ratio = today_d["volume"] / prev_5d_vol_avg
-            cond_vol_total = (vol_ratio >= VOL_RATIO_LOW) & (vol_ratio <= VOL_RATIO_HIGH)
-            if cond_vol_total:
-                diag["pass_vol_total"] += 1
 
-            # 2. 均线条件：5日线向上+股价全天在5日线+5/10日线距离≤3%
+            vol_ratio = float(today_d["volume"]) / prev_5d_vol_avg if today_d.get("volume", None) is not None else 0.0
             hist_df["ma5"] = hist_df["close"].rolling(window=5).mean()
             hist_df["ma10"] = hist_df["close"].rolling(window=10).mean()
-            ma5 = hist_df["ma5"].iloc[-1]
-            ma10 = hist_df["ma10"].iloc[-1]
-            # 均线斜率>0 表示向上倾斜
-            ma5_slope = calculate_ma_slope(hist_df["ma5"].iloc[-5:])
-            # 股价全天在5日线（用日线高低价判断，更贴近全天逻辑）
-            cond_price_on_ma5 = (today_d["low"] >= ma5)
-            # 5/10日线距离
-            ma_dist = (ma5 - ma10) / ma10 if ma10 > 0 else 1
-            cond_ma = (ma5_slope > 0) & (ma5 > ma10) & cond_price_on_ma5 & (ma_dist <= MA_DIST_MAX)
-            if cond_ma:
-                diag["pass_ma"] += 1
+            ma5 = float(hist_df["ma5"].iloc[-1]) if not pd.isna(hist_df["ma5"].iloc[-1]) else 0.0
+            ma10 = float(hist_df["ma10"].iloc[-1]) if not pd.isna(hist_df["ma10"].iloc[-1]) else 0.0
+            ma5_slope = float(calculate_ma_slope(hist_df["ma5"].iloc[-5:]))
+            ma_dist = (ma5 - ma10) / ma10 if ma10 > 0 else 1.0
+            low_20d = float(hist_df["close"].iloc[-20:].min())
+            pos_ratio = float(today_d["close"]) / low_20d if low_20d > 0 else 10.0
 
-            # 3. 高位股避坑：近20日涨幅≤80%
-            low_20d = hist_df["close"].iloc[-20:].min()
-            pos_ratio = today_d["close"] / low_20d
-            cond_not_high = (pos_ratio <= HIGH_POS_RATIO)
-            if cond_not_high:
-                diag["pass_not_high"] += 1
+            cond_vol_total_t3 = (vol_ratio >= VOL_RATIO_LOW) & (vol_ratio <= VOL_RATIO_HIGH)
+            cond_vol_total_t4 = (vol_ratio >= 1.1) & (vol_ratio <= 2.5)
+
+            cond_price_on_ma5 = (float(today_d["low"]) >= ma5) if ma5 > 0 and today_d.get("low", None) is not None else False
+            cond_ma_t3 = (ma5_slope > 0) & (ma5 > ma10) & cond_price_on_ma5 & (ma_dist <= MA_DIST_MAX)
+            cond_ma_t4 = (ma5_slope > 0) & (ma5 >= ma10) & (float(today_d["close"]) >= ma5 * 0.98 if ma5 > 0 else False) & (ma_dist <= 0.12)
+
+            cond_not_high_t3 = (pos_ratio <= HIGH_POS_RATIO)
+            cond_not_high_t4 = (pos_ratio <= 2.2)
+
+            daily_ok_t3 = bool(cond_vol_total_t3 & cond_ma_t3 & cond_not_high_t3)
+            daily_ok_t4 = bool(cond_vol_total_t4 & cond_ma_t4 & cond_not_high_t4)
 
             board_name = ""
-            cond_board = True if not board_check_enabled else False
-            if board_check_enabled and (cond_vol_total & cond_ma & cond_not_high):
+            board_checked = False
+            board_pct = None
+            board_limit = None
+            cond_board = True
+            if board_check_enabled and (daily_ok_t3 or daily_ok_t4):
                 board_name = get_main_board(symbol)
                 board_data = board_dict.get(board_name, None)
-                if board_data:
-                    board_pct = board_data.get("board_pct", None)
-                    limit_count = board_data.get("limit_count", None)
-                    if board_pct is not None:
-                        if limit_count is None:
-                            cond_board = (board_pct >= BOARD_RISE_MIN)
-                        else:
-                            cond_board = (board_pct >= BOARD_RISE_MIN) & (limit_count >= BOARD_LIMIT_MIN)
-                if cond_board:
-                    diag["pass_board"] += 1
+                if board_data and board_data.get("board_pct", None) is not None:
+                    board_pct = float(board_data.get("board_pct"))
+                    board_limit = board_data.get("limit_count", None)
+                    board_limit = int(board_limit) if board_limit is not None and not pd.isna(board_limit) else None
+                    board_checked = True
+                else:
+                    metrics = _get_industry_board_metrics(board_name, board_cache)
+                    if metrics and metrics.get("board_pct", None) is not None:
+                        board_pct = float(metrics.get("board_pct"))
+                        lc = metrics.get("limit_count", None)
+                        board_limit = int(lc) if lc is not None else None
+                        board_checked = True
 
-            # ========== 子步骤3：分时数据校验（策略核心，新增） ==========
-            # 获取当日分时数据（1分钟级，A股交易时间：9:30-11:30, 13:00-15:00）
+                if board_checked and board_pct is not None:
+                    if board_limit is None:
+                        cond_board = bool(board_pct >= BOARD_RISE_MIN)
+                    else:
+                        cond_board = bool((board_pct >= BOARD_RISE_MIN) & (board_limit >= BOARD_LIMIT_MIN))
+                else:
+                    note_parts.append("板块数据缺失，已跳过板块联动校验")
+                    cond_board = True
+
             minute_df = None
+            minute_status = "ok"
+            minute_granularity = "1m"
             try:
-                minute_df = ak.stock_zh_a_hist_min_em(symbol=symbol, period="1", adjust="")
+                minute_df, minute_granularity = _fetch_minute_hist(symbol)
+                if minute_granularity == "5m":
+                    diag["minute_fallback_5m"] += 1
+                    note_parts.append("分钟数据已降级为5分钟K，分时细节可能丢失")
             except Exception as e:
                 diag["minute_fetch_error"] += 1
+                minute_status = "fetch_error"
                 if len(diag["error_samples"]) < 10:
                     diag["error_samples"].append({"symbol": symbol, "step": "minute", "error": str(e)})
-                if (not is_strict) and (cond_vol_total & cond_ma & cond_not_high & cond_board):
+
+            if minute_df is None or getattr(minute_df, "empty", True) or "时间" not in getattr(minute_df, "columns", []):
+                minute_status = "missing" if minute_status == "ok" else minute_status
+                if daily_ok_t3 and cond_board:
+                    note_parts.append("分钟数据缺失，已降级到日线档位")
                     vol_score = (1 - abs(vol_ratio - 1.65)) * 50
                     ma_score = (1 - ma_dist) * 50
                     score = round(vol_score + ma_score, 2)
-                    near_results.append({
-                        "symbol": symbol,
-                        "name": name,
-                        "score": score,
-                        "reason": f"分钟数据获取失败，降级日线候选；量比{vol_ratio:.2f}倍(符合1.3-2.0)；均线条件达标；近20日涨幅{pos_ratio-1:.1%}(≤80%)；板块联动未知",
-                        "price": today_d.get("close", None),
-                        "pct_chg": row.get("pct_chg", None),
-                        "vol_ratio": round(vol_ratio, 2),
-                        "board_name": board_name,
-                        "data_mode": "DayOnly"
-                    })
-                continue
-            if minute_df is None or minute_df.empty or "时间" not in minute_df.columns:
-                if (not is_strict) and (cond_vol_total & cond_ma & cond_not_high & cond_board):
-                    vol_score = (1 - abs(vol_ratio - 1.65)) * 50
-                    ma_score = (1 - ma_dist) * 50
+                    all_results.append(
+                        _make_record(
+                            symbol=symbol,
+                            name=name,
+                            score=score,
+                            reason=f"量比{vol_ratio:.2f}倍；日线均线达标；近20日涨幅{pos_ratio-1:.1%}；分钟缺失",
+                            level=3,
+                            note="；".join(note_parts),
+                            price=float(today_d["close"]),
+                            pct_chg=float(row.get("pct_chg", 0) or 0),
+                            vol_ratio=round(vol_ratio, 2),
+                            board_name=board_name,
+                            board_pct=board_pct,
+                            board_limit=board_limit,
+                            minute_status=minute_status,
+                            minute_granularity=minute_granularity,
+                            data_mode="DayOnly",
+                        )
+                    )
+                    diag["tier3"] += 1
+                elif daily_ok_t4 and cond_board:
+                    note_parts.append("分钟数据缺失，已降级到更宽松日线档位")
+                    vol_score = (1 - abs(vol_ratio - 1.65)) * 45
+                    ma_score = (1 - ma_dist) * 45
                     score = round(vol_score + ma_score, 2)
-                    near_results.append({
-                        "symbol": symbol,
-                        "name": name,
-                        "score": score,
-                        "reason": f"分钟数据为空，降级日线候选；量比{vol_ratio:.2f}倍(符合1.3-2.0)；均线条件达标；近20日涨幅{pos_ratio-1:.1%}(≤80%)；板块联动未知",
-                        "price": today_d.get("close", None),
-                        "pct_chg": row.get("pct_chg", None),
-                        "vol_ratio": round(vol_ratio, 2),
-                        "board_name": board_name,
-                        "data_mode": "DayOnly"
-                    })
+                    all_results.append(
+                        _make_record(
+                            symbol=symbol,
+                            name=name,
+                            score=score,
+                            reason=f"量比{vol_ratio:.2f}倍；日线基础达标；近20日涨幅{pos_ratio-1:.1%}；分钟缺失",
+                            level=4,
+                            note="；".join(note_parts),
+                            price=float(today_d["close"]),
+                            pct_chg=float(row.get("pct_chg", 0) or 0),
+                            vol_ratio=round(vol_ratio, 2),
+                            board_name=board_name,
+                            board_pct=board_pct,
+                            board_limit=board_limit,
+                            minute_status=minute_status,
+                            minute_granularity=minute_granularity,
+                            data_mode="DayOnlyLoose",
+                        )
+                    )
+                    diag["tier4"] += 1
                 continue
+
             minute_df["time_dt"] = pd.to_datetime(minute_df["时间"], errors="coerce")
             minute_df = minute_df[minute_df["time_dt"].notna()].copy()
             if minute_df.empty:
-                if (not is_strict) and (cond_vol_total & cond_ma & cond_not_high & cond_board):
+                minute_status = "time_invalid"
+                if daily_ok_t3 and cond_board:
+                    note_parts.append("分钟时间字段异常，已降级到日线档位")
                     vol_score = (1 - abs(vol_ratio - 1.65)) * 50
                     ma_score = (1 - ma_dist) * 50
                     score = round(vol_score + ma_score, 2)
-                    near_results.append({
-                        "symbol": symbol,
-                        "name": name,
-                        "score": score,
-                        "reason": f"分钟时间字段为空，降级日线候选；量比{vol_ratio:.2f}倍(符合1.3-2.0)；均线条件达标；近20日涨幅{pos_ratio-1:.1%}(≤80%)；板块联动未知",
-                        "price": today_d.get("close", None),
-                        "pct_chg": row.get("pct_chg", None),
-                        "vol_ratio": round(vol_ratio, 2),
-                        "board_name": board_name,
-                        "data_mode": "DayOnly"
-                    })
+                    all_results.append(
+                        _make_record(
+                            symbol=symbol,
+                            name=name,
+                            score=score,
+                            reason=f"量比{vol_ratio:.2f}倍；日线均线达标；近20日涨幅{pos_ratio-1:.1%}；分钟异常",
+                            level=3,
+                            note="；".join(note_parts),
+                            price=float(today_d["close"]),
+                            pct_chg=float(row.get("pct_chg", 0) or 0),
+                            vol_ratio=round(vol_ratio, 2),
+                            board_name=board_name,
+                            board_pct=board_pct,
+                            board_limit=board_limit,
+                            minute_status=minute_status,
+                            minute_granularity=minute_granularity,
+                            data_mode="DayOnly",
+                        )
+                    )
+                    diag["tier3"] += 1
                 continue
+
             last_dt = minute_df["time_dt"].dt.date.max()
             minute_df = minute_df[minute_df["time_dt"].dt.date == last_dt].copy()
-            if minute_df is None or len(minute_df) < 120:
-                if (not is_strict) and (cond_vol_total & cond_ma & cond_not_high & cond_board):
+            min_points = 120 if minute_granularity == "1m" else 24
+            if minute_df is None or len(minute_df) < min_points:
+                minute_status = "too_short"
+                if daily_ok_t3 and cond_board:
+                    note_parts.append("分钟数据不足，已降级到日线档位")
                     vol_score = (1 - abs(vol_ratio - 1.65)) * 50
                     ma_score = (1 - ma_dist) * 50
                     score = round(vol_score + ma_score, 2)
-                    near_results.append({
-                        "symbol": symbol,
-                        "name": name,
-                        "score": score,
-                        "reason": f"分钟数据不足，降级日线候选；量比{vol_ratio:.2f}倍(符合1.3-2.0)；均线条件达标；近20日涨幅{pos_ratio-1:.1%}(≤80%)；板块联动未知",
-                        "price": today_d.get("close", None),
-                        "pct_chg": row.get("pct_chg", None),
-                        "vol_ratio": round(vol_ratio, 2),
-                        "board_name": board_name,
-                        "data_mode": "DayOnly"
-                    })
+                    all_results.append(
+                        _make_record(
+                            symbol=symbol,
+                            name=name,
+                            score=score,
+                            reason=f"量比{vol_ratio:.2f}倍；日线均线达标；近20日涨幅{pos_ratio-1:.1%}；分钟不足",
+                            level=3,
+                            note="；".join(note_parts),
+                            price=float(today_d["close"]),
+                            pct_chg=float(row.get("pct_chg", 0) or 0),
+                            vol_ratio=round(vol_ratio, 2),
+                            board_name=board_name,
+                            board_pct=board_pct,
+                            board_limit=board_limit,
+                            minute_status=minute_status,
+                            minute_granularity=minute_granularity,
+                            data_mode="DayOnly",
+                        )
+                    )
+                    diag["tier3"] += 1
                 continue
-            minute_df.rename(
-                columns={"收盘": "min_close", "成交量": "min_volume"},
-                inplace=True
-            )
+
+            minute_df.rename(columns={"收盘": "min_close", "成交量": "min_volume"}, inplace=True)
             minute_df["min_close"] = pd.to_numeric(minute_df["min_close"], errors="coerce")
             minute_df["min_volume"] = pd.to_numeric(minute_df["min_volume"], errors="coerce")
             minute_df["time"] = minute_df["time_dt"].dt.strftime("%H:%M")
@@ -299,154 +460,189 @@ try:
             morning_mask = minute_df["time"].between("09:30", "10:30")
             end_mask = minute_df["time"].between("14:30", "15:00")
             pre_end_mask = minute_df["time"].between("14:00", "14:30")
-            
-            morning_vol = minute_df[morning_mask]["min_volume"].sum()
+
+            morning_vol = float(minute_df[morning_mask]["min_volume"].sum())
             end_slice = minute_df[end_mask]
             pre_end_slice = minute_df[pre_end_mask]
             if end_slice.empty:
                 end_slice = minute_df.tail(30) if len(minute_df) >= 30 else minute_df
             if pre_end_slice.empty:
                 pre_end_slice = minute_df.iloc[-60:-30] if len(minute_df) >= 60 else minute_df.head(0)
-            end_vol = end_slice["min_volume"].sum()
-            pre_end_vol = pre_end_slice["min_volume"].sum()
-            total_vol = minute_df["min_volume"].sum()
+            end_vol = float(end_slice["min_volume"].sum())
+            pre_end_vol = float(pre_end_slice["min_volume"].sum())
+            total_vol = float(minute_df["min_volume"].sum())
 
-            # 1. 分时量能校验：早盘占比 + 尾盘量≥早盘
-            has_full_day = bool(minute_df["time"].max() >= "14:55")
-            if is_strict and not has_full_day:
-                continue
-            cond_morning_vol = True
-            cond_end_vol_ratio = True
-            if has_full_day:
-                if RUN_MODE == "strict":
-                    cond_morning_vol = (morning_vol / total_vol >= 0.25) & (morning_vol / total_vol <= 0.45) if total_vol > 0 else False
-                    cond_end_vol_ratio = (end_vol >= morning_vol * 0.4) if morning_vol > 0 else False
-                elif RUN_MODE == "adaptive":
-                    cond_morning_vol = (morning_vol / total_vol >= 0.2) & (morning_vol / total_vol <= 0.5) if total_vol > 0 else False
-                    cond_end_vol_ratio = (end_vol >= morning_vol * 0.3) if morning_vol > 0 else False
-            elif is_strict:
-                cond_morning_vol = False
-                cond_end_vol_ratio = False
-            cond_vol = cond_vol_total & cond_morning_vol & cond_end_vol_ratio
-            if cond_vol:
-                diag["pass_vol"] += 1
+            has_full_day = bool(str(minute_df["time"].max()) >= "14:55")
+            if not has_full_day:
+                note_parts.append("分时未覆盖全日，已采用盘中阈值")
 
-            # 2. 分时回调与承接校验
-            # 当日分时最高价与对应时间
-            high_price = minute_df["min_close"].max()
-            high_time = minute_df.loc[minute_df["min_close"] == high_price, "time"].iloc[0]
-            # 最高价之后的分时数据（回调阶段）
-            after_high_mask = minute_df["time"] >= high_time
-            after_high_df = minute_df[after_high_mask].reset_index(drop=True)
+            cond_morning_vol_strict = (morning_vol / total_vol >= 0.25) & (morning_vol / total_vol <= 0.45) if total_vol > 0 else False
+            cond_end_vol_ratio_strict = (end_vol >= morning_vol * 0.4) if morning_vol > 0 else False
+            cond_morning_vol_adaptive = (morning_vol / total_vol >= 0.2) & (morning_vol / total_vol <= 0.5) if total_vol > 0 else False
+            cond_end_vol_ratio_adaptive = (end_vol >= morning_vol * 0.3) if morning_vol > 0 else False
+
+            cond_vol_strict = bool(cond_vol_total_t3 & (cond_morning_vol_strict if has_full_day else False) & (cond_end_vol_ratio_strict if has_full_day else False))
+            cond_vol_adaptive = bool(cond_vol_total_t3 & (cond_morning_vol_adaptive if total_vol > 0 else False) & (cond_end_vol_ratio_adaptive if morning_vol > 0 else False))
+
+            high_price = float(minute_df["min_close"].max())
+            high_time = str(minute_df.loc[minute_df["min_close"] == high_price, "time"].iloc[0])
+            after_high_df = minute_df[minute_df["time"] >= high_time].reset_index(drop=True)
             max_callback = None
             recover_ratio = None
-            if len(after_high_df) < 15:  # 至少15分钟数据判断回调
-                cond_callback = False
+
+            if len(after_high_df) < 15:
+                cond_callback_strict = False
+                cond_callback_adaptive = False
             else:
-                # 最大回调幅度≤3%
-                max_callback = (high_price - after_high_df["min_close"].min()) / high_price
-                # 回调后15分钟内回升到80%以上
-                callback_low_price = after_high_df["min_close"].min()
-                callback_low_idx = after_high_df["min_close"].idxmin()
-                recover_15min_df = after_high_df.iloc[callback_low_idx:callback_low_idx+15] if callback_low_idx +15 < len(after_high_df) else after_high_df.iloc[callback_low_idx:]
-                recover_price = recover_15min_df["min_close"].max()
-                recover_ratio = (recover_price - callback_low_price) / (high_price - callback_low_price) if high_price > callback_low_price else 0
-                recover_threshold = (RECOVER_RATIO if has_full_day else 0.3) if RUN_MODE == "strict" else (0.5 if has_full_day else 0.3)
-                cond_callback = (max_callback <= CALLBACK_MAX) & (recover_ratio >= recover_threshold)
-            if cond_callback:
-                diag["pass_callback"] += 1
+                max_callback = (high_price - float(after_high_df["min_close"].min())) / high_price if high_price > 0 else 1.0
+                callback_low_price = float(after_high_df["min_close"].min())
+                callback_low_idx = int(after_high_df["min_close"].idxmin())
+                recover_15min_df = after_high_df.iloc[callback_low_idx:callback_low_idx+15] if callback_low_idx + 15 < len(after_high_df) else after_high_df.iloc[callback_low_idx:]
+                recover_price = float(recover_15min_df["min_close"].max()) if not recover_15min_df.empty else callback_low_price
+                recover_ratio = (recover_price - callback_low_price) / (high_price - callback_low_price) if high_price > callback_low_price else 0.0
+                cond_callback_strict = bool((max_callback <= CALLBACK_MAX) & (recover_ratio >= RECOVER_RATIO))
+                cond_callback_adaptive = bool((max_callback <= max(CALLBACK_MAX, 0.05)) & (recover_ratio >= 0.5 if has_full_day else 0.3))
 
-            # 3. 尾盘异动校验：涨幅0.5%-1% + 量能放大20%
-            end_first_price = float(end_slice["min_close"].iloc[0]) if not end_slice.empty else 0
-            end_last_price = float(end_slice["min_close"].iloc[-1]) if not end_slice.empty else 0
-            end_rise = (end_last_price - end_first_price) / end_first_price if end_first_price > 0 else 0
-            end_vol_ratio = end_vol / pre_end_vol if pre_end_vol > 0 else 0
-            if RUN_MODE == "strict" and has_full_day:
-                cond_end = (end_rise >= END_RISE_LOW) & (end_rise <= END_RISE_HIGH) & (end_vol_ratio >= END_VOL_RATIO)
-            else:
-                cond_end = (end_rise >= END_RISE_LOW_INTRA) & (end_rise <= END_RISE_HIGH_INTRA) & (end_vol_ratio >= END_VOL_RATIO_INTRA)
-            if cond_end:
-                diag["pass_end"] += 1
+            end_first_price = float(end_slice["min_close"].iloc[0]) if not end_slice.empty else 0.0
+            end_last_price = float(end_slice["min_close"].iloc[-1]) if not end_slice.empty else 0.0
+            end_rise = (end_last_price - end_first_price) / end_first_price if end_first_price > 0 else 0.0
+            end_vol_ratio = end_vol / pre_end_vol if pre_end_vol > 0 else 0.0
 
-            # 分时承接总条件
-            cond_strength = (cond_callback & cond_end) if is_strict else (cond_callback | cond_end)
+            cond_end_strict = bool((end_rise >= END_RISE_LOW) & (end_rise <= END_RISE_HIGH) & (end_vol_ratio >= END_VOL_RATIO)) if has_full_day else False
+            cond_end_adaptive = bool((end_rise >= END_RISE_LOW_INTRA) & (end_rise <= END_RISE_HIGH_INTRA) & (end_vol_ratio >= END_VOL_RATIO_INTRA))
 
-            if cond_vol:
-                diag["stage_vol"] += 1
-            if cond_vol & cond_ma:
-                diag["stage_vol_ma"] += 1
-            if cond_vol & cond_ma & cond_not_high:
-                diag["stage_day"] += 1
-            if cond_vol & cond_ma & cond_not_high & cond_strength:
-                diag["stage_day_strength"] += 1
-            if cond_vol & cond_ma & cond_not_high & cond_strength & cond_board:
-                diag["stage_all"] += 1
+            cond_strength_strict = bool(cond_callback_strict & cond_end_strict)
+            cond_strength_adaptive = bool(cond_callback_adaptive | cond_end_adaptive)
 
-            # ========== 子步骤5：综合条件判断 ==========
-            if cond_vol & cond_ma & cond_not_high & cond_strength & cond_board:
-                diag["pass_all"] += 1
-                # 计算综合评分
-                vol_score = (1 - abs(vol_ratio - 1.65)) * 50
-                ma_score = (1 - ma_dist) * 50
-                score = round(vol_score + ma_score, 2)
-                
-                results.append({
-                    "symbol": symbol,
-                    "name": name,
-                    "score": score,
-                    "reason": f"量比{vol_ratio:.2f}倍(符合1.3-2.0)；5日线向上且股价站稳；近20日涨幅{pos_ratio-1:.1%}(≤80%)；分时承接强；板块联动达标",
-                    "price": today_d["close"],
-                    "pct_chg": row["pct_chg"],
-                    "vol_ratio": round(vol_ratio, 2),
-                    "board_name": board_name,
-                    "data_mode": "Day+Minute"
-                })
-            elif cond_vol & cond_ma & cond_not_high & cond_board:
-                vol_score = (1 - abs(vol_ratio - 1.65)) * 50
-                ma_score = (1 - ma_dist) * 50
-                extra = (10 if cond_end else 0) + (10 if cond_callback else 0)
-                score = round(vol_score + ma_score + extra, 2)
-                max_callback_str = "NA"
-                recover_ratio_str = "NA"
-                try:
-                    if isinstance(max_callback, (int, float, np.floating)) and not pd.isna(max_callback):
-                        max_callback_str = f"{float(max_callback):.2%}"
-                    if isinstance(recover_ratio, (int, float, np.floating)) and not pd.isna(recover_ratio):
-                        recover_ratio_str = f"{float(recover_ratio):.2%}"
-                except Exception:
-                    pass
-                near_results.append({
-                    "symbol": symbol,
-                    "name": name,
-                    "score": score,
-                    "reason": f"严格条件未全满足；量比{vol_ratio:.2f}倍；end_rise={end_rise:.2%}；end_vol_ratio={end_vol_ratio:.2f}；max_callback={max_callback_str}；recover_ratio={recover_ratio_str}；板块联动未知",
-                    "price": today_d.get("close", None),
-                    "pct_chg": row["pct_chg"],
-                    "vol_ratio": round(vol_ratio, 2),
-                    "board_name": board_name,
-                    "data_mode": "NearMiss"
-                })
+            board_ok_for_rank = cond_board if board_checked else True
+
+            tier1_ok = bool(daily_ok_t3 & cond_vol_strict & cond_strength_strict & has_full_day & board_checked & board_ok_for_rank)
+            tier2_ok = bool(daily_ok_t3 & cond_vol_adaptive & cond_strength_adaptive & board_ok_for_rank)
+
+            vol_score = (1 - abs(vol_ratio - 1.65)) * 50
+            ma_score = (1 - ma_dist) * 50
+            base_score = float(vol_score + ma_score)
+
+            if tier1_ok:
+                score = round(base_score + 10, 2)
+                all_results.append(
+                    _make_record(
+                        symbol=symbol,
+                        name=name,
+                        score=score,
+                        reason=f"量比{vol_ratio:.2f}倍；均线达标；近20日涨幅{pos_ratio-1:.1%}；分时承接强；板块联动达标",
+                        level=1,
+                        note="；".join(note_parts) if note_parts else "",
+                        price=float(today_d["close"]),
+                        pct_chg=float(row.get("pct_chg", 0) or 0),
+                        vol_ratio=round(vol_ratio, 2),
+                        board_name=board_name,
+                        board_pct=board_pct,
+                        board_limit=board_limit,
+                        minute_status=minute_status,
+                        minute_granularity=minute_granularity,
+                        has_full_day=has_full_day,
+                        end_rise=round(end_rise, 4),
+                        end_vol_ratio=round(end_vol_ratio, 2),
+                        max_callback=round(float(max_callback), 4) if max_callback is not None else None,
+                        recover_ratio=round(float(recover_ratio), 4) if recover_ratio is not None else None,
+                        data_mode="Day+Minute+Board",
+                    )
+                )
+                diag["tier1"] += 1
+            elif tier2_ok:
+                score = round(base_score, 2)
+                if not board_checked:
+                    note_parts.append("板块联动未校验，已降级到T2")
+                all_results.append(
+                    _make_record(
+                        symbol=symbol,
+                        name=name,
+                        score=score,
+                        reason=f"量比{vol_ratio:.2f}倍；均线达标；近20日涨幅{pos_ratio-1:.1%}；分时承接中等",
+                        level=2,
+                        note="；".join(note_parts) if note_parts else "",
+                        price=float(today_d["close"]),
+                        pct_chg=float(row.get("pct_chg", 0) or 0),
+                        vol_ratio=round(vol_ratio, 2),
+                        board_name=board_name,
+                        board_pct=board_pct,
+                        board_limit=board_limit,
+                        minute_status=minute_status,
+                        minute_granularity=minute_granularity,
+                        has_full_day=has_full_day,
+                        end_rise=round(end_rise, 4),
+                        end_vol_ratio=round(end_vol_ratio, 2),
+                        max_callback=round(float(max_callback), 4) if max_callback is not None else None,
+                        recover_ratio=round(float(recover_ratio), 4) if recover_ratio is not None else None,
+                        data_mode="Day+Minute",
+                    )
+                )
+                diag["tier2"] += 1
+            elif daily_ok_t3 and cond_board:
+                note_parts.append("分时强度未达标，已降级到日线档位")
+                score = round(base_score * 0.95, 2)
+                all_results.append(
+                    _make_record(
+                        symbol=symbol,
+                        name=name,
+                        score=score,
+                        reason=f"量比{vol_ratio:.2f}倍；均线达标；近20日涨幅{pos_ratio-1:.1%}；分时未达标",
+                        level=3,
+                        note="；".join(note_parts),
+                        price=float(today_d["close"]),
+                        pct_chg=float(row.get("pct_chg", 0) or 0),
+                        vol_ratio=round(vol_ratio, 2),
+                        board_name=board_name,
+                        board_pct=board_pct,
+                        board_limit=board_limit,
+                        minute_status=minute_status,
+                        minute_granularity=minute_granularity,
+                        has_full_day=has_full_day,
+                        data_mode="DayOnlyFromMinute",
+                    )
+                )
+                diag["tier3"] += 1
+            elif daily_ok_t4 and cond_board:
+                note_parts.append("分时与日线强度不足，已降级到更宽松日线档位")
+                score = round(base_score * 0.9, 2)
+                all_results.append(
+                    _make_record(
+                        symbol=symbol,
+                        name=name,
+                        score=score,
+                        reason=f"量比{vol_ratio:.2f}倍；日线基础达标；近20日涨幅{pos_ratio-1:.1%}",
+                        level=4,
+                        note="；".join(note_parts),
+                        price=float(today_d["close"]),
+                        pct_chg=float(row.get("pct_chg", 0) or 0),
+                        vol_ratio=round(vol_ratio, 2),
+                        board_name=board_name,
+                        board_pct=board_pct,
+                        board_limit=board_limit,
+                        minute_status=minute_status,
+                        minute_granularity=minute_granularity,
+                        has_full_day=has_full_day,
+                        data_mode="DayOnlyLooseFromMinute",
+                    )
+                )
+                diag["tier4"] += 1
 
         except Exception as e:
-            # 个股分析失败跳过，不中断整体流程
             diag["exception"] += 1
             if len(diag["error_samples"]) < 10:
                 diag["error_samples"].append({"symbol": symbol, "step": "loop", "error": str(e)})
             continue
 
-    # ========== 步骤3：结果整理 ==========
-    if results:
-        df = pd.DataFrame(results)
-        df = df.sort_values("score", ascending=False).head(100)
-        print(f"筛选完成，命中 {len(df)} 只标的！")
-        print(df[["symbol", "name", "score", "reason"]].head(10))
-    elif near_results:
-        df = pd.DataFrame(near_results)
-        df = df.sort_values("score", ascending=False).head(100)
-        print(f"严格条件命中 0，只输出接近标的 {len(df)} 只（NearMiss）")
-        print(df[["symbol", "name", "score", "reason"]].head(10))
+    if all_results:
+        df = pd.DataFrame(all_results)
+        df = df.sort_values(["tier_level", "score"], ascending=[True, False]).head(100)
+        print(f"筛选完成，输出 {len(df)} 只标的（含降级档位）！")
+        cols = [c for c in ["symbol", "name", "tier", "score", "note", "reason"] if c in df.columns]
+        if cols:
+            print(df[cols].head(10))
     else:
-        print("未发现完全符合条件的标的")
+        print("未发现符合条件的标的")
     print("诊断统计:", diag)
 
 except Exception as e:
