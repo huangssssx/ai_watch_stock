@@ -11,6 +11,7 @@ if _backend_dir not in sys.path:
 from routers import stocks, ai_configs, logs, indicators, settings, screeners, research, rules
 from services.monitor_service import start_scheduler
 from services.screener_service import restore_screener_jobs
+from services.streamlit_service import start_streamlit, stop_streamlit
 from database import Base, engine
 import models
 
@@ -61,6 +62,11 @@ def startup_event():
     ensure_db_schema()
     start_scheduler()
     restore_screener_jobs()
+    start_streamlit()
+
+@app.on_event("shutdown")
+def shutdown_event():
+    stop_streamlit()
 
 @app.get("/")
 def read_root():

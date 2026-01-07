@@ -18,6 +18,7 @@ export const createResearchScript = (script: Partial<ResearchScript>) => api.pos
 export const updateResearchScript = (id: number, script: Partial<ResearchScript>) => api.put<ResearchScript>(`/research/${id}`, script);
 export const deleteResearchScript = (id: number) => api.delete(`/research/${id}`);
 export const runResearchScript = (script_content: string) => api.post<ResearchRunResponse>('/research/run', { script_content });
+export const runStreamlitScript = (script_content: string) => api.post<{ url: string }>('/research/streamlit/run', { script_content });
 
 export const getStocks = () => api.get<Stock[]>('/stocks/');
 export const createStock = (stock: Partial<Stock> & { indicator_ids?: number[] }) => api.post<Stock>('/stocks/', stock);

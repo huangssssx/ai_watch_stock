@@ -5,6 +5,7 @@ from database import get_db
 from models import ResearchScript
 from schemas import ResearchScript as ResearchScriptSchema, ResearchScriptCreate, ResearchScriptUpdate, ResearchRunRequest, ResearchRunResponse
 from services.research_service import execute_research_script
+from services.streamlit_service import update_streamlit_code, get_streamlit_url
 import datetime
 
 router = APIRouter(prefix="/research", tags=["research"])
@@ -54,3 +55,12 @@ def run_script(request: ResearchRunRequest):
         "chart": chart,
         "error": error
     }
+
+@router.post("/streamlit/run")
+def run_streamlit(request: ResearchRunRequest):
+    """
+    Updates the Streamlit script file and returns the Streamlit URL.
+    Streamlit server (running in background) will auto-reload.
+    """
+    url = update_streamlit_code(request.script_content)
+    return {"url": url}

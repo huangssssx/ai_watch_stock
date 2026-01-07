@@ -10,3 +10,5 @@ requests
 aiosmtplib
 jinja2
 python-multipart
+streamlit
+watchdog

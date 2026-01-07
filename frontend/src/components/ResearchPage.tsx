@@ -1,8 +1,8 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Layout, Menu, Button, Input, Tabs, Table, message, Modal, Splitter, Typography, Space, Tooltip } from 'antd';
-import { PlusOutlined, SaveOutlined, PlayCircleOutlined, DeleteOutlined, CodeOutlined, FullscreenOutlined, FullscreenExitOutlined } from '@ant-design/icons';
+import { PlusOutlined, SaveOutlined, PlayCircleOutlined, DeleteOutlined, CodeOutlined, FullscreenOutlined, FullscreenExitOutlined, PlaySquareOutlined } from '@ant-design/icons';
 import Editor from '@monaco-editor/react';
-import { getResearchScripts, createResearchScript, updateResearchScript, deleteResearchScript, runResearchScript } from '../api';
+import { getResearchScripts, createResearchScript, updateResearchScript, deleteResearchScript, runResearchScript, runStreamlitScript } from '../api';
 import type { ResearchScript } from '../types';
 import { ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
 import type { ColumnsType } from 'antd/es/table';
@@ -54,6 +54,35 @@ const pickRowId = (record: Record<string, unknown>): string | null => {
 };
 
 const ResearchPage: React.FC = () => {
+  return (
+    <>
+      <style>
+        {`
+          .research-tabs {
+            display: flex;
+            flex-direction: column;
+          }
+          .research-tabs .ant-tabs-content-holder {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+          }
+          .research-tabs .ant-tabs-content {
+            flex: 1;
+            height: 100%;
+          }
+          .research-tabs .ant-tabs-tabpane {
+            height: 100%;
+          }
+        `}
+      </style>
+      <ResearchPageContent />
+    </>
+  );
+};
+
+const ResearchPageContent: React.FC = () => {
   const [fullscreenPanel, setFullscreenPanel] = useState<'code' | 'result' | null>(null);
   const [scripts, setScripts] = useState<ResearchScript[]>([]);
   const [currentScript, setCurrentScript] = useState<Partial<ResearchScript>>({ title: 'New Script', script_content: '' });
@@ -63,6 +92,7 @@ const ResearchPage: React.FC = () => {
   const [log, setLog] = useState('');
   const [chartData, setChartData] = useState<ResearchChartConfig | null>(null);
   const [activeTab, setActiveTab] = useState('log');
+  const [streamlitUrl, setStreamlitUrl] = useState<string | null>(null);
 
   const tableData = useMemo(() => {
     const seen = new Map<string, number>();
@@ -184,6 +214,21 @@ const ResearchPage: React.FC = () => {
       const msg = e instanceof Error ? e.message : String(e);
       setLog(`Error: ${msg}`);
       message.error('Execution error');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const handleRunStreamlit = async () => {
+    if (!currentScript.script_content) return;
+    setRunning(true);
+    try {
+      const res = await runStreamlitScript(currentScript.script_content);
+      setStreamlitUrl(res.data.url);
+      setActiveTab('streamlit');
+      message.success('Streamlit updated');
+    } catch (e) {
+      message.error('Failed to run Streamlit');
     } finally {
       setRunning(false);
     }
@@ -311,6 +356,7 @@ const ResearchPage: React.FC = () => {
           <Space>
             <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={loading}>Save</Button>
             <Button type="primary" danger icon={<PlayCircleOutlined />} onClick={handleRun} loading={running}>Run</Button>
+            <Button icon={<PlaySquareOutlined />} onClick={handleRunStreamlit} loading={running}>Streamlit</Button>
             {currentScript.id && <Button icon={<DeleteOutlined />} onClick={() => handleDelete(currentScript.id!)} />}
           </Space>
         </div>
@@ -360,6 +406,7 @@ const ResearchPage: React.FC = () => {
               <Tabs
                 activeKey={activeTab}
                 onChange={setActiveTab}
+                className="research-tabs"
                 style={{ padding: '0 16px', flex: 1, height: '100%', minHeight: 0 }}
                 tabBarExtraContent={
                   <Tooltip title={fullscreenPanel === 'result' ? '退出全屏 (Esc)' : '全屏结果'}>
@@ -401,6 +448,19 @@ const ResearchPage: React.FC = () => {
                     key: 'chart',
                     label: 'Chart',
                     children: renderChart(),
+                  },
+                  {
+                    key: 'streamlit',
+                    label: 'Streamlit',
+                    children: streamlitUrl ? (
+                      <iframe
+                        src={streamlitUrl}
+                        style={{ width: '100%', height: '100%', border: 'none' }}
+                        title="Streamlit"
+                      />
+                    ) : (
+                      <div style={{ padding: 20 }}>Run script as Streamlit to see result.</div>
+                    ),
                   },
                 ]}
               />
