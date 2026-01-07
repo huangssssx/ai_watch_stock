@@ -212,3 +212,9 @@ export interface AIWatchAnalyzeResponse {
   user_prompt?: string;
   error?: string;
 }
+
+export interface IndicatorPreviewResponse {
+  ok: boolean;
+  data?: Record<string, any>;
+  error?: string;
+}

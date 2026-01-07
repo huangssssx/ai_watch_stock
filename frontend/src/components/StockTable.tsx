@@ -2,10 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag, Card, Space } from 'antd';
 import type { Stock, AIConfig, StockTestRunResponse, IndicatorDefinition } from '../types';
 import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock, getIndicators } from '../api';
-import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, EyeOutlined } from '@ant-design/icons';
+import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, EyeOutlined, TableOutlined } from '@ant-design/icons';
 import StockConfigModal from './StockConfigModal.tsx';
 import LogsViewer from './LogsViewer.tsx';
 import AIWatchModal from './AIWatchModal.tsx';
+import IndicatorPreviewModal from './IndicatorPreviewModal.tsx';
 import type { ColumnsType } from 'antd/es/table';
 
 type StockCreateFormValues = {
@@ -35,6 +36,9 @@ const StockTable: React.FC = () => {
 
   const [aiWatchVisible, setAiWatchVisible] = useState(false);
   const [aiWatchStock, setAiWatchStock] = useState<Stock | null>(null);
+
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const [previewStock, setPreviewStock] = useState<Stock | null>(null);
 
   const [form] = Form.useForm();
 
@@ -160,6 +164,9 @@ const StockTable: React.FC = () => {
           </Button>
           <Button icon={<EyeOutlined />} onClick={() => { setAiWatchStock(record); setAiWatchVisible(true); }} title="AI 看盘">
             AI 看盘
+          </Button>
+          <Button icon={<TableOutlined />} onClick={() => { setPreviewStock(record); setPreviewVisible(true); }} title="数据预览">
+            数据预览
           </Button>
           <Button onClick={() => handleTestRun(record)} loading={testing && testStock?.id === record.id}>
             测试
@@ -358,6 +365,14 @@ const StockTable: React.FC = () => {
             visible={aiWatchVisible}
             stock={aiWatchStock}
             onClose={() => { setAiWatchVisible(false); setAiWatchStock(null); }}
+        />
+      )}
+
+      {previewStock && (
+        <IndicatorPreviewModal
+            visible={previewVisible}
+            stock={previewStock}
+            onClose={() => { setPreviewVisible(false); setPreviewStock(null); }}
         />
       )}
     </div>

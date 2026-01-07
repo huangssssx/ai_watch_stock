@@ -6,7 +6,7 @@ import models
 import schemas
 import json
 import datetime
-from services.monitor_service import process_stock, update_stock_job, analyze_stock_manual
+from services.monitor_service import process_stock, update_stock_job, analyze_stock_manual, fetch_stock_indicators_data
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -180,6 +180,36 @@ def run_ai_watch_analyze(stock_id: int, request: schemas.AIWatchAnalyzeRequest, 
     history = history[:3] # Keep last 3
     
     config.analysis_history = json.dumps(history, ensure_ascii=False)
+    
+    db.commit()
+    
+    return result
+
+@router.post("/{stock_id}/preview-indicators")
+def preview_stock_indicators(stock_id: int, request: schemas.AIWatchAnalyzeRequest, db: Session = Depends(get_db)):
+    # Note: reusing AIWatchAnalyzeRequest for indicator_ids, ignoring prompt/ai fields
+    
+    # 1. Fetch Data
+    result = fetch_stock_indicators_data(
+        stock_id=stock_id,
+        indicator_ids=request.indicator_ids,
+        db=db
+    )
+    
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
+        
+    # 2. Save Preference (reuse StockAIWatchConfig so user sees same selection in both tools)
+    config = db.query(models.StockAIWatchConfig).filter(models.StockAIWatchConfig.stock_id == stock_id).first()
+    if not config:
+        config = models.StockAIWatchConfig(
+            stock_id=stock_id,
+            indicator_ids=json.dumps(request.indicator_ids),
+            custom_prompt=""
+        )
+        db.add(config)
+    else:
+        config.indicator_ids = json.dumps(request.indicator_ids)
     
     db.commit()
     

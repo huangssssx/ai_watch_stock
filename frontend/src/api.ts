@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse, ResearchScript, ResearchRunResponse, RuleScript, RuleTestPayload, RuleTestResponse, StockAIWatchConfig, AIWatchAnalyzeRequest, AIWatchAnalyzeResponse } from './types';
+import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse, ResearchScript, ResearchRunResponse, RuleScript, RuleTestPayload, RuleTestResponse, StockAIWatchConfig, AIWatchAnalyzeRequest, AIWatchAnalyzeResponse, IndicatorPreviewResponse } from './types';
 
 const API_URL = 'http://localhost:8000';
 
@@ -67,3 +67,4 @@ export const updateAlertRateLimitConfig = (config: AlertRateLimitConfig) =>
 export const getAIWatchConfig = (stockId: number) => api.get<StockAIWatchConfig>(`/stocks/${stockId}/ai-watch-config`);
 export const saveAIWatchConfig = (stockId: number, config: { indicator_ids: string; custom_prompt: string }) => api.post<StockAIWatchConfig>(`/stocks/${stockId}/ai-watch-config`, config);
 export const runAIWatchAnalyze = (stockId: number, request: AIWatchAnalyzeRequest) => api.post<AIWatchAnalyzeResponse>(`/stocks/${stockId}/ai-watch-analyze`, request);
+export const previewStockIndicators = (stockId: number, request: AIWatchAnalyzeRequest) => api.post<IndicatorPreviewResponse>(`/stocks/${stockId}/preview-indicators`, request);

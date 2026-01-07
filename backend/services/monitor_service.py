@@ -78,6 +78,46 @@ def analyze_stock_manual(
         if owns_db:
             db.close()
 
+def fetch_stock_indicators_data(
+    stock_id: int,
+    indicator_ids: List[int],
+    db: Optional[Session] = None,
+):
+    owns_db = db is None
+    if db is None:
+        db = SessionLocal()
+    try:
+        stock = db.query(Stock).filter(Stock.id == stock_id).first()
+        if not stock:
+            return {"ok": False, "error": "Stock not found"}
+
+        indicators = (
+            db.query(IndicatorDefinition)
+            .filter(IndicatorDefinition.id.in_(indicator_ids))
+            .all()
+        )
+        
+        context = {"symbol": stock.symbol, "name": stock.name}
+        results = {}
+        
+        for ind in indicators:
+            data_str = data_fetcher.fetch(ind.akshare_api, ind.params_json, context, ind.post_process_json, ind.python_code)
+            # Try to parse as JSON to return structured data
+            try:
+                data_obj = json.loads(data_str)
+            except:
+                data_obj = data_str # Fallback to string if not valid JSON
+            
+            results[ind.name] = data_obj
+
+        return {
+            "ok": True,
+            "data": results
+        }
+    finally:
+        if owns_db:
+            db.close()
+
 scheduler = BackgroundScheduler()
 _alert_history_by_stock_id = {}
 
