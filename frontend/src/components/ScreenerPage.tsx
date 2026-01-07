@@ -18,6 +18,7 @@ interface Screener {
   is_active: boolean;
   last_run_at: string;
   last_run_status: string;
+  last_run_log?: string;
 }
 
 interface ScreenerResult {
@@ -47,6 +48,22 @@ const readDetailFromErrorData = (data: unknown) => {
   return String(value);
 };
 
+const DEFAULT_SCRIPT = `# Write python code here.
+# Variables available: ak (akshare), pd (pandas), np (numpy)
+# Must define df (DataFrame) or result (list of dicts) as output.
+
+import akshare as ak
+
+# Example: Get A-share spot data
+df = ak.stock_zh_a_spot_em()
+
+# Filter P/E < 20
+# df = df[df["市盈率-动态"] < 20]
+
+# Keep top 10
+df = df.head(10)
+`;
+
 const ScreenerPage: React.FC = () => {
   const [screeners, setScreeners] = useState<Screener[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -67,6 +84,13 @@ const ScreenerPage: React.FC = () => {
 
   useEffect(() => {
     fetchScreeners();
+  }, []);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void fetchScreeners();
+    }, 15000);
+    return () => window.clearInterval(id);
   }, []);
 
   useEffect(() => {
@@ -133,9 +157,11 @@ const ScreenerPage: React.FC = () => {
           if (data.success) {
               message.success(`Run success, found ${data.count} stocks`);
               fetchResults(selectedId);
+              fetchScreeners();
           } else {
               message.error("Run failed");
               Modal.error({ title: "Error Log", content: <pre style={{maxHeight: 400, overflow: 'auto'}}>{data.log}</pre> });
+              fetchScreeners();
           }
       } catch (e) {
           console.error(e);
@@ -173,6 +199,24 @@ const ScreenerPage: React.FC = () => {
   };
 
   const renderResultTable = () => {
+      const lastStatus = editingScreener.last_run_status;
+      const lastLog = editingScreener.last_run_log;
+      const lastRunAt = editingScreener.last_run_at;
+
+      if (results.length === 0 && lastStatus === 'failed') {
+          return (
+              <div>
+                  <p style={{ color: 'red' }}>Last run failed, no results available.</p>
+                  {lastRunAt && <p>Failed at: {new Date(lastRunAt).toLocaleString()}</p>}
+                  {lastLog && (
+                      <pre style={{ maxHeight: 300, overflow: 'auto', background: '#f8f8f8', padding: 8 }}>
+                          {lastLog}
+                      </pre>
+                  )}
+              </div>
+          );
+      }
+
       if (results.length === 0) return <p>No results yet</p>;
       const latest = results[0];
       let data: ScreenerRow[] = [];
@@ -214,6 +258,11 @@ const ScreenerPage: React.FC = () => {
       return (
           <div>
               <p>Run at: {new Date(latest.run_at).toLocaleString()} (Count: {latest.count})</p>
+              {lastStatus === 'failed' && lastLog && (
+                  <p style={{ color: 'red' }}>
+                      Last run failed, showing last successful result above. Use “View Log” for details.
+                  </p>
+              )}
               <Table
                 dataSource={data}
                 columns={columns}
@@ -263,6 +312,22 @@ const ScreenerPage: React.FC = () => {
                     {selectedId && (
                         <>
                             <Button type="default" icon={<PlayCircleOutlined />} loading={running} onClick={handleRun}>Run Now</Button>
+                            {editingScreener.last_run_status === 'failed' && editingScreener.last_run_log ? (
+                                <Button
+                                    onClick={() =>
+                                        Modal.error({
+                                            title: "Last Run Log",
+                                            content: (
+                                                <pre style={{ maxHeight: 400, overflow: 'auto' }}>
+                                                    {editingScreener.last_run_log}
+                                                </pre>
+                                            )
+                                        })
+                                    }
+                                >
+                                    View Log
+                                </Button>
+                            ) : null}
                             <Button danger icon={<DeleteOutlined />} onClick={handleDelete}>Delete</Button>
                         </>
                     )}
@@ -281,7 +346,7 @@ const ScreenerPage: React.FC = () => {
                     <div style={{ height: 600, border: '1px solid #d9d9d9' }}>
                         <Editor 
                             defaultLanguage="python" 
-                            value={editingScreener.script_content || '# Write python code here.\n# Variables available: ak (akshare), pd (pandas)\n# Must define "df" (DataFrame) or "result" (list of dicts) as output.\n\nimport akshare as ak\n\n# Example: Get A-share spot data\ndf = ak.stock_zh_a_spot_em()\n\n# Filter P/E < 20\n# df = df[df["市盈率-动态"] < 20]\n\n# Keep top 10\ndf = df.head(10)\n'}
+                            value={editingScreener.script_content || DEFAULT_SCRIPT}
                             onChange={v => setEditingScreener({...editingScreener, script_content: v ?? ''})}
                             options={{ minimap: { enabled: false }, scrollBeyondLastLine: false }}
                         />

@@ -1,5 +1,6 @@
 import akshare as ak
 import pandas as pd
+import numpy as np
 import json
 import datetime
 import traceback
@@ -13,7 +14,7 @@ def execute_screener_script(script_content: str):
     Executes the python script.
     The script must define a variable 'df' or return a list of dicts.
     """
-    local_scope = {"ak": ak, "pd": pd, "datetime": datetime}
+    local_scope = {"ak": ak, "pd": pd, "datetime": datetime, "np": np}
     
     # Helper for simple printing to log
     log_buffer = []
@@ -24,7 +25,7 @@ def execute_screener_script(script_content: str):
     local_scope["print"] = log
     
     try:
-        exec(script_content, {}, local_scope)
+        exec(script_content, local_scope, local_scope)
         
         result_data = None
         if "df" in local_scope:
