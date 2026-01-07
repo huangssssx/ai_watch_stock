@@ -5,22 +5,16 @@ from sqlalchemy.orm import sessionmaker
 
 def _pick_sqlite_db_path() -> str:
     backend_dir = os.path.dirname(os.path.abspath(__file__))
-    cwd_path = os.path.join(os.getcwd(), "stock_watch.db")
     backend_path = os.path.join(backend_dir, "stock_watch.db")
 
-    candidates = []
-    if os.path.exists(cwd_path):
-        candidates.append(cwd_path)
-    if os.path.exists(backend_path) and backend_path != cwd_path:
-        candidates.append(backend_path)
+    if not os.path.exists(backend_path):
+        raise RuntimeError(
+            f"DB 文件不存在：{backend_path}。"
+            "为避免隐式新建导致数据丢失，已中止启动。"
+            "请先恢复/放置原始 backend/stock_watch.db。"
+        )
 
-    if len(candidates) == 0:
-        return backend_path
-    if len(candidates) == 1:
-        return candidates[0]
-
-    candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return candidates[0]
+    return backend_path
 
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{_pick_sqlite_db_path()}"
 

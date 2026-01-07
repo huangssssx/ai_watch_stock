@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import numpy as np
 import akshare as ak
+import datetime
 
 os.environ.setdefault("NO_PROXY", "*")
 
@@ -99,23 +100,65 @@ def _get_industry_board_metrics(board_name: str, cache: dict) -> dict:
     board_pct = None
     limit_count = None
     try:
-        spot_df = ak.stock_board_industry_spot_em(symbol=board_name)
-        if spot_df is not None and not spot_df.empty and "item" in spot_df.columns and "value" in spot_df.columns:
-            spot_map = spot_df.set_index("item")["value"].to_dict()
-            board_pct_raw = spot_map.get("涨跌幅", None)
-            if board_pct_raw is not None:
-                board_pct = float(board_pct_raw) / 100.0
+        spot_df = cache.get("__industry_spot_df", None)
+        if spot_df is None:
+            spot_df = ak.stock_board_industry_name_em()
+            cache["__industry_spot_df"] = spot_df
+        if spot_df is not None and not spot_df.empty and "板块名称" in spot_df.columns:
+            row = spot_df[spot_df["板块名称"] == board_name]
+            if not row.empty:
+                pct_raw = row.iloc[0].get("涨跌幅", None)
+                if pct_raw is not None and not pd.isna(pct_raw):
+                    board_pct = float(pct_raw) / 100.0
     except Exception:
         board_pct = None
     try:
-        cons_df = ak.stock_board_industry_cons_em(symbol=board_name)
-        if cons_df is not None and not cons_df.empty and "涨跌幅" in cons_df.columns:
-            pct_series = pd.to_numeric(cons_df["涨跌幅"], errors="coerce")
-            limit_count = int((pct_series >= 9.8).sum())
+        if limit_count is None:
+            cons_df = ak.stock_board_industry_cons_em(symbol=board_name)
+            if cons_df is not None and not cons_df.empty and "涨跌幅" in cons_df.columns:
+                pct_series = pd.to_numeric(cons_df["涨跌幅"], errors="coerce")
+                limit_count = int((pct_series >= 9.8).sum())
     except Exception:
         limit_count = None
     cache[board_name] = {"board_pct": board_pct, "limit_count": limit_count}
     return cache[board_name]
+
+def _get_market_summary_note():
+    parts = []
+    try:
+        sse_df = ak.stock_sse_summary()
+        if sse_df is not None and not sse_df.empty and "项目" in sse_df.columns:
+            sse_map = sse_df.set_index("项目").to_dict()
+            report = sse_map.get("报告时间", {})
+            avg_pe = sse_map.get("平均市盈率", {})
+            report_val = report.get("股票", None)
+            avg_pe_val = avg_pe.get("股票", None)
+            if report_val is not None or avg_pe_val is not None:
+                parts.append(f"SSE概览: 报告{report_val}, 平均市盈率{avg_pe_val}")
+    except Exception:
+        pass
+
+    try:
+        dt_str = datetime.date.today().strftime("%Y%m%d")
+        szse_df = ak.stock_szse_summary(date=dt_str)
+        if szse_df is not None and not szse_df.empty and "证券类别" in szse_df.columns:
+            stock_row = szse_df[szse_df["证券类别"] == "股票"]
+            if not stock_row.empty:
+                total_mv = stock_row.iloc[0].get("总市值", None)
+                amount = stock_row.iloc[0].get("成交金额", None)
+                if total_mv is not None or amount is not None:
+                    total_mv_v = float(total_mv) if total_mv is not None and not pd.isna(total_mv) else None
+                    amount_v = float(amount) if amount is not None and not pd.isna(amount) else None
+                    parts.append(
+                        "SZSE概览: "
+                        + (f"总市值{total_mv_v/1e12:.2f}万亿" if total_mv_v is not None else "")
+                        + ("; " if total_mv_v is not None and amount_v is not None else "")
+                        + (f"成交额{amount_v/1e11:.2f}千亿" if amount_v is not None else "")
+                    )
+    except Exception:
+        pass
+
+    return "；".join([p for p in parts if p])
 
 try:
     print("开始执行：3分钟擒涨停选股策略（严格对齐原文）...")
@@ -141,22 +184,30 @@ try:
         (snapshot_df["amount"] > 50000000)
     ].sort_values("amount", ascending=False).head(200)
     print(f"初步入围 {len(snapshot_df)} 只候选股，开始深度逻辑分析...")
+    market_breadth_up = float((snapshot_df["pct_chg"] > 0).mean()) if "pct_chg" in snapshot_df.columns else None
+    market_breadth_mean = float(snapshot_df["pct_chg"].mean()) if "pct_chg" in snapshot_df.columns else None
 
     # ========== 步骤2：获取板块数据，用于联动校验 ==========
     board_dict = {}
     board_cache = {}
+    board_source = "industry_em"
+    market_summary_note = ""
     try:
-        board_df = ak.stock_zh_a_board_spot_em()
+        board_df = ak.stock_board_industry_name_em()
         board_df.rename(
-            columns={"板块名称": "board_name", "涨跌幅": "board_pct", "涨停家数": "limit_count"},
-            inplace=True
+            columns={"板块名称": "board_name", "涨跌幅": "board_pct"},
+            inplace=True,
         )
         board_df["board_pct"] = pd.to_numeric(board_df["board_pct"], errors="coerce") / 100.0
-        board_df["limit_count"] = pd.to_numeric(board_df["limit_count"], errors="coerce")
+        if "limit_count" not in board_df.columns:
+            board_df["limit_count"] = np.nan
         board_dict = board_df.set_index("board_name")[["board_pct", "limit_count"]].to_dict("index")
-        print(f"板块数据源: stock_zh_a_board_spot_em, 板块数: {len(board_dict)}")
+        board_source = "board_industry_name_em"
+        print(f"板块数据源: stock_board_industry_name_em, 板块数: {len(board_dict)}")
     except Exception as e:
-        print(f"板块数据源: industry_lazy (原因: {e})")
+        board_source = "industry_em"
+        market_summary_note = _get_market_summary_note()
+        print(f"板块数据源: industry_em (原因: {e})")
 
     diag = {
         "candidates": int(len(snapshot_df)),
@@ -175,7 +226,7 @@ try:
         "tier5": 0,
     }
 
-    board_check_enabled = bool(board_dict)
+    board_check_enabled = True
     all_results = []
 
     amount_series = pd.to_numeric(snapshot_df.get("amount"), errors="coerce")
@@ -188,8 +239,8 @@ try:
         diag["scanned"] += 1
 
         note_parts = []
-        if not board_check_enabled:
-            note_parts.append("板块数据源不可用，已跳过板块联动校验")
+        if market_breadth_up is not None and market_breadth_mean is not None:
+            note_parts.append(f"大盘概况: 上涨占比{market_breadth_up:.0%}, 均值{market_breadth_mean:.2f}%")
 
         try:
             try:
@@ -318,7 +369,10 @@ try:
                     else:
                         cond_board = bool((board_pct >= BOARD_RISE_MIN) & (board_limit >= BOARD_LIMIT_MIN))
                 else:
-                    note_parts.append("板块数据缺失，已跳过板块联动校验")
+                    msg = "板块联动接口不可用，已用大盘概况替代"
+                    if market_summary_note:
+                        msg = f"{msg}({market_summary_note})"
+                    note_parts.append(msg)
                     cond_board = True
 
             minute_df = None

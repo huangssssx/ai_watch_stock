@@ -2,16 +2,26 @@ import unittest
 import json
 from unittest.mock import patch
 
-from database import SessionLocal, Base, engine
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from database import Base
 from models import Stock, RuleScript, Log, AIConfig, SystemConfig
 from services.monitor_service import process_stock
 
 
 class TestScriptOnlyRuleSignal(unittest.TestCase):
     def setUp(self):
-        Base.metadata.drop_all(bind=engine)
-        Base.metadata.create_all(bind=engine)
-        self.db = SessionLocal()
+        self.engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.drop_all(bind=self.engine)
+        Base.metadata.create_all(bind=self.engine)
+        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        self.db = self.SessionLocal()
 
     def tearDown(self):
         self.db.close()

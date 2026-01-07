@@ -7,17 +7,27 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
 import models
-from database import SessionLocal, Base, engine
+from database import Base
 from routers.indicators import test_indicator
 import schemas
 
 
 class TestIndicatorTestEndpoint(unittest.TestCase):
     def setUp(self):
-        Base.metadata.drop_all(bind=engine)
-        Base.metadata.create_all(bind=engine)
-        self.db = SessionLocal()
+        self.engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.drop_all(bind=self.engine)
+        Base.metadata.create_all(bind=self.engine)
+        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        self.db = self.SessionLocal()
         self.indicator = models.IndicatorDefinition(
             name="TestIndicator",
             akshare_api="stock_zh_a_hist",
@@ -54,4 +64,3 @@ class TestIndicatorTestEndpoint(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

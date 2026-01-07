@@ -5,14 +5,24 @@ from services.data_fetcher import DataFetcher
 from services.ai_service import AIService
 from services.monitor_service import process_stock
 from models import Stock, IndicatorDefinition, AIConfig
-from database import SessionLocal, Base, engine
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from database import Base
 
 # Mock Akshare
 class TestIntegration(unittest.TestCase):
     def setUp(self):
-        Base.metadata.drop_all(bind=engine)
-        Base.metadata.create_all(bind=engine)
-        self.db = SessionLocal()
+        self.engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.drop_all(bind=self.engine)
+        Base.metadata.create_all(bind=self.engine)
+        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        self.db = self.SessionLocal()
         
         # Setup Test Data
         self.ai_config = AIConfig(name="TestAI", provider="openai", base_url="http://test", api_key="sk-test", model_name="gpt-3.5")
@@ -58,7 +68,7 @@ class TestIntegration(unittest.TestCase):
         mock_client.chat.completions.create.return_value = mock_response
         
         # 3. Run Process
-        process_stock(self.stock.id)
+        process_stock(self.stock.id, bypass_checks=True, send_alerts=True, is_test=False, return_result=True, db=self.db)
         
         # 4. Verify Log
         from models import Log
