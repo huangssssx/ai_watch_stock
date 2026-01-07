@@ -112,6 +112,7 @@ def get_ai_watch_config(stock_id: int, db: Session = Depends(get_db)):
             stock_id=stock_id,
             indicator_ids="[]",
             custom_prompt="",
+            ai_provider_id=None,
             analysis_history="[]",
             updated_at=None
         )
@@ -126,6 +127,7 @@ def save_ai_watch_config(stock_id: int, config_in: schemas.StockAIWatchConfigBas
     
     config.indicator_ids = config_in.indicator_ids
     config.custom_prompt = config_in.custom_prompt
+    config.ai_provider_id = config_in.ai_provider_id
     # Don't touch history here
     
     db.commit()
@@ -152,13 +154,15 @@ def run_ai_watch_analyze(stock_id: int, request: schemas.AIWatchAnalyzeRequest, 
         config = models.StockAIWatchConfig(
             stock_id=stock_id,
             indicator_ids=json.dumps(request.indicator_ids),
-            custom_prompt=request.custom_prompt
+            custom_prompt=request.custom_prompt,
+            ai_provider_id=request.ai_provider_id
         )
         db.add(config)
     else:
         # Update preferences too
         config.indicator_ids = json.dumps(request.indicator_ids)
         config.custom_prompt = request.custom_prompt
+        config.ai_provider_id = request.ai_provider_id
 
     # Append History
     try:

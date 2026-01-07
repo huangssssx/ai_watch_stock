@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Modal, Form, Input, Button, message, Select, Card, Alert, Collapse } from 'antd';
-import type { Stock, IndicatorDefinition } from '../types';
-import { getIndicators, getAIWatchConfig, runAIWatchAnalyze } from '../api';
+import type { Stock, IndicatorDefinition, AIConfig } from '../types';
+import { getIndicators, getAIWatchConfig, runAIWatchAnalyze, getAIConfigs } from '../api';
 import { CaretRightOutlined } from '@ant-design/icons';
 
 const { Panel } = Collapse;
@@ -15,6 +15,7 @@ interface Props {
 const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
   const [form] = Form.useForm();
   const [allIndicators, setAllIndicators] = useState<IndicatorDefinition[]>([]);
+  const [aiConfigs, setAiConfigs] = useState<AIConfig[]>([]);
   const [loadingIndicators, setLoadingIndicators] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
@@ -23,11 +24,13 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
   const fetchInitData = async () => {
     setLoadingIndicators(true);
     try {
-      const [indRes, configRes] = await Promise.all([
+      const [indRes, configRes, aiRes] = await Promise.all([
         getIndicators(),
-        getAIWatchConfig(stock.id)
+        getAIWatchConfig(stock.id),
+        getAIConfigs()
       ]);
       setAllIndicators(indRes.data);
+      setAiConfigs(aiRes.data);
       
       const config = configRes.data;
       let indicatorIds: number[] = [];
@@ -45,6 +48,7 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
       form.setFieldsValue({
         indicator_ids: indicatorIds.length > 0 ? indicatorIds : undefined,
         custom_prompt: config.custom_prompt || '',
+        ai_provider_id: config.ai_provider_id || stock.ai_provider_id,
       });
       
     } catch {
@@ -68,7 +72,7 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
         const res = await runAIWatchAnalyze(stock.id, {
             indicator_ids: values.indicator_ids || [],
             custom_prompt: values.custom_prompt,
-            ai_provider_id: stock.ai_provider_id
+            ai_provider_id: values.ai_provider_id || stock.ai_provider_id
         });
         
         if (res.data.ok) {
@@ -128,6 +132,15 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
       destroyOnClose
     >
       <Form form={form} layout="vertical" onFinish={handleAnalyze}>
+        <Form.Item
+            name="ai_provider_id"
+            label="AI 配置"
+            rules={[{ required: true, message: '请选择 AI 配置' }]}
+        >
+            <Select placeholder="选择 AI 配置">
+                {aiConfigs.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
+            </Select>
+        </Form.Item>
         <Form.Item
             name="indicator_ids"
             label="选择指标 (Context)"

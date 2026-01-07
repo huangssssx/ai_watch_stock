@@ -45,6 +45,7 @@ class StockAIWatchConfig(Base):
     stock_id = Column(Integer, ForeignKey("stocks.id"), unique=True, index=True)
     indicator_ids = Column(Text, default="[]") # JSON list of IDs
     custom_prompt = Column(Text, default="")
+    ai_provider_id = Column(Integer, ForeignKey("ai_configs.id"), nullable=True)
     analysis_history = Column(Text, default="[]") # JSON list of last 3 results
     
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

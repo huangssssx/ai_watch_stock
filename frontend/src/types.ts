@@ -189,6 +189,7 @@ export interface StockAIWatchConfig {
   stock_id: number;
   indicator_ids: string; // JSON string
   custom_prompt: string;
+  ai_provider_id?: number;
   analysis_history: string; // JSON string
   updated_at?: string;
 }

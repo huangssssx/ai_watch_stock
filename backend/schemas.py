@@ -257,6 +257,7 @@ class RuleTestResponse(BaseModel):
 class StockAIWatchConfigBase(BaseModel):
     indicator_ids: str = "[]"
     custom_prompt: Optional[str] = ""
+    ai_provider_id: Optional[int] = None
 
 class StockAIWatchConfig(ORMModel, StockAIWatchConfigBase):
     id: int
