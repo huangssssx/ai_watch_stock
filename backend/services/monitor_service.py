@@ -1,8 +1,8 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 from database import SessionLocal
-from models import Stock, Log, AIConfig, SystemConfig, RuleScript
+from models import Stock, Log, AIConfig, SystemConfig, RuleScript, IndicatorDefinition
 from services.data_fetcher import data_fetcher
 from services.ai_service import ai_service
 from services.alert_service import alert_service
@@ -16,6 +16,67 @@ import sys
 import akshare as ak
 import pandas as pd
 import numpy as np
+
+def analyze_stock_manual(
+    stock_id: int,
+    indicator_ids: List[int],
+    custom_prompt: str,
+    ai_provider_id: Optional[int] = None,
+    db: Optional[Session] = None,
+):
+    owns_db = db is None
+    if db is None:
+        db = SessionLocal()
+    try:
+        stock = db.query(Stock).filter(Stock.id == stock_id).first()
+        if not stock:
+            return {"ok": False, "error": "Stock not found"}
+
+        # 1. Fetch Data for selected indicators
+        indicators = (
+            db.query(IndicatorDefinition)
+            .filter(IndicatorDefinition.id.in_(indicator_ids))
+            .all()
+        )
+        
+        context = {"symbol": stock.symbol, "name": stock.name}
+        data_parts = []
+        for ind in indicators:
+            data = data_fetcher.fetch(ind.akshare_api, ind.params_json, context, ind.post_process_json, ind.python_code)
+            data_parts.append(f"--- Indicator: {ind.name} ---\n{data}\n")
+        full_data = "\n".join(data_parts)
+
+        # 2. AI Analysis
+        provider_id = ai_provider_id or stock.ai_provider_id
+        ai_config = db.query(AIConfig).filter(AIConfig.id == provider_id).first()
+        if not ai_config:
+            return {"ok": False, "error": "AI Provider not found"}
+
+        config_dict = {
+            "api_key": ai_config.api_key,
+            "base_url": ai_config.base_url,
+            "model_name": ai_config.model_name,
+            "temperature": getattr(ai_config, "temperature", 0.1),
+        }
+
+        max_chars = ai_config.max_tokens if ai_config.max_tokens else 100000
+        data_for_ai = full_data[:max_chars]
+        
+        ai_request_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        analysis_json, raw_response, prompt_debug = ai_service.analyze_debug(
+            data_for_ai, custom_prompt, config_dict, current_time_str=ai_request_time_str
+        )
+
+        return {
+            "ok": True,
+            "ai_reply": analysis_json,
+            "raw_response": raw_response,
+            "system_prompt": prompt_debug.get("system_prompt"),
+            "user_prompt": prompt_debug.get("user_prompt"),
+        }
+    finally:
+        if owns_db:
+            db.close()
 
 scheduler = BackgroundScheduler()
 _alert_history_by_stock_id = {}

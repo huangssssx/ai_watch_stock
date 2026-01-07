@@ -5,7 +5,8 @@ from database import get_db
 import models
 import schemas
 import json
-from services.monitor_service import process_stock, update_stock_job
+import datetime
+from services.monitor_service import process_stock, update_stock_job, analyze_stock_manual
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -99,4 +100,83 @@ def test_run_stock(stock_id: int, send_alerts: bool = True, bypass_checks: bool 
     )
     if not result:
         raise HTTPException(status_code=500, detail="Test run failed")
+    return result
+
+@router.get("/{stock_id}/ai-watch-config", response_model=schemas.StockAIWatchConfig)
+def get_ai_watch_config(stock_id: int, db: Session = Depends(get_db)):
+    config = db.query(models.StockAIWatchConfig).filter(models.StockAIWatchConfig.stock_id == stock_id).first()
+    if not config:
+        # Return default
+        return schemas.StockAIWatchConfig(
+            id=0,
+            stock_id=stock_id,
+            indicator_ids="[]",
+            custom_prompt="",
+            analysis_history="[]",
+            updated_at=None
+        )
+    return config
+
+@router.post("/{stock_id}/ai-watch-config", response_model=schemas.StockAIWatchConfig)
+def save_ai_watch_config(stock_id: int, config_in: schemas.StockAIWatchConfigBase, db: Session = Depends(get_db)):
+    config = db.query(models.StockAIWatchConfig).filter(models.StockAIWatchConfig.stock_id == stock_id).first()
+    if not config:
+        config = models.StockAIWatchConfig(stock_id=stock_id)
+        db.add(config)
+    
+    config.indicator_ids = config_in.indicator_ids
+    config.custom_prompt = config_in.custom_prompt
+    # Don't touch history here
+    
+    db.commit()
+    db.refresh(config)
+    return config
+
+@router.post("/{stock_id}/ai-watch-analyze")
+def run_ai_watch_analyze(stock_id: int, request: schemas.AIWatchAnalyzeRequest, db: Session = Depends(get_db)):
+    # 1. Run Analysis
+    result = analyze_stock_manual(
+        stock_id=stock_id,
+        indicator_ids=request.indicator_ids,
+        custom_prompt=request.custom_prompt,
+        ai_provider_id=request.ai_provider_id,
+        db=db
+    )
+    
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
+
+    # 2. Save History
+    config = db.query(models.StockAIWatchConfig).filter(models.StockAIWatchConfig.stock_id == stock_id).first()
+    if not config:
+        config = models.StockAIWatchConfig(
+            stock_id=stock_id,
+            indicator_ids=json.dumps(request.indicator_ids),
+            custom_prompt=request.custom_prompt
+        )
+        db.add(config)
+    else:
+        # Update preferences too
+        config.indicator_ids = json.dumps(request.indicator_ids)
+        config.custom_prompt = request.custom_prompt
+
+    # Append History
+    try:
+        history = json.loads(config.analysis_history) if config.analysis_history else []
+        if not isinstance(history, list):
+            history = []
+    except:
+        history = []
+    
+    new_entry = {
+        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "result": result
+    }
+    history.insert(0, new_entry)
+    history = history[:3] # Keep last 3
+    
+    config.analysis_history = json.dumps(history, ensure_ascii=False)
+    
+    db.commit()
+    
     return result

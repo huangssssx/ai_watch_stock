@@ -252,3 +252,19 @@ class RuleTestResponse(BaseModel):
     message: str
     log: str
     signal: Optional[str] = None
+
+# AI Watch Config
+class StockAIWatchConfigBase(BaseModel):
+    indicator_ids: str = "[]"
+    custom_prompt: Optional[str] = ""
+
+class StockAIWatchConfig(ORMModel, StockAIWatchConfigBase):
+    id: int
+    stock_id: int
+    analysis_history: str = "[]"
+    updated_at: Optional[datetime]
+
+class AIWatchAnalyzeRequest(BaseModel):
+    indicator_ids: List[int]
+    custom_prompt: str
+    ai_provider_id: Optional[int] = None

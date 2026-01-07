@@ -2,9 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag, Card, Space } from 'antd';
 import type { Stock, AIConfig, StockTestRunResponse, IndicatorDefinition } from '../types';
 import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock, getIndicators } from '../api';
-import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined } from '@ant-design/icons';
+import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, EyeOutlined } from '@ant-design/icons';
 import StockConfigModal from './StockConfigModal.tsx';
 import LogsViewer from './LogsViewer.tsx';
+import AIWatchModal from './AIWatchModal.tsx';
 import type { ColumnsType } from 'antd/es/table';
 
 type StockCreateFormValues = {
@@ -31,6 +32,9 @@ const StockTable: React.FC = () => {
   
   const [logsModalVisible, setLogsModalVisible] = useState(false);
   const [logsStock, setLogsStock] = useState<Stock | null>(null);
+
+  const [aiWatchVisible, setAiWatchVisible] = useState(false);
+  const [aiWatchStock, setAiWatchStock] = useState<Stock | null>(null);
 
   const [form] = Form.useForm();
 
@@ -153,6 +157,9 @@ const StockTable: React.FC = () => {
             onClick={() => handleToggleMonitor(record)}
           >
             {record.is_monitoring ? '停止' : '开始'}
+          </Button>
+          <Button icon={<EyeOutlined />} onClick={() => { setAiWatchStock(record); setAiWatchVisible(true); }} title="AI 看盘">
+            AI 看盘
           </Button>
           <Button onClick={() => handleTestRun(record)} loading={testing && testStock?.id === record.id}>
             测试
@@ -343,6 +350,14 @@ const StockTable: React.FC = () => {
           visible={configModalVisible} 
           stock={currentStock} 
           onClose={() => { setConfigModalVisible(false); fetchData(); }} 
+        />
+      )}
+
+      {aiWatchStock && (
+        <AIWatchModal
+            visible={aiWatchVisible}
+            stock={aiWatchStock}
+            onClose={() => { setAiWatchVisible(false); setAiWatchStock(null); }}
         />
       )}
     </div>

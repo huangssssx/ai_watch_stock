@@ -36,6 +36,20 @@ class Stock(Base):
     logs = relationship("Log", back_populates="stock", cascade="all, delete-orphan")
     ai_config = relationship("AIConfig")
     rule_script = relationship("RuleScript")
+    ai_watch_config = relationship("StockAIWatchConfig", uselist=False, back_populates="stock")
+
+class StockAIWatchConfig(Base):
+    __tablename__ = "stock_ai_watch_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stock_id = Column(Integer, ForeignKey("stocks.id"), unique=True, index=True)
+    indicator_ids = Column(Text, default="[]") # JSON list of IDs
+    custom_prompt = Column(Text, default="")
+    analysis_history = Column(Text, default="[]") # JSON list of last 3 results
+    
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+    stock = relationship("Stock", back_populates="ai_watch_config")
 
 class RuleScript(Base):
     __tablename__ = "rule_scripts"

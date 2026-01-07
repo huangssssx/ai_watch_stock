@@ -183,3 +183,31 @@ export interface ResearchRunResponse {
   chart?: Record<string, unknown>;
   error?: string;
 }
+
+export interface StockAIWatchConfig {
+  id: number;
+  stock_id: number;
+  indicator_ids: string; // JSON string
+  custom_prompt: string;
+  analysis_history: string; // JSON string
+  updated_at?: string;
+}
+
+export interface AIWatchAnalyzeRequest {
+  indicator_ids: number[];
+  custom_prompt: string;
+  ai_provider_id?: number;
+}
+
+export interface AIWatchAnalyzeResponse {
+  ok: boolean;
+  stock_symbol?: string;
+  ai_reply?: AIAnalysisResult;
+  raw_response?: string;
+  data_truncated?: boolean;
+  fetch_ok?: number;
+  fetch_error?: number;
+  system_prompt?: string;
+  user_prompt?: string;
+  error?: string;
+}
