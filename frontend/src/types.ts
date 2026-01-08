@@ -7,6 +7,7 @@ export interface Stock {
   monitoring_schedule?: string; // JSON string
   only_trade_days?: boolean;
   prompt_template?: string;
+  remark?: string;
   ai_provider_id?: number;
   monitoring_mode?: 'ai_only' | 'script_only' | 'hybrid';
   rule_script_id?: number;

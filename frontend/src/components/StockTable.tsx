@@ -2,12 +2,44 @@ import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag, Card, Space } from 'antd';
 import type { Stock, AIConfig, StockTestRunResponse, IndicatorDefinition } from '../types';
 import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock, getIndicators } from '../api';
-import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, EyeOutlined, TableOutlined } from '@ant-design/icons';
+import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, EyeOutlined, TableOutlined, EditOutlined } from '@ant-design/icons';
 import StockConfigModal from './StockConfigModal.tsx';
 import LogsViewer from './LogsViewer.tsx';
 import AIWatchModal from './AIWatchModal.tsx';
 import IndicatorPreviewModal from './IndicatorPreviewModal.tsx';
 import type { ColumnsType } from 'antd/es/table';
+
+const RemarkCell: React.FC<{ stock: Stock; onSave: (id: number, val: string) => void }> = ({ stock, onSave }) => {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(stock.remark || '');
+
+  useEffect(() => { setVal(stock.remark || ''); }, [stock.remark]);
+
+  if (editing) {
+    return (
+      <Input.TextArea 
+        autoFocus 
+        value={val} 
+        onChange={e => setVal(e.target.value)} 
+        onBlur={() => { setEditing(false); if (val !== (stock.remark || '')) onSave(stock.id, val); }}
+        onKeyDown={e => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.blur(); } }}
+        autoSize={{ minRows: 1, maxRows: 6 }}
+      />
+    );
+  }
+  
+  return (
+    <div 
+        style={{ minHeight: 24, cursor: 'pointer', whiteSpace: 'pre-wrap', color: val ? 'inherit' : '#ccc', border: '1px dashed transparent', padding: '2px 4px' }} 
+        onClick={() => setEditing(true)}
+        onMouseEnter={e => e.currentTarget.style.borderColor = '#d9d9d9'}
+        onMouseLeave={e => e.currentTarget.style.borderColor = 'transparent'}
+        title="点击编辑备注"
+    >
+        {val || <span style={{fontSize: 12}}><EditOutlined /> 添加备注</span>}
+    </div>
+  );
+};
 
 type StockCreateFormValues = {
   symbol: string;
@@ -111,6 +143,16 @@ const StockTable: React.FC = () => {
     }
   };
 
+  const handleUpdateRemark = async (id: number, remark: string) => {
+    try {
+      await updateStock(id, { remark });
+      message.success('备注已更新');
+      setStocks(prev => prev.map(s => s.id === id ? { ...s, remark } : s));
+    } catch {
+      message.error('更新备注失败');
+    }
+  };
+
   const handleTestRun = async (stock: Stock) => {
     setTestStock(stock);
     setTestResult(null);
@@ -135,6 +177,14 @@ const StockTable: React.FC = () => {
   const columns: ColumnsType<Stock> = [
     { title: '代码', dataIndex: 'symbol', key: 'symbol' },
     { title: '名称', dataIndex: 'name', key: 'name' },
+    {
+      title: '备注',
+      key: 'remark',
+      width: 200,
+      render: (_: unknown, record: Stock) => (
+        <RemarkCell stock={record} onSave={handleUpdateRemark} />
+      )
+    },
     { 
       title: '状态', 
       dataIndex: 'is_monitoring', 

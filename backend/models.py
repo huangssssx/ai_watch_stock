@@ -23,6 +23,7 @@ class Stock(Base):
     
     # Configuration for this stock
     prompt_template = Column(Text, nullable=True) # Custom prompt for this stock
+    remark = Column(Text, nullable=True) # User remarks/notes
     ai_provider_id = Column(Integer, ForeignKey("ai_configs.id"), nullable=True)
     
     # Monitoring Strategy

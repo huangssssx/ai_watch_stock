@@ -90,6 +90,7 @@ class StockBase(BaseModel):
     interval_seconds: int = 300
     monitoring_schedule: Optional[str] = None
     prompt_template: Optional[str] = None
+    remark: Optional[str] = None
     ai_provider_id: Optional[int] = None
     only_trade_days: Optional[bool] = True
     monitoring_mode: Optional[str] = "ai_only"
@@ -109,6 +110,7 @@ class StockUpdate(BaseModel):
     only_trade_days: Optional[bool] = None
     monitoring_mode: Optional[str] = None
     rule_script_id: Optional[int] = None
+    remark: Optional[str] = None
 
 class Stock(ORMModel, StockBase):
     id: int
