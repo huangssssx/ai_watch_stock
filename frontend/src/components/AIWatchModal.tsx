@@ -89,6 +89,11 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
     }
   };
 
+  const handleSelectAll = () => {
+      const allIds = allIndicators.map(i => i.id);
+      form.setFieldsValue({ indicator_ids: allIds });
+  };
+
   const renderAnalysisContent = (data: any) => {
       if (!data) return null;
       const aiReply = data.ai_reply;
@@ -143,7 +148,14 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
         </Form.Item>
         <Form.Item
             name="indicator_ids"
-            label="选择指标 (Context)"
+            label={
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                    <span>选择指标 (Context)</span>
+                    <Button type="link" size="small" onClick={handleSelectAll}>
+                        选择全部指标
+                    </Button>
+                </div>
+            }
             rules={[{ required: true, message: '请至少选择一个指标' }]}
         >
             <Select

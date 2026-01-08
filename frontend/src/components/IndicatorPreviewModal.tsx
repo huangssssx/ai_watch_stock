@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, Form, Button, message, Select, Input, Card } from 'antd';
+import { Modal, Form, Button, message, Select, Input } from 'antd';
 import { CopyOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { Stock, IndicatorDefinition } from '../types';
 import { getIndicators, getAIWatchConfig, previewStockIndicators } from '../api';
@@ -61,7 +61,7 @@ const IndicatorPreviewModal: React.FC<Props> = ({ visible, stock, onClose }) => 
           });
           
           if (res.data.ok) {
-              setResultData(res.data.data);
+              setResultData(res.data.data || null);
               message.success('获取成功');
           } else {
               message.error(res.data.error || '获取失败');
@@ -81,6 +81,11 @@ const IndicatorPreviewModal: React.FC<Props> = ({ visible, stock, onClose }) => 
       });
   };
 
+  const handleSelectAll = () => {
+      const allIds = allIndicators.map(i => i.id);
+      form.setFieldsValue({ indicator_ids: allIds });
+  };
+
   return (
     <Modal
       title={`指标数据预览 - ${stock.symbol} ${stock.name}`}
@@ -94,7 +99,14 @@ const IndicatorPreviewModal: React.FC<Props> = ({ visible, stock, onClose }) => 
         <Form form={form} layout="vertical" onFinish={handleFetch}>
             <Form.Item
                 name="indicator_ids"
-                label="选择指标"
+                label={
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                        <span>选择指标</span>
+                        <Button type="link" size="small" onClick={handleSelectAll}>
+                            选择全部指标
+                        </Button>
+                    </div>
+                }
                 rules={[{ required: true, message: '请至少选择一个指标' }]}
             >
                 <Select
