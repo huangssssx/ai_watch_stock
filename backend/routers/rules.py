@@ -65,6 +65,8 @@ def test_rule(rule_id: int, payload: schemas.RuleTestPayload, db: Session = Depe
 
     # Execute script
     try:
+        from pymr_compat import ensure_py_mini_racer
+        ensure_py_mini_racer()
         import akshare as ak
         import pandas as pd
         import numpy as np

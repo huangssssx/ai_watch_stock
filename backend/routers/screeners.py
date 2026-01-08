@@ -91,13 +91,14 @@ def run_screener_now(screener_id: int, db: Session = Depends(get_db)):
     screener.last_run_status = "success" if success else "failed"
     screener.last_run_log = log
     
-    if success and data:
-         result_entry = ScreenerResult(
+    if success:
+        data_to_save = data if data is not None else []
+        result_entry = ScreenerResult(
             screener_id=screener.id,
-            result_json=json.dumps(data, ensure_ascii=False),
-            count=len(data)
+            result_json=json.dumps(data_to_save, ensure_ascii=False),
+            count=len(data_to_save),
         )
-         db.add(result_entry)
+        db.add(result_entry)
     
     db.commit()
     

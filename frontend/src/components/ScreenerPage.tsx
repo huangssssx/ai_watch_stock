@@ -104,7 +104,8 @@ const ScreenerPage: React.FC = () => {
         setEditingScreener({});
         setResults([]);
     }
-  }, [selectedId, screeners]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
   const fetchResults = async (id: number) => {
       try {
