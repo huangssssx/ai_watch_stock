@@ -4,6 +4,7 @@ sqlalchemy
 pydantic
 apscheduler
 akshare
+py-mini-racer
 openai
 python-dotenv
 requests
