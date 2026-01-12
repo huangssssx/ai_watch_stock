@@ -19,7 +19,7 @@
 cd backend
 pip install -r requirements.txt
 python init_db.py  # 初始化数据库（会重建 stock_watch.db）
-uvicorn main:app --reload --port 8000
+python3 -m uvicorn main:app --reload --port 8000
 ```
 
 ### 2. 前端 (React)
