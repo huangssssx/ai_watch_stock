@@ -40,7 +40,7 @@ def analyze_stock_manual(
             .filter(IndicatorDefinition.id.in_(indicator_ids))
             .all()
         )
-        
+
         context = {"symbol": stock.symbol, "name": stock.name}
         data_parts = []
         for ind in indicators:
@@ -48,7 +48,7 @@ def analyze_stock_manual(
             data_parts.append(f"--- Indicator: {ind.name} ---\n{data}\n")
         full_data = "\n".join(data_parts)
 
-        # 2. AI Analysis
+        # 2. AI Analysis - use raw mode (only custom prompt, no system prompts)
         provider_id = ai_provider_id or stock.ai_provider_id
         ai_config = db.query(AIConfig).filter(AIConfig.id == provider_id).first()
         if not ai_config:
@@ -58,23 +58,18 @@ def analyze_stock_manual(
             "api_key": ai_config.api_key,
             "base_url": ai_config.base_url,
             "model_name": ai_config.model_name,
-            "temperature": getattr(ai_config, "temperature", 0.1),
+            "temperature": getattr(ai_config, "temperature", 0.7),
         }
 
         max_chars = ai_config.max_tokens if ai_config.max_tokens else 100000
         data_for_ai = full_data[:max_chars]
-        
-        ai_request_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        analysis_json, raw_response, prompt_debug = ai_service.analyze_debug(
-            data_for_ai, custom_prompt, config_dict, current_time_str=ai_request_time_str
-        )
+
+        # Use the new analyze_raw method - only custom prompt, raw response
+        raw_response = ai_service.analyze_raw(data_for_ai, custom_prompt, config_dict)
 
         return {
             "ok": True,
-            "ai_reply": analysis_json,
             "raw_response": raw_response,
-            "system_prompt": prompt_debug.get("system_prompt"),
-            "user_prompt": prompt_debug.get("user_prompt"),
         }
     finally:
         if owns_db:

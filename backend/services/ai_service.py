@@ -174,4 +174,33 @@ class AIService:
         )
         return response.choices[0].message.content or ""
 
+    def analyze_raw(self, data_context: str, custom_prompt: str, ai_config: Dict[str, Any]) -> str:
+        """
+        Send data to AI with only the custom prompt - no system prompts, no JSON format requirement.
+        Returns the raw AI response as-is.
+
+        This is for the AI Watch feature where the user provides their own prompt.
+        """
+        try:
+            client = OpenAI(
+                api_key=ai_config["api_key"],
+                base_url=ai_config["base_url"]
+            )
+
+            # Build user content: data + custom prompt only, no extra formatting
+            user_content = f"{data_context}\n\n{custom_prompt}"
+
+            response = client.chat.completions.create(
+                model=ai_config["model_name"],
+                messages=[
+                    {"role": "user", "content": user_content}
+                ],
+                temperature=ai_config.get("temperature", 0.7),
+            )
+
+            return response.choices[0].message.content or ""
+
+        except Exception as e:
+            return f"AI Error: {str(e)}"
+
 ai_service = AIService()

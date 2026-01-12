@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Modal, Form, Input, Button, message, Select, Card, Alert, Collapse } from 'antd';
+import { Modal, Form, Input, Button, message, Select, Card, Collapse } from 'antd';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
 import type { Stock, IndicatorDefinition, AIConfig } from '../types';
 import { getIndicators, getAIWatchConfig, runAIWatchAnalyze, getAIConfigs } from '../api';
 import { CaretRightOutlined } from '@ant-design/icons';
@@ -96,32 +99,94 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
 
   const renderAnalysisContent = (data: any) => {
       if (!data) return null;
-      const aiReply = data.ai_reply;
-      
-      if (!aiReply) {
-          return <pre style={{ whiteSpace: 'pre-wrap' }}>{data.raw_response || 'No response'}</pre>;
-      }
-      
+
+      // Render the raw response as Markdown
+      const rawResponse = data.raw_response || "No response";
+
       return (
         <div style={{ marginTop: 16 }}>
-             <Alert
-                message={aiReply.signal}
-                description={aiReply.action_advice}
-                type={aiReply.type === 'warning' ? 'warning' : 'info'}
-                showIcon
-                style={{ marginBottom: 16 }}
-             />
-             <Card size="small" title="分析详情">
-                <p><strong>建议仓位:</strong> {aiReply.suggested_position}</p>
-                <p><strong>持仓时间:</strong> {aiReply.duration}</p>
-                <p><strong>止损价:</strong> {aiReply.stop_loss_price}</p>
-                <p><strong>分析逻辑:</strong> {aiReply.message}</p>
-             </Card>
-             <Collapse ghost>
-                <Panel header="原始响应" key="1">
-                    <pre style={{ whiteSpace: 'pre-wrap' }}>{data.raw_response}</pre>
-                </Panel>
-             </Collapse>
+            <Card size="small" title="AI 分析结果">
+                <div className="markdown-content" style={{
+                    fontSize: '14px',
+                    lineHeight: '1.7',
+                    color: '#1f2937'
+                }}>
+                    <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        rehypePlugins={[rehypeRaw]}
+                        components={{
+                            // 自定义标题样式
+                            h1: ({children}) => <h1 style={{fontSize: '24px', fontWeight: 'bold', marginTop: '16px', marginBottom: '12px', paddingBottom: '8px', borderBottom: '2px solid #e5e7eb'}}>{children}</h1>,
+                            h2: ({children}) => <h2 style={{fontSize: '20px', fontWeight: 'semibold', marginTop: '14px', marginBottom: '10px', paddingBottom: '6px', borderBottom: '1px solid #e5e7eb'}}>{children}</h2>,
+                            h3: ({children}) => <h3 style={{fontSize: '18px', fontWeight: 'semibold', marginTop: '12px', marginBottom: '8px'}}>{children}</h3>,
+                            h4: ({children}) => <h4 style={{fontSize: '16px', fontWeight: 'semibold', marginTop: '10px', marginBottom: '6px'}}>{children}</h4>,
+                            // 自定义段落样式
+                            p: ({children}) => <p style={{marginBottom: '12px'}}>{children}</p>,
+                            // 自定义列表样式
+                            ul: ({children}) => <ul style={{marginLeft: '20px', marginBottom: '12px', listStyleType: 'disc'}}>{children}</ul>,
+                            ol: ({children}) => <ol style={{marginLeft: '20px', marginBottom: '12px', listStyleType: 'decimal'}}>{children}</ol>,
+                            li: ({children}) => <li style={{marginBottom: '4px'}}>{children}</li>,
+                            // 自定义代码块样式
+                            code: ({inline, children}) => inline
+                                ? <code style={{
+                                    backgroundColor: '#f3f4f6',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    fontFamily: 'Monaco, Consolas, monospace',
+                                    fontSize: '13px',
+                                    color: '#ef4444'
+                                }}>{children}</code>
+                                : <code>{children}</code>,
+                            pre: ({children}) => <pre style={{
+                                backgroundColor: '#1f2937',
+                                color: '#f9fafb',
+                                padding: '16px',
+                                borderRadius: '8px',
+                                overflow: 'auto',
+                                marginBottom: '16px',
+                                fontFamily: 'Monaco, Consolas, monospace',
+                                fontSize: '13px',
+                                lineHeight: '1.5'
+                            }}>{children}</pre>,
+                            // 自定义引用块样式
+                            blockquote: ({children}) => <blockquote style={{
+                                borderLeft: '4px solid #3b82f6',
+                                paddingLeft: '16px',
+                                marginLeft: '0',
+                                marginBottom: '12px',
+                                color: '#6b7280',
+                                fontStyle: 'italic'
+                            }}>{children}</blockquote>,
+                            // 自定义表格样式
+                            table: ({children}) => <div style={{overflowX: 'auto', marginBottom: '16px'}}><table style={{
+                                borderCollapse: 'collapse',
+                                width: '100%',
+                                fontSize: '14px'
+                            }}>{children}</table></div>,
+                            thead: ({children}) => <thead style={{backgroundColor: '#f9fafb'}}>{children}</thead>,
+                            tbody: ({children}) => <tbody>{children}</tbody>,
+                            tr: ({children}) => <tr style={{borderBottom: '1px solid #e5e7eb'}}>{children}</tr>,
+                            th: ({children}) => <th style={{
+                                padding: '8px 12px',
+                                textAlign: 'left',
+                                fontWeight: 'semibold',
+                                borderBottom: '1px solid #d1d5db'
+                            }}>{children}</th>,
+                            td: ({children}) => <td style={{
+                                padding: '8px 12px',
+                                borderBottom: '1px solid #e5e7eb'
+                            }}>{children}</td>,
+                            // 自定义分隔线样式
+                            hr: () => <hr style={{border: 'none', borderTop: '1px solid #e5e7eb', margin: '16px 0'}} />,
+                            // 自定义强调样式
+                            strong: ({children}) => <strong style={{color: '#1f2937', fontWeight: '600'}}>{children}</strong>,
+                            em: ({children}) => <em style={{color: '#4b5563'}}>{children}</em>,
+                        }}
+                    >
+                        {rawResponse}
+                    </ReactMarkdown>
+                </div>
+            </Card>
         </div>
       );
   };
@@ -195,7 +260,7 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
               <h3>历史记录 (最近 3 条)</h3>
               <Collapse>
                   {history.map((item, idx) => (
-                      <Panel header={`${item.timestamp} - ${item.result?.ai_reply?.signal || 'Unknown'}`} key={idx}>
+                      <Panel header={`${item.timestamp}`} key={idx}>
                           {renderAnalysisContent(item.result)}
                       </Panel>
                   ))}
