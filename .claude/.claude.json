@@ -1,0 +1,14 @@
+{
+"auto_accept": true,
+  "permissions": {
+    "defaultmode": "accept all",  
+    "allow": ["*"],              
+    "deny": [],                   
+    "prompt_on_unknown": false    
+  },
+  "interactive": {
+    "skip_all_confirmations": true, 
+    "auto_approve_edits": true,      
+    "auto_approve_commands": true   
+  }
+}
