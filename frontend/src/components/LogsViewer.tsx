@@ -27,8 +27,9 @@ const parseAiRequestPayloadFromRawData = (text: string) => {
   }
 };
 
-const RenderRawData: React.FC<{ text: string }> = ({ text }) => {
-  const parsed = parseAiRequestPayloadFromRawData(text);
+const RenderRawData: React.FC<{ text: string }> = React.memo(({ text }) => {
+  const parsed = useMemo(() => parseAiRequestPayloadFromRawData(text), [text]);
+
   if (!parsed.ok) {
     return <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>{text}</pre>;
   }
@@ -41,6 +42,9 @@ const RenderRawData: React.FC<{ text: string }> = ({ text }) => {
   }>;
 
   const messages = Array.isArray(payload.messages) ? payload.messages : [];
+
+  // Limit content display to avoid massive DOM rendering
+  const MAX_CONTENT_LENGTH = 5000;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -55,36 +59,41 @@ const RenderRawData: React.FC<{ text: string }> = ({ text }) => {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {messages.map((m, i) => (
-          <div
-            key={`${m.role ?? 'unknown'}-${i}`}
-            style={{
-              border: '1px solid #E5E7EB',
-              borderRadius: 8,
-              overflow: 'hidden',
-            }}
-          >
+        {messages.map((m, i) => {
+          const content = m.content ?? '';
+          const shouldTruncate = content.length > MAX_CONTENT_LENGTH;
+
+          return (
             <div
+              key={`${m.role ?? 'unknown'}-${i}`}
               style={{
-                padding: '6px 10px',
-                background: '#F9FAFB',
-                borderBottom: '1px solid #E5E7EB',
-                fontFamily: 'monospace',
-                fontWeight: 700,
-                color: '#111827',
+                border: '1px solid #E5E7EB',
+                borderRadius: 8,
+                overflow: 'hidden',
               }}
             >
-              {m.role ?? 'message'}
+              <div
+                style={{
+                  padding: '6px 10px',
+                  background: '#F9FAFB',
+                  borderBottom: '1px solid #E5E7EB',
+                  fontFamily: 'monospace',
+                  fontWeight: 700,
+                  color: '#111827',
+                }}
+              >
+                {m.role ?? 'message'} {shouldTruncate && `(截取前 ${MAX_CONTENT_LENGTH} 字符，共 ${content.length} 字符)`}
+              </div>
+              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, padding: 10 }}>
+                {shouldTruncate ? content.slice(0, MAX_CONTENT_LENGTH) + '\n\n... (内容过长，已截断)' : content}
+              </pre>
             </div>
-            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, padding: 10 }}>
-              {m.content ?? ''}
-            </pre>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
-};
+});
 
 const LogsViewer: React.FC<Props> = ({ stockId }) => {
   const [logs, setLogs] = useState<Log[]>([]);
@@ -131,7 +140,7 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
     }
   }, [stockId]);
 
-  const handleClear = async (ids?: number[]) => {
+  const handleClear = useCallback(async (ids?: number[]) => {
     try {
       await clearLogs(ids);
       message.success(ids ? '选中日志已删除' : '所有日志已清空');
@@ -142,7 +151,7 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
     } catch {
       message.error('操作失败');
     }
-  };
+  }, [fetchLogs]);
 
   useEffect(() => {
     fetchLogs();
@@ -178,22 +187,32 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
     },
   };
 
-  const handleCopyLog = (log: Log) => {
+  const handleCopyLog = useCallback((log: Log) => {
     const content = JSON.stringify(log, null, 2);
     navigator.clipboard.writeText(content).then(() => {
       message.success('日志信息已复制');
     });
-  };
+  }, []);
 
-  const openDetailModal = (title: string, content: string) => {
+  const openDetailModal = useCallback((title: string, content: string) => {
     setDetailModal({ open: true, title, content: content ?? '' });
-  };
+  }, []);
 
-  const columns: ColumnsType<Log> = [
-    { 
-      title: '时间', 
-      dataIndex: 'timestamp', 
-      key: 'timestamp', 
+  // Pre-compute stock filters to avoid recalculating on every render
+  const stockFilters = useMemo(() => {
+    return Array.from(new Set(logs.map(l => l.stock ? `${l.stock.name}|${l.stock.symbol}` : '')))
+      .filter(Boolean)
+      .map(s => {
+        const [name, symbol] = s.split('|');
+        return { text: `${name} (${symbol})`, value: symbol };
+      });
+  }, [logs]);
+
+  const columns: ColumnsType<Log> = useMemo(() => [
+    {
+      title: '时间',
+      dataIndex: 'timestamp',
+      key: 'timestamp',
       width: 180,
       render: (t: string) => {
         // Backend returns UTC time without 'Z' (e.g. "2023-10-01T10:00:00")
@@ -204,8 +223,8 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       sorter: (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
       defaultSortOrder: 'descend',
     },
-    { 
-      title: '股票', 
+    {
+      title: '股票',
       key: 'stock',
       width: 180,
       render: (_, record) => (
@@ -215,15 +234,12 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
           <span style={{ color: '#ccc' }}>ID: {record.stock_id}</span>
         )
       ),
-      filters: Array.from(new Set(logs.map(l => l.stock ? `${l.stock.name}|${l.stock.symbol}` : ''))).filter(Boolean).map(s => {
-        const [name, symbol] = s.split('|');
-        return { text: `${name} (${symbol})`, value: symbol };
-      }),
+      filters: stockFilters,
       onFilter: (value, record) => record.stock?.symbol === value,
     },
-    { 
-      title: '级别', 
-      dataIndex: 'is_alert', 
+    {
+      title: '级别',
+      dataIndex: 'is_alert',
       key: 'is_alert',
       width: 80,
       render: (isAlert: boolean) => (
@@ -235,15 +251,15 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       ],
       onFilter: (value, record) => record.is_alert === value,
     },
-    { 
-      title: '信号', 
+    {
+      title: '信号',
       key: 'signal',
       width: 100,
       render: (_, record) => {
         const signal = record.ai_analysis?.signal;
         let color = 'default';
         let text = 'WAIT';
-        
+
         switch(signal) {
           case 'STRONG_BUY': color = '#f50'; text = '强力买入'; break;
           case 'BUY': color = '#faad14'; text = '买入'; break;
@@ -252,19 +268,19 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
           case 'WAIT': color = '#8c8c8c'; text = '观望'; break;
           default: color = '#8c8c8c'; text = signal || '未知';
         }
-        
+
         return <Tag color={color} style={{ fontWeight: 'bold' }}>{text}</Tag>;
       }
     },
-    { 
-      title: '建议 & 仓位', 
+    {
+      title: '建议 & 仓位',
       key: 'advice',
       width: 250,
       render: (_, record) => (
         <Space direction="vertical" size={0}>
           <div style={{ fontWeight: 500 }}>{record.ai_analysis?.action_advice || '-'}</div>
           <div style={{ fontSize: '12px', color: '#666' }}>
-            仓位: {record.ai_analysis?.suggested_position || '-'} | 
+            仓位: {record.ai_analysis?.suggested_position || '-'} |
             持仓: {record.ai_analysis?.duration || '-'}
           </div>
           {record.ai_analysis?.stop_loss_price && (
@@ -275,9 +291,9 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
         </Space>
       )
     },
-    { 
-      title: '消息', 
-      dataIndex: ['ai_analysis', 'message'], 
+    {
+      title: '消息',
+      dataIndex: ['ai_analysis', 'message'],
       key: 'message',
       width: 200,
       render: (text) => (
@@ -288,8 +304,8 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
-            wordBreak: 'break-word', // 允许长单词换行，但不强制截断
-            whiteSpace: 'normal',    // 允许换行
+            wordBreak: 'break-word',
+            whiteSpace: 'normal',
             cursor: 'help'
           }}>
             {text}
@@ -302,76 +318,63 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       dataIndex: 'ai_response',
       key: 'ai_response',
       width: 200,
-      render: (text) => (
-        <Tooltip title={<div style={{ whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>{text}</div>} placement="topLeft" overlayStyle={{ maxWidth: 600 }}>
-          <div style={{
-            display: '-webkit-box',
-            WebkitLineClamp: 3,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            wordBreak: 'break-all', // JSON 字符串通常需要 break-all
-            cursor: 'help',
-            fontFamily: 'monospace',
-            color: '#666'
-          }}>
-            {text}
-          </div>
-        </Tooltip>
-      )
+      render: (text, record) => {
+        const previewText = text?.length > 100 ? text.slice(0, 100) + '...' : (text ?? '');
+        return (
+          <Space direction="vertical" size={0}>
+            <Button type="link" size="small" onClick={() => openDetailModal(`AI 原始返回：${record.stock?.symbol ?? record.stock_id}`, text)}>
+              查看完整
+            </Button>
+            <div style={{
+              fontFamily: 'monospace',
+              color: '#666',
+              fontSize: '12px',
+            }}>
+              {previewText}
+            </div>
+          </Space>
+        );
+      },
     },
     {
       title: '发送内容',
       dataIndex: 'raw_data',
       key: 'raw_data',
       width: 200,
-      render: (text, record) => (
-        <Space direction="vertical" size={0}>
-          <Button type="link" size="small" onClick={() => openDetailModal(`发送内容：${record.stock?.symbol ?? record.stock_id}`, text)}>
-            查看完整
-          </Button>
-          <Tooltip
-            title={
-              <div style={{ maxHeight: 500, overflow: 'auto' }}>
-                <RenderRawData text={text} />
-              </div>
-            }
-            placement="topLeft"
-            overlayStyle={{ maxWidth: 600 }}
-          >
+      render: (text, record) => {
+        const previewText = text?.length > 100 ? text.slice(0, 100) + '...' : (text ?? '');
+        return (
+          <Space direction="vertical" size={0}>
+            <Button type="link" size="small" onClick={() => openDetailModal(`发送内容：${record.stock?.symbol ?? record.stock_id}`, text)}>
+              查看完整
+            </Button>
             <div
               style={{
-                display: '-webkit-box',
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                wordBreak: 'break-all',
-                cursor: 'help',
                 fontFamily: 'monospace',
                 color: '#666',
+                fontSize: '12px',
               }}
             >
-              {text}
+              {previewText}
             </div>
-          </Tooltip>
-        </Space>
-      ),
+          </Space>
+        );
+      },
     },
     {
       title: '操作',
       key: 'action',
       width: 80,
       render: (_, record) => (
-        <Button 
-          icon={<CopyOutlined />} 
-          size="small" 
+        <Button
+          icon={<CopyOutlined />}
+          size="small"
           onClick={() => handleCopyLog(record)}
           title="复制本条完整日志 JSON"
         />
       )
     }
-  ];
+  ], [stockFilters, openDetailModal, handleCopyLog]);
 
   return (
     <div>
@@ -383,9 +386,9 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
         width="95%"
         style={{ top: 20 }}
         styles={{ body: { height: 'calc(100vh - 200px)', overflow: 'auto' } }}
-        destroyOnHidden={true}
+        destroyOnClose={true}
       >
-        <RenderRawData text={detailModal.content} />
+        {detailModal.open && <RenderRawData text={detailModal.content} />}
       </Modal>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
         <Space>
@@ -420,8 +423,8 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       </div>
       
       {groupByStock && groupedLogs ? (
-        <Collapse 
-          defaultActiveKey={Object.keys(groupedLogs)} 
+        <Collapse
+          defaultActiveKey={undefined}
           items={Object.entries(groupedLogs).map(([key, groupLogs]) => ({
             key,
             label: `${key} (${groupLogs.length})`,
