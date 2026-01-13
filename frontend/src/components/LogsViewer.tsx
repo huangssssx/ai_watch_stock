@@ -82,10 +82,10 @@ const RenderRawData: React.FC<{ text: string }> = React.memo(({ text }) => {
                   color: '#111827',
                 }}
               >
-                {m.role ?? 'message'} {shouldTruncate && `(截取前 ${MAX_CONTENT_LENGTH} 字符，共 ${content.length} 字符)`}
+                {/* {m.role ?? 'message'} {shouldTruncate && `(截取前 ${MAX_CONTENT_LENGTH} 字符，共 ${content.length} 字符)`} */}
               </div>
               <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, padding: 10 }}>
-                {shouldTruncate ? content.slice(0, MAX_CONTENT_LENGTH) + '\n\n... (内容过长，已截断)' : content}
+                {content}
               </pre>
             </div>
           );
