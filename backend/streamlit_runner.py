@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import sys
 _backend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -5,222 +6,293 @@ if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 from pymr_compat import ensure_py_mini_racer
 ensure_py_mini_racer()
+import streamlit as st
 import pandas as pd
-import datetime
-import math
+import akshare as ak
+import altair as alt
+from datetime import datetime
+import traceback
+import logging
+import sys
+import io
 
-codes = ["600746"]
+# ==============================================================================
+# 0. 日志配置 (增强版)
+# ==============================================================================
+# 创建一个 StringIO 对象来捕获日志流，以便在 UI 上显示
+log_capture_string = io.StringIO()
 
+# 配置日志记录器
+logger = logging.getLogger("StockApp")
+logger.setLevel(logging.INFO)
 
-def _to_num(x):
-    return pd.to_numeric(x, errors="coerce")
+# 清除旧的处理器，防止 Streamlit 重载导致重复打印
+if logger.hasHandlers():
+    logger.handlers.clear()
 
+# 1. 控制台处理器 (打印到终端)
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(console_handler)
 
-def _clamp(x, lo=0.0, hi=1.0):
-    try:
-        v = float(x)
-    except Exception:
-        return 0.0
-    if v != v:
-        return 0.0
-    return max(lo, min(hi, v))
+# 2. 字符串流处理器 (用于在 UI 显示)
+stream_handler = logging.StreamHandler(log_capture_string)
+stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(stream_handler)
 
+def log_info(msg):
+    """统一日志记录入口"""
+    logger.info(msg)
 
-def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+def log_error(msg):
+    """统一错误记录入口"""
+    logger.error(msg)
 
+# ==============================================================================
+# 1. 页面基础配置
+# ==============================================================================
+st.set_page_config(
+    page_title="A股行业资金流向看板 (修正版)",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def _macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
-    ema_fast = close.ewm(span=fast, adjust=False).mean()
-    ema_slow = close.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    hist = macd_line - signal_line
-    return macd_line, signal_line, hist
+# 兼容性检查
+try:
+    st_version = st.__version__
+    major, minor, patch = map(int, st_version.split('.')[:3])
+    if major < 1 or (major == 1 and minor < 35):
+        st.error(f"⚠️ 检测到您的 Streamlit 版本 ({st_version}) 较旧。建议升级到 1.35.0+")
+except:
+    pass
 
+# ==============================================================================
+# 2. 核心逻辑区 - 数据获取与处理
+# ==============================================================================
+class DataManager:
+    """数据管理类：负责数据的获取、清洗与缓存"""
+    
+    @staticmethod
+    def _safe_numeric(series):
+        """辅助函数：安全地将含有单位(万/亿)的字符串转为数值"""
+        def convert(x):
+            if pd.isna(x) or x == "": return 0.0
+            if isinstance(x, (int, float)): return float(x)
+            x = str(x).replace("元", "").replace(",", "")
+            factor = 1.0
+            if "万" in x:
+                factor = 10000.0
+                x = x.replace("万", "")
+            elif "亿" in x:
+                factor = 100000000.0
+                x = x.replace("亿", "")
+            try:
+                return float(x) * factor
+            except:
+                return 0.0
+        return series.apply(convert)
 
-def _score_to_prob(score_0_1: float) -> float:
-    z = (score_0_1 - 0.55) * 6.0
-    return 100.0 / (1.0 + math.exp(-z))
+    @staticmethod
+    @st.cache_data(ttl=300)
+    def get_sector_flow_rank():
+        """获取行业资金流向排名数据"""
+        log_info("🚀 [Start] 开始调用 ak.stock_sector_fund_flow_rank()...")
+        try:
+            with st.spinner("正在从 AkShare 拉取行业数据..."):
+                df = ak.stock_sector_fund_flow_rank()
+                
+            if df is None or df.empty:
+                log_error("❌ [Error] 接口返回数据为空 (None or Empty)")
+                st.warning("接口返回数据为空")
+                return pd.DataFrame()
 
+            log_info(f"✅ [Fetch] 原始数据获取成功，形状: {df.shape}")
 
-def _normalize_code(code: str) -> str:
-    s = str(code).strip()
-    if s.startswith("sh") or s.startswith("sz"):
-        s = s[2:]
-    return s.zfill(6)
+            # 数据清洗
+            df = df.dropna(how='all').drop_duplicates()
+            
+            # 列名兼容性处理
+            col_mapping = {
+                "名称": "行业名称",
+                "今日主力净流入-净额": "主力净流入",
+                "今日主力净流入-净占比": "主力净流入-净占比"
+            }
+            df = df.rename(columns=col_mapping)
+            
+            # 检查列名是否映射成功
+            if "行业名称" not in df.columns:
+                log_error(f"❌ [Error] 缺少 '行业名称' 列，当前列名: {list(df.columns)}")
+                return pd.DataFrame()
 
+            # 类型转换
+            num_cols = ["主力净流入", "主力净流入-净占比"]
+            for col in num_cols:
+                if col in df.columns:
+                    df[col] = DataManager._safe_numeric(df[col])
+            
+            # 排序
+            df = df.sort_values(by="主力净流入", ascending=False).reset_index(drop=True)
+            return df
 
-def _get_name(code6: str):
-    try:
-        info = ak.stock_individual_info_em(symbol=code6)
-        if info is not None and not info.empty:
-            if "item" in info.columns and "value" in info.columns:
-                m = dict(zip(info["item"].astype(str), info["value"].astype(str)))
-                v = m.get("股票简称") or m.get("证券简称") or m.get("股票名称")
-                if v:
-                    return str(v)
-    except Exception:
-        pass
-    return ""
+        except Exception as e:
+            err_msg = traceback.format_exc()
+            log_error(f"❌ [Exception] 获取行业数据发生异常:\n{err_msg}")
+            return pd.DataFrame()
 
+    @staticmethod
+    @st.cache_data(ttl=600)
+    def get_sector_details(sector_name):
+        """
+        获取指定行业的成分股列表
+        使用 ak.stock_board_industry_cons_em 接口 (稳健)
+        """
+        log_info(f"🚀 [Start] 获取板块成分股: {sector_name}")
+        try:
+            # 使用用户指定的接口
+            df = ak.stock_board_industry_cons_em(symbol=sector_name)
+            
+            if df is not None and not df.empty:
+                log_info(f"✅ [Fetch] 成分股获取成功，行数: {len(df)}")
+                # 筛选核心列
+                cols_to_keep = ['代码', '名称', '最新价', '涨跌幅', '成交额', '换手率', '市盈率-动态']
+                # 兼容不同版本返回的列名
+                existing_cols = [c for c in cols_to_keep if c in df.columns]
+                df = df[existing_cols]
+                
+                # 简单数值处理
+                if '成交额' in df.columns:
+                    df['成交额'] = DataManager._safe_numeric(df['成交额'])
+                    
+                return df
+            else:
+                log_error(f"❌ [Error] 板块 [{sector_name}] 返回数据为空")
+                return pd.DataFrame()
+        except Exception as e:
+            log_error(f"❌ [Exception] 获取成分股失败: {str(e)}")
+            return pd.DataFrame()
 
-def _calc_one(code: str) -> dict:
-    code6 = _normalize_code(code)
-    hist = ak.stock_zh_a_hist(symbol=code6, period="daily", adjust="qfq")
-    if hist is None or hist.empty:
-        return {"symbol": code6, "name": _get_name(code6), "error": "no_hist"}
+# ==============================================================================
+# 3. UI 组件区
+# ==============================================================================
 
-    df = hist.copy()
-    rename = {
-        "日期": "date",
-        "开盘": "open",
-        "收盘": "close",
-        "最高": "high",
-        "最低": "low",
-        "成交量": "volume",
-        "成交额": "amount",
-        "涨跌幅": "pct_chg",
-    }
-    for k, v in rename.items():
-        if k in df.columns:
-            df.rename(columns={k: v}, inplace=True)
+if hasattr(st, "dialog"):
+    @st.dialog("板块个股详情", width="large")
+    def show_stock_list_dialog(sector_name):
+        _render_stock_list(sector_name)
+else:
+    def show_stock_list_dialog(sector_name):
+        st.sidebar.markdown("---")
+        st.sidebar.subheader(f"📌 {sector_name} - 个股详情")
+        _render_stock_list(sector_name)
 
-    if "date" in df.columns:
-        df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
-        df = df[df["date_dt"].notna()].sort_values("date_dt").reset_index(drop=True)
+def _render_stock_list(sector_name):
+    """抽离的渲染逻辑"""
+    st.caption(f"当前板块：{sector_name} (数据源: 东方财富-板块成份)")
+    
+    with st.spinner(f"正在加载 {sector_name} 的股票列表..."):
+        df_stocks = DataManager.get_sector_details(sector_name)
+    
+    if df_stocks.empty:
+        st.warning(f"⚠️ 未能获取到 [{sector_name}] 的成分股数据，请稍后重试。")
     else:
-        return {"symbol": code6, "name": _get_name(code6), "error": "missing_date"}
+        # 配置列显示格式
+        column_cfg = {
+            "代码": st.column_config.TextColumn("代码"),
+            "名称": st.column_config.TextColumn("名称"),
+            "最新价": st.column_config.NumberColumn("最新价", format="%.2f"),
+            "涨跌幅": st.column_config.NumberColumn("涨跌幅", format="%.2f%%"),
+            "成交额": st.column_config.NumberColumn("成交额", format="￥%.0f"),
+            "换手率": st.column_config.NumberColumn("换手率", format="%.2f%%"),
+            "市盈率-动态": st.column_config.NumberColumn("PE(动)", format="%.1f"),
+        }
+        
+        st.dataframe(
+            df_stocks,
+            use_container_width=True,
+            hide_index=True,
+            column_config=column_cfg
+        )
 
-    for c in ["open", "close", "high", "low", "volume", "amount", "pct_chg"]:
-        if c in df.columns:
-            df[c] = _to_num(df[c])
+# ==============================================================================
+# 4. 主程序入口
+# ==============================================================================
+def main():
+    # --- 侧边栏 ---
+    with st.sidebar:
+        st.header("⚙️ 参数配置")
+        top_n = st.slider("展示行业数量", 10, 50, 20)
+        refresh_btn = st.button("🔄 刷新数据")
+        
+        if refresh_btn:
+            st.cache_data.clear()
+            st.rerun()
 
-    if len(df) < 80:
-        return {"symbol": code6, "name": _get_name(code6), "error": f"hist_too_short:{len(df)}"}
+    st.title("🚀 A股行业资金流向透视")
+    
+    # 1. 获取主榜单数据
+    df_all = DataManager.get_sector_flow_rank()
+    
+    if df_all.empty:
+        st.error("数据加载失败，请检查网络或稍后重试。")
+        st.stop()
 
-    close = df["close"]
-    open_ = df.get("open", close)
-    high = df.get("high", close)
-    low = df.get("low", close)
-    vol = df.get("volume", pd.Series([None] * len(df)))
+    # 2. 截取 Top N
+    df_view = df_all.head(top_n).copy()
 
-    rsi14 = _rsi(close, 14)
-    macd_line, signal_line, histv = _macd(close)
+    # --- 核心交互图表 (Altair) ---
+    st.subheader(f"📊 热门行业资金流向 (Top {top_n})")
+    st.info("👆 点击下方的柱状图，可查看该行业的成分股列表")
 
-    low60 = low.rolling(60, min_periods=10).min()
-    near_low_ratio = (close - low60) / low60
+    # 定义基础图表
+    base = alt.Chart(df_view).encode(
+        x=alt.X('行业名称', sort=None, title="行业板块"),
+        y=alt.Y('主力净流入', title="主力净流入(元)"),
+        tooltip=['行业名称', '主力净流入', '主力净流入-净占比']
+    ).properties(height=450)
 
-    ret20 = close / close.shift(20) - 1.0
+    # [关键修复] 定义具名选择器，用于捕获点击事件
+    # name='select_sector' 是必须的，这样在 event.selection 中才能通过这个名字取值
+    click_selection = alt.selection_point(name='select_sector', fields=['行业名称'], on='click')
 
-    vol_ma5 = vol.rolling(5, min_periods=3).mean()
-    vol_ma20 = vol.rolling(20, min_periods=10).mean()
-    vol_ratio = vol_ma5 / vol_ma20
+    # 绘制柱状图，并绑定选择器
+    bars = base.mark_bar().encode(
+        # 选中时完全不透明，未选中时半透明
+        opacity=alt.condition(click_selection, alt.value(1.0), alt.value(0.3)),
+        color=alt.condition(
+            alt.datum['主力净流入'] > 0,
+            alt.value("#f5222d"),  # 红
+            alt.value("#52c41a")   # 绿
+        )
+    ).add_params(click_selection)
 
-    ma20 = close.rolling(20, min_periods=10).mean()
-    ma20_dist = (close - ma20) / ma20
-
-    rng = (high - low).replace(0, pd.NA)
-    lower_shadow = (pd.concat([open_, close], axis=1).min(axis=1) - low) / rng
-
-    i = len(df) - 1
-
-    s_rsi = _clamp((35.0 - float(rsi14.iloc[i])) / 20.0)
-    s_near_low = _clamp((0.08 - float(near_low_ratio.iloc[i])) / 0.08)
-    s_dd = _clamp((-float(ret20.iloc[i])) / 0.25)
-
-    vr = float(vol_ratio.iloc[i]) if i < len(vol_ratio) else float("nan")
-    s_vol = _clamp((0.75 - vr) / 0.45)
-
-    hist_now = float(histv.iloc[i])
-    hist_prev = float(histv.iloc[i - 1])
-    macd_now = float(macd_line.iloc[i])
-    s_macd = 1.0 if (hist_now > hist_prev and macd_now < 0) else (0.6 if hist_now > hist_prev else (0.25 if macd_now < 0 else 0.0))
-
-    ls = float(lower_shadow.iloc[i]) if i < len(lower_shadow) else float("nan")
-    s_pin = _clamp((ls - 0.35) / 0.35)
-
-    mad = float(ma20_dist.iloc[i])
-    s_ma = _clamp((0.02 - abs(mad)) / 0.02)
-
-    weights = {
-        "rsi": 0.25,
-        "near_low": 0.20,
-        "drawdown": 0.15,
-        "vol_dry": 0.10,
-        "macd": 0.15,
-        "pin": 0.10,
-        "ma": 0.05,
-    }
-
-    score = (
-        weights["rsi"] * s_rsi
-        + weights["near_low"] * s_near_low
-        + weights["drawdown"] * s_dd
-        + weights["vol_dry"] * s_vol
-        + weights["macd"] * s_macd
-        + weights["pin"] * s_pin
-        + weights["ma"] * s_ma
-    )
-
-    prob = _score_to_prob(score)
-
-    sig = []
-    if float(rsi14.iloc[i]) <= 30:
-        sig.append("RSI<=30")
-    if float(near_low_ratio.iloc[i]) <= 0.08:
-        sig.append("距60日低点<=8%")
-    if float(ret20.iloc[i]) <= -0.10:
-        sig.append("20日跌幅>=10%")
-    if vr == vr and vr <= 0.75:
-        sig.append("量能收缩")
-    if hist_now > hist_prev:
-        sig.append("MACD柱走高")
-    if ls == ls and ls >= 0.55:
-        sig.append("长下影")
-    if abs(mad) <= 0.02:
-        sig.append("贴近MA20")
-
-    return {
-        "symbol": code6,
-        "name": _get_name(code6),
-        "date": df["date"].iloc[i],
-        "close": float(close.iloc[i]),
-        "rsi14": float(rsi14.iloc[i]),
-        "near_low_60d": float(near_low_ratio.iloc[i]),
-        "ret20": float(ret20.iloc[i]),
-        "vol_ratio_5_20": float(vr) if vr == vr else None,
-        "macd": float(macd_now),
-        "macd_hist": float(hist_now),
-        "lower_shadow": float(ls) if ls == ls else None,
-        "score_0_1": float(score),
-        "bottom_prob": float(round(prob, 2)),
-        "signals": " | ".join(sig),
-        "error": "",
-    }
-
-
-rows = []
-for c in codes:
-    if c is None:
-        continue
-    cs = str(c).strip()
-    if not cs:
-        continue
+    # 渲染图表，on_select="rerun" 触发生效
     try:
-        rows.append(_calc_one(cs))
-    except Exception as e:
-        rows.append({"symbol": _normalize_code(cs), "name": _get_name(_normalize_code(cs)), "error": str(e)})
+        event = st.altair_chart(bars, use_container_width=True, on_select="rerun")
+    except TypeError:
+        st.altair_chart(bars, use_container_width=True)
+        st.error("您的 Streamlit 版本不支持 on_select，请升级到 1.35.0 以上。")
+        return
 
-df = pd.DataFrame(rows)
-if not df.empty and "bottom_prob" in df.columns:
-    df = df.sort_values(["bottom_prob"], ascending=False, na_position="last").reset_index(drop=True)
+    # --- 处理点击事件 ---
+    # [关键修复] 之前的 AttributeError 是因为使用了 event.selection.rows
+    # 正确的做法是根据选择器名称 ('select_sector') 从字典中取出数据
+    if event.selection and 'select_sector' in event.selection:
+        selection_list = event.selection['select_sector']
+        
+        if selection_list and len(selection_list) > 0:
+            # 获取被点击的行业名称
+            sector_data = selection_list[0]
+            sector_name = sector_data.get("行业名称")
+            
+            if sector_name:
+                log_info(f"🖱️ 用户点击了: {sector_name}")
+                # 弹出模态窗口
+                show_stock_list_dialog(sector_name)
 
-print("codes=", codes)
-print("rows=", len(df))
+    # --- 底部数据预览 ---
+    with st.expander("查看榜单源数据"):
+        st.dataframe(df_view)
+
+if __name__ == "__main__":
+    main()
