@@ -11,32 +11,57 @@ import type { ColumnsType } from 'antd/es/table';
 
 const RemarkCell: React.FC<{ stock: Stock; onSave: (id: number, val: string) => void }> = ({ stock, onSave }) => {
   const [editing, setEditing] = useState(false);
-  const [val, setVal] = useState(stock.remark || '');
-
-  useEffect(() => { setVal(stock.remark || ''); }, [stock.remark]);
+  const [draft, setDraft] = useState('');
+  const value = stock.remark || '';
 
   if (editing) {
     return (
-      <Input.TextArea 
-        autoFocus 
-        value={val} 
-        onChange={e => setVal(e.target.value)} 
-        onBlur={() => { setEditing(false); if (val !== (stock.remark || '')) onSave(stock.id, val); }}
-        onKeyDown={e => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.blur(); } }}
+      <Input.TextArea
+        autoFocus
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={() => {
+          setEditing(false);
+          if (draft !== value) onSave(stock.id, draft);
+        }}
+        onKeyDown={e => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            e.currentTarget.blur();
+          }
+        }}
         autoSize={{ minRows: 1, maxRows: 6 }}
       />
     );
   }
-  
+
   return (
-    <div 
-        style={{ minHeight: 24, cursor: 'pointer', whiteSpace: 'pre-wrap', color: val ? 'inherit' : '#ccc', border: '1px dashed transparent', padding: '2px 4px' }} 
-        onClick={() => setEditing(true)}
-        onMouseEnter={e => e.currentTarget.style.borderColor = '#d9d9d9'}
-        onMouseLeave={e => e.currentTarget.style.borderColor = 'transparent'}
-        title="点击编辑备注"
+    <div
+      style={{
+        minHeight: 24,
+        cursor: 'pointer',
+        whiteSpace: 'pre-wrap',
+        color: value ? 'inherit' : '#ccc',
+        border: '1px dashed transparent',
+        padding: '2px 4px',
+      }}
+      onClick={() => {
+        setDraft(value);
+        setEditing(true);
+      }}
+      onMouseEnter={e => {
+        e.currentTarget.style.borderColor = '#d9d9d9';
+      }}
+      onMouseLeave={e => {
+        e.currentTarget.style.borderColor = 'transparent';
+      }}
+      title="点击编辑备注"
     >
-        {val || <span style={{fontSize: 12}}><EditOutlined /> 添加备注</span>}
+      {value || (
+        <span style={{ fontSize: 12 }}>
+          <EditOutlined /> 添加备注
+        </span>
+      )}
     </div>
   );
 };

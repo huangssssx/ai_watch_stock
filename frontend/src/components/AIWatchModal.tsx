@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Modal, Form, Input, Button, message, Select, Card, Collapse } from 'antd';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import type { Stock, IndicatorDefinition, AIConfig } from '../types';
+import type { Stock, IndicatorDefinition, AIConfig, AIWatchAnalyzeResponse } from '../types';
 import { getIndicators, getAIWatchConfig, runAIWatchAnalyze, getAIConfigs } from '../api';
 import { CaretRightOutlined } from '@ant-design/icons';
 
@@ -15,16 +15,27 @@ interface Props {
   onClose: () => void;
 }
 
+type AIWatchHistoryEntry = {
+  timestamp: string;
+  result: AIWatchAnalyzeResponse;
+};
+
+type AIWatchFormValues = {
+  ai_provider_id?: number;
+  indicator_ids?: number[];
+  custom_prompt: string;
+};
+
 const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
   const [form] = Form.useForm();
   const [allIndicators, setAllIndicators] = useState<IndicatorDefinition[]>([]);
   const [aiConfigs, setAiConfigs] = useState<AIConfig[]>([]);
   const [loadingIndicators, setLoadingIndicators] = useState(false);
-  const [result, setResult] = useState<any>(null);
-  const [history, setHistory] = useState<any[]>([]);
+  const [result, setResult] = useState<AIWatchAnalyzeResponse | null>(null);
+  const [history, setHistory] = useState<AIWatchHistoryEntry[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
 
-  const fetchInitData = async () => {
+  const fetchInitData = useCallback(async () => {
     setLoadingIndicators(true);
     try {
       const [indRes, configRes, aiRes] = await Promise.all([
@@ -39,12 +50,16 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
       let indicatorIds: number[] = [];
       try {
         indicatorIds = JSON.parse(config.indicator_ids || '[]');
-      } catch {}
+      } catch {
+        indicatorIds = [];
+      }
       
-      let hist: any[] = [];
+      let hist: AIWatchHistoryEntry[] = [];
       try {
         hist = JSON.parse(config.analysis_history || '[]');
-      } catch {}
+      } catch {
+        hist = [];
+      }
       
       setHistory(hist);
 
@@ -59,16 +74,16 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
     } finally {
       setLoadingIndicators(false);
     }
-  };
+  }, [form, stock.ai_provider_id, stock.id]);
 
   useEffect(() => {
     if (visible) {
-        fetchInitData();
-        setResult(null);
+      fetchInitData();
+      setResult(null);
     }
-  }, [visible, stock]);
+  }, [fetchInitData, visible, stock.id]);
 
-  const handleAnalyze = async (values: any) => {
+  const handleAnalyze = async (values: AIWatchFormValues) => {
     setAnalyzing(true);
     setResult(null);
     try {
@@ -85,7 +100,7 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
         } else {
             message.error(res.data.error || '分析失败');
         }
-    } catch (e) {
+    } catch {
         message.error('请求失败');
     } finally {
         setAnalyzing(false);
@@ -97,7 +112,7 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
       form.setFieldsValue({ indicator_ids: allIds });
   };
 
-  const renderAnalysisContent = (data: any) => {
+  const renderAnalysisContent = (data: AIWatchAnalyzeResponse | null) => {
       if (!data) return null;
 
       // Render the raw response as Markdown
@@ -127,16 +142,19 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
                             ol: ({children}) => <ol style={{marginLeft: '20px', marginBottom: '12px', listStyleType: 'decimal'}}>{children}</ol>,
                             li: ({children}) => <li style={{marginBottom: '4px'}}>{children}</li>,
                             // 自定义代码块样式
-                            code: ({inline, children}) => inline
-                                ? <code style={{
-                                    backgroundColor: '#f3f4f6',
-                                    padding: '2px 6px',
-                                    borderRadius: '4px',
-                                    fontFamily: 'Monaco, Consolas, monospace',
-                                    fontSize: '13px',
-                                    color: '#ef4444'
-                                }}>{children}</code>
-                                : <code>{children}</code>,
+                            code: ({children, className, ...props}) => !className
+                                ? <code
+                                    {...props}
+                                    style={{
+                                        backgroundColor: '#f3f4f6',
+                                        padding: '2px 6px',
+                                        borderRadius: '4px',
+                                        fontFamily: 'Monaco, Consolas, monospace',
+                                        fontSize: '13px',
+                                        color: '#ef4444'
+                                    }}
+                                >{children}</code>
+                                : <code {...props} className={className}>{children}</code>,
                             pre: ({children}) => <pre style={{
                                 backgroundColor: '#1f2937',
                                 color: '#f9fafb',

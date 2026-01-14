@@ -216,6 +216,6 @@ export interface AIWatchAnalyzeResponse {
 
 export interface IndicatorPreviewResponse {
   ok: boolean;
-  data?: Record<string, any>;
+  data?: Record<string, unknown>;
   error?: string;
 }

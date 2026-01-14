@@ -62,6 +62,7 @@ const RenderRawData: React.FC<{ text: string }> = React.memo(({ text }) => {
         {messages.map((m, i) => {
           const content = m.content ?? '';
           const shouldTruncate = content.length > MAX_CONTENT_LENGTH;
+          const displayContent = shouldTruncate ? content.slice(0, MAX_CONTENT_LENGTH) : content;
 
           return (
             <div
@@ -82,10 +83,10 @@ const RenderRawData: React.FC<{ text: string }> = React.memo(({ text }) => {
                   color: '#111827',
                 }}
               >
-                {/* {m.role ?? 'message'} {shouldTruncate && `(截取前 ${MAX_CONTENT_LENGTH} 字符，共 ${content.length} 字符)`} */}
+                {m.role ?? 'message'} {shouldTruncate ? `(截取前 ${MAX_CONTENT_LENGTH} 字符，共 ${content.length} 字符)` : null}
               </div>
               <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, padding: 10 }}>
-                {content}
+                {displayContent}
               </pre>
             </div>
           );

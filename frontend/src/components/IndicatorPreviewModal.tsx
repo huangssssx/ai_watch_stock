@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Modal, Form, Button, message, Select, Input } from 'antd';
 import { CopyOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { Stock, IndicatorDefinition } from '../types';
@@ -15,9 +15,9 @@ const IndicatorPreviewModal: React.FC<Props> = ({ visible, stock, onClose }) => 
   const [allIndicators, setAllIndicators] = useState<IndicatorDefinition[]>([]);
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(false);
-  const [resultData, setResultData] = useState<Record<string, any> | null>(null);
+  const [resultData, setResultData] = useState<Record<string, unknown> | null>(null);
 
-  const fetchInitData = async () => {
+  const fetchInitData = useCallback(async () => {
     setLoading(true);
     try {
       const [indRes, configRes] = await Promise.all([
@@ -30,7 +30,9 @@ const IndicatorPreviewModal: React.FC<Props> = ({ visible, stock, onClose }) => 
       let indicatorIds: number[] = [];
       try {
         indicatorIds = JSON.parse(config.indicator_ids || '[]');
-      } catch {}
+      } catch {
+        indicatorIds = [];
+      }
       
       form.setFieldsValue({
         indicator_ids: indicatorIds.length > 0 ? indicatorIds : undefined,
@@ -41,16 +43,16 @@ const IndicatorPreviewModal: React.FC<Props> = ({ visible, stock, onClose }) => 
     } finally {
       setLoading(false);
     }
-  };
+  }, [form, stock.id]);
 
   useEffect(() => {
     if (visible) {
         fetchInitData();
         setResultData(null);
     }
-  }, [visible, stock]);
+  }, [fetchInitData, visible, stock.id]);
 
-  const handleFetch = async (values: any) => {
+  const handleFetch = async (values: { indicator_ids?: number[] }) => {
       setFetching(true);
       setResultData(null);
       try {

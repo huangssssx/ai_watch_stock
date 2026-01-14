@@ -227,7 +227,7 @@ const ResearchPageContent: React.FC = () => {
       setStreamlitUrl(res.data.url);
       setActiveTab('streamlit');
       message.success('Streamlit updated');
-    } catch (e) {
+    } catch {
       message.error('Failed to run Streamlit');
     } finally {
       setRunning(false);

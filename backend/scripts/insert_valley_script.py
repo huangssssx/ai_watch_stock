@@ -7,33 +7,37 @@
 
 import sys
 import os
+import argparse
 
 # 添加项目路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from database import SessionLocal
 from models import StockScreener
 
-def insert_valley_sniper_script():
+def insert_valley_sniper_script(script_path: str, target_id: int, force_update: bool):
     """将山谷狙击选股脚本插入数据库"""
     
     # 读取脚本内容
-    script_path = os.path.join(os.path.dirname(__file__), '选股策略', '山谷狙击选股策略.py')
     with open(script_path, 'r', encoding='utf-8') as f:
         script_content = f.read()
     
     db = SessionLocal()
     try:
-        # 检查是否已存在
-        existing = db.query(StockScreener).filter(
-            StockScreener.name == "山谷狙击选股"
-        ).first()
+        existing = None
+        if target_id is not None:
+            existing = db.query(StockScreener).filter(StockScreener.id == int(target_id)).first()
+        if existing is None:
+            existing = db.query(StockScreener).filter(StockScreener.name == "山谷狙击选股").first()
         
         if existing:
             print(f"⚠️  策略 '山谷狙击选股' 已存在 (ID: {existing.id})")
-            print("是否要更新脚本内容? (y/n): ", end='')
-            choice = input().lower()
-            if choice == 'y':
+            do_update = bool(force_update)
+            if not do_update:
+                print("是否要更新脚本内容? (y/n): ", end='')
+                choice = input().lower()
+                do_update = choice == 'y'
+            if do_update:
                 existing.script_content = script_content
                 existing.description = "基于缩量、均线支撑、MACD/RSI底背离的山谷买点策略，避免追高买在半山腰"
                 db.commit()
@@ -72,4 +76,13 @@ def insert_valley_sniper_script():
         db.close()
 
 if __name__ == "__main__":
-    insert_valley_sniper_script()
+    p = argparse.ArgumentParser()
+    p.add_argument("--file", type=str, default=os.path.join(os.path.dirname(__file__), "选股策略", "山谷狙击选股策略.py"))
+    p.add_argument("--id", type=int, default=None)
+    p.add_argument("--force", action="store_true")
+    args = p.parse_args()
+
+    script_path = os.path.abspath(args.file)
+    if not os.path.exists(script_path):
+        raise FileNotFoundError(script_path)
+    insert_valley_sniper_script(script_path=script_path, target_id=args.id, force_update=bool(args.force))
