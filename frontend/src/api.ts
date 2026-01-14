@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse, ResearchScript, ResearchRunResponse, RuleScript, RuleTestPayload, RuleTestResponse, StockAIWatchConfig, AIWatchAnalyzeRequest, AIWatchAnalyzeResponse, IndicatorPreviewResponse } from './types';
+import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse, ResearchScript, ResearchRunResponse, RuleScript, RuleTestPayload, RuleTestResponse, StockAIWatchConfig, AIWatchAnalyzeRequest, AIWatchAnalyzeResponse, IndicatorPreviewResponse, StockNews, SentimentAnalysis } from './types';
 
 const API_URL = 'http://localhost:8000';
 
@@ -68,3 +68,13 @@ export const getAIWatchConfig = (stockId: number) => api.get<StockAIWatchConfig>
 export const saveAIWatchConfig = (stockId: number, config: { indicator_ids: string; custom_prompt: string }) => api.post<StockAIWatchConfig>(`/stocks/${stockId}/ai-watch-config`, config);
 export const runAIWatchAnalyze = (stockId: number, request: AIWatchAnalyzeRequest) => api.post<AIWatchAnalyzeResponse>(`/stocks/${stockId}/ai-watch-analyze`, request);
 export const previewStockIndicators = (stockId: number, request: AIWatchAnalyzeRequest) => api.post<IndicatorPreviewResponse>(`/stocks/${stockId}/preview-indicators`, request);
+
+export const fetchMarketNews = (limit: number = 50) => api.post<{ ok: boolean; count: number }>('/news/fetch', undefined, { params: { limit } });
+export const getLatestNews = (limit: number = 50) => api.get<StockNews[]>('/news/latest', { params: { limit } });
+export const analyzeMarketNews = (ai_config_id?: number, custom_prompt?: string, limit?: number) =>
+  api.post<{ ok: boolean; raw: string }>(
+    '/news/analyze',
+    { ai_config_id, custom_prompt, limit },
+  );
+export const getLatestSentimentAnalysis = (limit: number = 10) =>
+  api.get<SentimentAnalysis[]>('/news/analysis/latest', { params: { limit } });

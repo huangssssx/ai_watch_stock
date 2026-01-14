@@ -271,3 +271,31 @@ class AIWatchAnalyzeRequest(BaseModel):
     indicator_ids: List[int]
     custom_prompt: str
     ai_provider_id: Optional[int] = None
+
+# Stock News
+class StockNewsBase(BaseModel):
+    title: str
+    content: str
+    source: Optional[str] = None
+    publish_time: Optional[datetime] = None
+    url: Optional[str] = None
+    related_stock_codes: Optional[str] = None
+
+class StockNews(ORMModel, StockNewsBase):
+    id: int
+    created_at: Optional[datetime] = None
+
+# Sentiment Analysis
+class SentimentAnalysisBase(BaseModel):
+    target_type: str = "market"
+    target_value: str = "global"
+    sentiment_score: float = 0.0
+    policy_orientation: Optional[str] = None
+    trading_signal: str = "WAIT"
+    summary: Optional[str] = None
+    raw_response: Optional[str] = None
+    ai_provider_id: Optional[int] = None
+
+class SentimentAnalysis(ORMModel, SentimentAnalysisBase):
+    id: int
+    timestamp: Optional[datetime] = None

@@ -8,7 +8,7 @@ _backend_dir = os.path.dirname(os.path.abspath(__file__))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
-from routers import stocks, ai_configs, logs, indicators, settings, screeners, research, rules
+from routers import stocks, ai_configs, logs, indicators, settings, screeners, research, rules, news
 from services.monitor_service import start_scheduler
 from services.screener_service import restore_screener_jobs
 from services.streamlit_service import start_streamlit, stop_streamlit
@@ -34,6 +34,7 @@ app.include_router(settings.router)
 app.include_router(screeners.router)
 app.include_router(research.router)
 app.include_router(rules.router)
+app.include_router(news.router)
 
 def ensure_db_schema():
     Base.metadata.create_all(bind=engine)

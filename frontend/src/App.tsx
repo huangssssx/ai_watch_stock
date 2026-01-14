@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Layout, Menu } from 'antd';
-import { DashboardOutlined, HistoryOutlined, AppstoreOutlined, RobotOutlined, ToolOutlined, FilterOutlined, ExperimentOutlined } from '@ant-design/icons';
+import { DashboardOutlined, HistoryOutlined, AppstoreOutlined, RobotOutlined, ToolOutlined, FilterOutlined, ExperimentOutlined, NotificationOutlined } from '@ant-design/icons';
 import StockTable from './components/StockTable.tsx';
 import AISettings from './components/AISettings.tsx';
 import LogsViewer from './components/LogsViewer.tsx';
@@ -9,6 +9,7 @@ import Settings from './components/Settings.tsx';
 import ScreenerPage from './components/ScreenerPage.tsx';
 import ResearchPage from './components/ResearchPage.tsx';
 import RuleLibrary from './components/RuleLibrary.tsx';
+import NewsPage from './components/NewsPage.tsx';
 
 const { Header, Content, Sider } = Layout;
 
@@ -26,6 +27,7 @@ const App: React.FC = () => {
       case '6': return <ScreenerPage />;
       case '7': return <ResearchPage />;
       case '8': return <RuleLibrary />;
+      case '9': return <NewsPage />;
       default: return <StockTable />;
     }
   };
@@ -47,6 +49,7 @@ const App: React.FC = () => {
             { key: '6', icon: <FilterOutlined />, label: '选股' },
             { key: '8', icon: <ToolOutlined />, label: '规则库' },
             { key: '7', icon: <ExperimentOutlined />, label: '数据实验室' },
+            { key: '9', icon: <NotificationOutlined />, label: '新闻与舆情' },
             { key: '4', icon: <AppstoreOutlined />, label: '指标库' },
             { key: '3', icon: <HistoryOutlined />, label: '日志' },
             { key: '5', icon: <ToolOutlined />, label: '系统设置' },

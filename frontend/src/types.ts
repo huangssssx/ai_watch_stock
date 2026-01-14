@@ -219,3 +219,27 @@ export interface IndicatorPreviewResponse {
   data?: Record<string, unknown>;
   error?: string;
 }
+
+export interface StockNews {
+  id: number;
+  title: string;
+  content: string;
+  source?: string | null;
+  publish_time?: string | null;
+  url?: string | null;
+  related_stock_codes?: string | null;
+  created_at?: string | null;
+}
+
+export interface SentimentAnalysis {
+  id: number;
+  target_type?: string;
+  target_value?: string;
+  sentiment_score: number;
+  policy_orientation?: string | null;
+  trading_signal: string;
+  summary?: string | null;
+  raw_response?: string | null;
+  ai_provider_id?: number | null;
+  timestamp?: string | null;
+}

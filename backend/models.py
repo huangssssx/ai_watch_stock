@@ -162,3 +162,39 @@ class ResearchScript(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+class StockNews(Base):
+    __tablename__ = "stock_news"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, index=True)
+    content = Column(Text)
+    source = Column(String, nullable=True) # e.g. "CLS", "EastMoney"
+    publish_time = Column(DateTime(timezone=True), nullable=True)
+    url = Column(String, nullable=True)
+    
+    # Optional: if we want to associate with specific stocks (many-to-many is better but string is simpler for now)
+    related_stock_codes = Column(String, nullable=True) 
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class SentimentAnalysis(Base):
+    __tablename__ = "sentiment_analysis"
+
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Target: "market" (general), "sector" (specific sector), "stock" (specific stock)
+    target_type = Column(String, default="market", index=True)
+    target_value = Column(String, default="global") # e.g., "semiconductor", "600519"
+
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # AI Results
+    sentiment_score = Column(Float, default=0.0) # -1.0 to 1.0
+    policy_orientation = Column(Text, nullable=True) # Description of policy trend
+    trading_signal = Column(String, default="WAIT") # BUY, SELL, WAIT
+    summary = Column(Text, nullable=True)
+    raw_response = Column(Text, nullable=True)
+
+    # Config used
+    ai_provider_id = Column(Integer, ForeignKey("ai_configs.id"), nullable=True)
