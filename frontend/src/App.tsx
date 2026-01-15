@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Layout, Menu } from 'antd';
 import { DashboardOutlined, HistoryOutlined, AppstoreOutlined, RobotOutlined, ToolOutlined, FilterOutlined, ExperimentOutlined, NotificationOutlined } from '@ant-design/icons';
 import { HashRouter, Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
@@ -31,15 +31,9 @@ const MainLayout: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
-  const [selectedKey, setSelectedKey] = useState('dashboard');
-
-  useEffect(() => {
-    const currentPath = location.pathname.substring(1) || 'dashboard';
-    const activeItem = MENU_ITEMS.find(item => item.path === `/${currentPath}`);
-    if (activeItem) {
-      setSelectedKey(activeItem.key);
-    }
-  }, [location]);
+  const currentPath = location.pathname.substring(1) || 'dashboard';
+  const activeItem = MENU_ITEMS.find(item => item.path === `/${currentPath}`);
+  const selectedKey = activeItem?.key ?? 'dashboard';
 
   const handleMenuClick = (e: { key: string }) => {
     const item = MENU_ITEMS.find(item => item.key === e.key);

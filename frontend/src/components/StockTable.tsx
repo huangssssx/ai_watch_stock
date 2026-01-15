@@ -1,8 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag, Card, Space, Tabs } from 'antd';
+import { useLocation, useNavigate } from 'react-router-dom';
 import type { Stock, AIConfig, StockTestRunResponse, IndicatorDefinition } from '../types';
 import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock, getIndicators } from '../api';
-import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, EyeOutlined, TableOutlined, EditOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
+import {
+  SettingOutlined,
+  DeleteOutlined,
+  PlayCircleOutlined,
+  PauseCircleOutlined,
+  FileTextOutlined,
+  EyeOutlined,
+  TableOutlined,
+  EditOutlined,
+  PushpinOutlined,
+  PushpinFilled
+} from '@ant-design/icons';
 import StockConfigModal from './StockConfigModal.tsx';
 import LogsViewer from './LogsViewer.tsx';
 import AIWatchModal from './AIWatchModal.tsx';
@@ -97,10 +109,18 @@ const StockTable: React.FC = () => {
 
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewStock, setPreviewStock] = useState<Stock | null>(null);
-  
-  const [activeTab, setActiveTab] = useState('list');
 
   const [form] = Form.useForm();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const tabParam = new URLSearchParams(location.search).get('tab');
+  const activeTab = tabParam === 'charts' ? 'charts' : 'list';
+
+  const handleTabChange = (key: string) => {
+    const search = key === 'charts' ? '?tab=charts' : '';
+    navigate({ pathname: '/dashboard', search }, { replace: true });
+  };
 
   const fetchIndicators = async () => {
     setLoadingIndicators(true);
@@ -281,7 +301,7 @@ const StockTable: React.FC = () => {
 
   return (
     <div>
-      <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
+      <Tabs activeKey={activeTab} onChange={handleTabChange} items={[
         {
           key: 'list',
           label: '股票列表',

@@ -1,22 +1,86 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Tabs, Spin, Empty, Button, Radio } from 'antd';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { Card, Tabs, Spin, Empty, Button } from 'antd';
 import { ArrowLeftOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { getStockDaily, getStockHistory } from '../api';
+import { AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { getStockDaily, getStockHistory, getStocks } from '../api';
+import type { StockPricePoint } from '../types';
+
+interface ChartContainerProps {
+  children: (size: { width: number; height: number }) => React.ReactNode;
+}
+
+const ChartContainer: React.FC<ChartContainerProps> = ({ children }) => {
+  const ref = React.useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+
+  useEffect(() => {
+    if (!ref.current) return;
+
+    const measure = () => {
+      const rect = ref.current?.getBoundingClientRect();
+      if (!rect) return;
+      if (rect.width > 0 && rect.height > 0) {
+        setSize({ width: rect.width, height: rect.height });
+      }
+    };
+
+    measure();
+
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+          setSize({ width: entry.contentRect.width, height: entry.contentRect.height });
+        }
+      }
+    });
+
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={ref} style={{ width: '100%', height: '100%' }}>
+      {size.width > 0 && size.height > 0 ? (
+        children(size)
+      ) : (
+        <div style={{ height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <Spin size="large" />
+        </div>
+      )}
+    </div>
+  );
+};
 
 const StockDetail: React.FC = () => {
   const { symbol } = useParams<{ symbol: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const [period, setPeriod] = useState<string>('intraday'); // intraday, daily, weekly, monthly
-  const [data, setData] = useState<any[]>([]);
+  const [data, setData] = useState<StockPricePoint[]>([]);
   const [loading, setLoading] = useState(false);
+  const state = (location.state ?? {}) as Partial<{ stockName: string; returnTo: string }>;
+  const [stockName, setStockName] = useState(state.stockName ?? '');
 
-  const fetchData = async () => {
+  useEffect(() => {
+    if (!symbol) return;
+    if (stockName) return;
+    void (async () => {
+      try {
+        const res = await getStocks();
+        const found = res.data.find((s) => s.symbol === symbol);
+        if (found?.name) setStockName(found.name);
+      } catch {
+        return;
+      }
+    })();
+  }, [stockName, symbol]);
+
+  const fetchData = useCallback(async () => {
     if (!symbol) return;
     setLoading(true);
     try {
-      let res;
+      let res: Awaited<ReturnType<typeof getStockDaily>> | Awaited<ReturnType<typeof getStockHistory>>;
       if (period === 'intraday') {
         res = await getStockDaily(symbol);
       } else {
@@ -33,21 +97,16 @@ const StockDetail: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [period, symbol]);
 
   useEffect(() => {
-    fetchData();
-    let interval: number | undefined;
-    
-    if (period === 'intraday') {
-      // Auto refresh for intraday
-      interval = window.setInterval(fetchData, 60000);
-    }
-
-    return () => {
-      if (interval) window.clearInterval(interval);
-    };
-  }, [symbol, period]);
+    void fetchData();
+    if (period !== 'intraday') return;
+    const interval = window.setInterval(() => {
+      void fetchData();
+    }, 60000);
+    return () => window.clearInterval(interval);
+  }, [fetchData, period]);
 
   const chartData = useMemo(() => {
     return data;
@@ -64,9 +123,13 @@ const StockDetail: React.FC = () => {
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center' }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)} style={{ marginRight: 16 }} />
+        <Button
+          icon={<ArrowLeftOutlined />}
+          onClick={() => navigate(state.returnTo || '/dashboard?tab=charts')}
+          style={{ marginRight: 16 }}
+        />
         <h2 style={{ margin: 0 }}>
-            {symbol} 
+            {stockName ? `${stockName} (${symbol})` : symbol}
             {data.length > 0 && (
                 <span style={{ marginLeft: 16, color, fontSize: 20 }}>
                     {lastPrice.toFixed(2)}
@@ -99,35 +162,40 @@ const StockDetail: React.FC = () => {
             ) : !data.length ? (
                 <Empty description="暂无数据" />
             ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="colorClose" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={color} stopOpacity={0.1}/>
-                        <stop offset="95%" stopColor={color} stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <XAxis 
-                        dataKey={period === 'intraday' ? 'time' : 'date'} 
-                        minTickGap={50} 
-                        tick={{ fontSize: 12 }}
-                    />
-                    <YAxis domain={['auto', 'auto']} />
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <Tooltip 
-                        labelFormatter={(label) => label}
-                        formatter={(value: any) => [Number(value).toFixed(2), '价格']}
-                    />
-                    <Area 
-                        type="monotone" 
-                        dataKey="close" 
-                        stroke={color} 
-                        fillOpacity={1} 
-                        fill="url(#colorClose)" 
-                        isAnimationActive={false}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
+                <ChartContainer>
+                  {({ width, height }) => (
+                    <AreaChart width={width} height={height} data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="colorClose" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={color} stopOpacity={0.1}/>
+                          <stop offset="95%" stopColor={color} stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <XAxis 
+                          dataKey={period === 'intraday' ? 'time' : 'date'} 
+                          minTickGap={50} 
+                          tick={{ fontSize: 12 }}
+                      />
+                      <YAxis domain={['auto', 'auto']} />
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                      <Tooltip 
+                          labelFormatter={(label) => label}
+                          formatter={(value: unknown) => {
+                            const num = typeof value === 'number' ? value : Number(value);
+                            return [Number.isFinite(num) ? num.toFixed(2) : '-', '价格'];
+                          }}
+                      />
+                      <Area 
+                          type="monotone" 
+                          dataKey="close" 
+                          stroke={color} 
+                          fillOpacity={1} 
+                          fill="url(#colorClose)" 
+                          isAnimationActive={false}
+                      />
+                    </AreaChart>
+                  )}
+                </ChartContainer>
             )}
         </div>
       </Card>

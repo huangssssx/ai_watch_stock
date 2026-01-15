@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Stock, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse, ResearchScript, ResearchRunResponse, RuleScript, RuleTestPayload, RuleTestResponse, StockAIWatchConfig, AIWatchAnalyzeRequest, AIWatchAnalyzeResponse, IndicatorPreviewResponse, StockNews, SentimentAnalysis } from './types';
+import type { Stock, StockPricePoint, AIConfig, Log, IndicatorDefinition, AIConfigTestRequest, AIConfigTestResponse, StockTestRunResponse, EmailConfig, GlobalPromptConfig, AlertRateLimitConfig, IndicatorTestRequest, IndicatorTestResponse, ResearchScript, ResearchRunResponse, RuleScript, RuleTestPayload, RuleTestResponse, StockAIWatchConfig, AIWatchAnalyzeRequest, AIWatchAnalyzeResponse, IndicatorPreviewResponse, StockNews, SentimentAnalysis } from './types';
 
 const API_URL = 'http://localhost:8000';
 
@@ -28,8 +28,10 @@ export const deleteStock = (id: number) => api.delete(`/stocks/${id}`);
 export const testRunStock = (id: number, options?: { send_alerts?: boolean; bypass_checks?: boolean }) =>
   api.post<StockTestRunResponse>(`/stocks/${id}/test-run`, undefined, { params: options });
 
-export const getStockDaily = (symbol: string) => api.get<{ ok: boolean; data?: any[]; error?: string }>(`/stocks/${symbol}/daily`);
-export const getStockHistory = (symbol: string, period: string = 'daily') => api.get<{ ok: boolean; data?: any[]; error?: string }>(`/stocks/${symbol}/history`, { params: { period } });
+export const getStockDaily = (symbol: string) =>
+  api.get<{ ok: boolean; data?: StockPricePoint[]; error?: string }>(`/stocks/${symbol}/daily`);
+export const getStockHistory = (symbol: string, period: string = 'daily') =>
+  api.get<{ ok: boolean; data?: StockPricePoint[]; error?: string }>(`/stocks/${symbol}/history`, { params: { period } });
 
 export const getIndicators = () => api.get<IndicatorDefinition[]>('/indicators/');
 export const createIndicator = (

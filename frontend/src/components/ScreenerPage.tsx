@@ -93,7 +93,8 @@ const ScreenerPage: React.FC = () => {
       try {
           await api.put(`/screeners/${item.id}`, { is_pinned: !item.is_pinned });
           fetchScreeners();
-      } catch (err) {
+      } catch (e) {
+          console.error(e);
           message.error("Failed to update pin status");
       }
   };

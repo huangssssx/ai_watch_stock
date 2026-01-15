@@ -15,6 +15,18 @@ export interface Stock {
   is_pinned?: boolean;
 }
 
+export interface StockPricePoint {
+  open: number;
+  close: number;
+  high?: number;
+  low?: number;
+  volume?: number;
+  amount?: number;
+  date?: string;
+  time?: string;
+  [key: string]: unknown;
+}
+
 export interface RuleScript {
   id: number;
   name: string;
