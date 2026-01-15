@@ -6,6 +6,7 @@ import json
 import datetime
 import traceback
 import os
+import sys
 
 def execute_research_script(script_content: str):
     """
@@ -30,6 +31,15 @@ def execute_research_script(script_content: str):
         matplotlib.use("Agg", force=True)
     except Exception:
         pass
+
+    try:
+        getattr(sys.stderr, "flush", lambda: None)()
+    except Exception:
+        try:
+            sys.stderr = open(os.devnull, "w")
+        except Exception:
+            pass
+    os.environ.setdefault("TQDM_DISABLE", "1")
     
     try:
         exec(script_content, scope, scope)
