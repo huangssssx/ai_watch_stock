@@ -184,7 +184,7 @@ const NewsPage: React.FC = () => {
   }, [aiConfigs, selectedAiId]);
 
   return (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+    <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <Card
         title="新闻 AI 分析"
         extra={

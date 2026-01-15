@@ -8,7 +8,7 @@ const Settings: React.FC = () => {
   const [activeTab, setActiveTab] = useState('email');
 
   return (
-    <Card title="系统设置" bordered={false}>
+    <Card title="系统设置" variant="borderless">
       <Tabs
         activeKey={activeTab}
         onChange={setActiveTab}

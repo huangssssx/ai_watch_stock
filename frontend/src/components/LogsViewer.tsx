@@ -387,7 +387,7 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
         width="95%"
         style={{ top: 20 }}
         styles={{ body: { height: 'calc(100vh - 200px)', overflow: 'auto' } }}
-        destroyOnClose={true}
+        destroyOnHidden={true}
       >
         {detailModal.open && <RenderRawData text={detailModal.content} />}
       </Modal>

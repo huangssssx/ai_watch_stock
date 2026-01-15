@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, List, Button, Input, Switch, Card, Table, Tabs, message, Modal, Space, Tag } from 'antd';
+import { Layout, Button, Input, Switch, Card, Table, Tabs, message, Modal, Space, Tag } from 'antd';
 import { PlusOutlined, PlayCircleOutlined, SaveOutlined, DeleteOutlined, EyeOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import Editor from '@monaco-editor/react';
 import axios from 'axios';
@@ -7,7 +7,6 @@ import { api } from '../api';
 import type { TableProps } from 'antd';
 
 const { Content, Sider } = Layout;
-const { TabPane } = Tabs;
 
 interface Screener {
   id: number;
@@ -301,36 +300,48 @@ const ScreenerPage: React.FC = () => {
                 New Strategy
             </Button>
         </div>
-        <List
-            dataSource={screeners}
-            renderItem={item => (
-                <List.Item 
-                    style={{ padding: '10px 20px', cursor: 'pointer', background: selectedId === item.id ? '#e6f7ff' : 'transparent' }}
-                    onClick={() => setSelectedId(item.id)}
-                    actions={[
-                        <Button 
-                            type="text" 
-                            icon={item.is_pinned ? <PushpinFilled style={{color: '#1890ff'}} /> : <PushpinOutlined />} 
-                            onClick={(e) => togglePin(e, item)}
-                        />
-                    ]}
-                >
-                    <div style={{ width: '100%' }}>
-                        <div style={{ fontWeight: 'bold' }}>
-                            {item.is_pinned && <PushpinFilled style={{color: '#1890ff', marginRight: 5}} />}
-                            {item.name}
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#999' }}>
-                             <span>{item.is_active ? <Tag color="green">Active</Tag> : <Tag>Stopped</Tag>}</span>
-                             <span>{item.last_run_status === 'success' ? <Tag color="blue">OK</Tag> : item.last_run_status === 'failed' ? <Tag color="red">Fail</Tag> : ''}</span>
-                        </div>
-                    </div>
-                </List.Item>
-            )}
-        />
+        <div style={{ overflow: 'auto', height: 'calc(100% - 52px)' }}>
+          {screeners.map((item) => (
+            <div
+              key={item.id}
+              style={{
+                padding: '10px 16px',
+                cursor: 'pointer',
+                background: selectedId === item.id ? '#e6f7ff' : 'transparent',
+              }}
+              onClick={() => setSelectedId(item.id)}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {item.is_pinned ? <PushpinFilled style={{ color: '#1890ff' }} /> : null}
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#999', marginTop: 4 }}>
+                    <span>{item.is_active ? <Tag color="green">Active</Tag> : <Tag>Stopped</Tag>}</span>
+                    <span>
+                      {item.last_run_status === 'success' ? (
+                        <Tag color="blue">OK</Tag>
+                      ) : item.last_run_status === 'failed' ? (
+                        <Tag color="red">Fail</Tag>
+                      ) : (
+                        ''
+                      )}
+                    </span>
+                  </div>
+                </div>
+                <Button
+                  type="text"
+                  icon={item.is_pinned ? <PushpinFilled style={{ color: '#1890ff' }} /> : <PushpinOutlined />}
+                  onClick={(e) => togglePin(e, item)}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
       </Sider>
       <Content style={{ padding: 20, overflow: 'auto' }}>
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
             <Card>
                 <Space wrap>
                     <Input placeholder="Strategy Name" value={editingScreener.name || ''} onChange={e => setEditingScreener({...editingScreener, name: e.target.value})} />
@@ -369,21 +380,30 @@ const ScreenerPage: React.FC = () => {
                 />
             </Card>
 
-            <Tabs defaultActiveKey="editor">
-                <TabPane tab="Script Editor" key="editor">
+            <Tabs
+              defaultActiveKey="editor"
+              items={[
+                {
+                  key: 'editor',
+                  label: 'Script Editor',
+                  children: (
                     <div style={{ height: 600, border: '1px solid #d9d9d9' }}>
-                        <Editor 
-                            defaultLanguage="python" 
-                            value={editingScreener.script_content || DEFAULT_SCRIPT}
-                            onChange={v => setEditingScreener({...editingScreener, script_content: v ?? ''})}
-                            options={{ minimap: { enabled: false }, scrollBeyondLastLine: false }}
-                        />
+                      <Editor
+                        defaultLanguage="python"
+                        value={editingScreener.script_content || DEFAULT_SCRIPT}
+                        onChange={v => setEditingScreener({ ...editingScreener, script_content: v ?? '' })}
+                        options={{ minimap: { enabled: false }, scrollBeyondLastLine: false }}
+                      />
                     </div>
-                </TabPane>
-                <TabPane tab="Latest Results" key="results">
-                    {renderResultTable()}
-                </TabPane>
-            </Tabs>
+                  ),
+                },
+                {
+                  key: 'results',
+                  label: 'Latest Results',
+                  children: renderResultTable(),
+                },
+              ]}
+            />
         </Space>
       </Content>
     </Layout>

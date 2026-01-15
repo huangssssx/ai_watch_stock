@@ -256,7 +256,7 @@ else:
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <h2 style={{ margin: 0 }}>硬规则脚本库 (Hard Rules)</h2>
-          <Tooltip title={ruleHelp} placement="right" overlayStyle={{ maxWidth: 820 }}>
+          <Tooltip title={ruleHelp} placement="right" styles={{ root: { maxWidth: 820 } }}>
             <InfoCircleOutlined style={{ color: '#1677ff' }} />
           </Tooltip>
         </div>
@@ -300,7 +300,7 @@ else:
             label={
               <span>
                 Python Code&nbsp;
-                <Tooltip title={ruleHelp} placement="topLeft" overlayStyle={{ maxWidth: 820 }}>
+                <Tooltip title={ruleHelp} placement="topLeft" styles={{ root: { maxWidth: 820 } }}>
                   <InfoCircleOutlined style={{ color: '#1677ff' }} />
                 </Tooltip>
               </span>
