@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, Spin, Empty } from 'antd';
 import { ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
@@ -11,6 +12,7 @@ interface StockChartsProps {
 }
 
 const StockCharts: React.FC<StockChartsProps> = ({ stocks, active }) => {
+  const navigate = useNavigate();
   const [dataMap, setDataMap] = useState<Record<string, any[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
 
@@ -58,7 +60,11 @@ const StockCharts: React.FC<StockChartsProps> = ({ stocks, active }) => {
         const color = change >= 0 ? '#cf1322' : '#3f8600'; // Red up, Green down (China style)
 
         return (
-          <Card key={stock.id} size="small" title={`${stock.name} (${stock.symbol})`} extra={
+          <Card 
+            key={stock.id} 
+            size="small" 
+            title={`${stock.name} (${stock.symbol})`} 
+            extra={
              data.length > 0 && (
                 <span style={{ color, fontWeight: 'bold' }}>
                     {lastPrice.toFixed(2)} 
@@ -68,7 +74,10 @@ const StockCharts: React.FC<StockChartsProps> = ({ stocks, active }) => {
                     </span>
                 </span>
              )
-          }>
+            }
+            hoverable
+            onClick={() => navigate(`/stock/${stock.symbol}`)}
+          >
             <div style={{ height: 200 }}>
               {loading[stock.symbol] && !data.length ? (
                 <div style={{ height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>

@@ -271,3 +271,49 @@ def get_stock_daily_data(symbol: str):
         
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+@router.get("/{symbol}/history")
+def get_stock_history_data(symbol: str, period: str = "daily"):
+    """
+    Get stock history data (k-line).
+    period: daily, weekly, monthly
+    """
+    try:
+        clean_symbol = symbol.lower().replace("sh", "").replace("sz", "")
+        
+        # Default start date ~2 years ago for daily, more for weekly/monthly
+        end_date = datetime.date.today().strftime("%Y%m%d")
+        days_back = 730
+        if period == "weekly":
+            days_back = 1800 # ~5 years
+        elif period == "monthly":
+            days_back = 3650 # ~10 years
+            
+        start_date = (datetime.date.today() - datetime.timedelta(days=days_back)).strftime("%Y%m%d")
+        
+        df = ak.stock_zh_a_hist(
+            symbol=clean_symbol, 
+            period=period, 
+            start_date=start_date, 
+            end_date=end_date, 
+            adjust="qfq"
+        )
+        
+        if df is None or df.empty:
+            return {"ok": False, "error": "No data found"}
+            
+        result = []
+        for _, row in df.iterrows():
+            result.append({
+                "date": row["日期"],
+                "open": row["开盘"],
+                "close": row["收盘"],
+                "high": row["最高"],
+                "low": row["最低"],
+                "volume": row["成交量"]
+            })
+            
+        return {"ok": True, "data": result}
+        
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

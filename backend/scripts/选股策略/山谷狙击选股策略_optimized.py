@@ -1,5 +1,30 @@
 # 山谷狙击选股策略 - 学术驱动优化版
 # 基于 Bry-Boschan 动态窗口、市值分层流动性、STH-CB 成本模型优化
+#
+# 【如何使用】
+# 1) Web 端：进入“选股”页面 → 选择“山谷狙击选股” → 点击 “Run Now” 运行。
+#    - 系统执行方式：会直接执行数据库里该策略的脚本文本（要求脚本最终产出 `df` 或 `result`）。
+# 2) 脚本更新入库：修改本文件后，使用下面命令将最新脚本文本写回数据库：
+#    - `python3 backend/scripts/insert_valley_script.py --file backend/scripts/选股策略/山谷狙击选股策略_optimized.py --id 5 --force`
+#    - 其中 `--id 5` 是当前库里“山谷狙击选股”的 `stock_screeners.id`（如你库里 ID 不同，请以实际为准）。
+#
+# 【输出约定（必须）】
+# - 你需要在脚本末尾定义：
+#   - `df`: pandas.DataFrame（推荐）。系统会把它转成 JSON 列表展示与落库。
+#   - 或 `result`: List[Dict]（可选）。
+# - 建议列名至少包含：`代码`、`名称`、`最新价`（用于前端展示与“一键加入自选”识别）。
+#
+# 【价格阈值过滤（织布机 / Price Threshold）】
+# - A 股最小变动单位（Tick）固定为 0.01 元，股价越低 Tick 占比越大，曲线更“锯齿”：
+#   - Tick Impact = 0.01 / Price
+# - 本脚本提供可开关的“低价过滤”，默认剔除 `最新价 < 10.0`：
+#   - `PRICE_THRESHOLD_ENABLED`：是否启用
+#   - `PRICE_THRESHOLD_MIN_PRICE`：最低价阈值（激进可设 5.0）
+#
+# 【运行注意事项】
+# - 本脚本会拉取全市场快照 + 多只股票的历史数据，运行时间与候选池大小、网络质量强相关。
+# - akshare 数据接口有时会抖动/限流，出现异常时会跳过个股或返回空结果，这是正常现象。
+# - 依赖：`akshare`、`pandas`、`numpy`、`talib`、`scipy`（缺依赖会导致运行失败）。
 
 import akshare as ak
 import pandas as pd
@@ -24,6 +49,8 @@ VOL_RANK_SMALL = 0.10
 # 基础过滤
 MIN_TURNOVER_AMOUNT = 30000000
 MAX_PRICE_CHANGE = 6.0
+PRICE_THRESHOLD_ENABLED = True
+PRICE_THRESHOLD_MIN_PRICE = 10.0
 
 # 评分门槛
 THRESHOLD_HIGH_QUALITY = 7
@@ -306,6 +333,10 @@ if not df_market.empty:
     df_market = df_market[abs(df_market["涨跌幅"]) <= MAX_PRICE_CHANGE]
     if "成交额" in df_market.columns:
         df_market = df_market[df_market["成交额"] >= MIN_TURNOVER_AMOUNT]
+    if PRICE_THRESHOLD_ENABLED and "最新价" in df_market.columns:
+        df_market["最新价"] = pd.to_numeric(df_market["最新价"], errors="coerce")
+        df_market = df_market.dropna(subset=["最新价"])
+        df_market = df_market[df_market["最新价"] >= PRICE_THRESHOLD_MIN_PRICE]
     
     if len(df_market) > 300:
         df_market = df_market.sort_values(by="换手率", ascending=True).head(300)

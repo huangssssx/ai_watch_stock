@@ -11,6 +11,7 @@ import ScreenerPage from './components/ScreenerPage.tsx';
 import ResearchPage from './components/ResearchPage.tsx';
 import RuleLibrary from './components/RuleLibrary.tsx';
 import NewsPage from './components/NewsPage.tsx';
+import StockDetail from './components/StockDetail.tsx';
 
 const { Header, Content, Sider } = Layout;
 
@@ -74,6 +75,7 @@ const MainLayout: React.FC = () => {
               {MENU_ITEMS.map(item => (
                 <Route key={item.key} path={item.path} element={item.component} />
               ))}
+              <Route path="/stock/:symbol" element={<StockDetail />} />
               <Route path="*" element={<Navigate to="/dashboard" replace />} />
             </Routes>
           </div>

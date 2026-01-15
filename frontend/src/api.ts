@@ -29,6 +29,7 @@ export const testRunStock = (id: number, options?: { send_alerts?: boolean; bypa
   api.post<StockTestRunResponse>(`/stocks/${id}/test-run`, undefined, { params: options });
 
 export const getStockDaily = (symbol: string) => api.get<{ ok: boolean; data?: any[]; error?: string }>(`/stocks/${symbol}/daily`);
+export const getStockHistory = (symbol: string, period: string = 'daily') => api.get<{ ok: boolean; data?: any[]; error?: string }>(`/stocks/${symbol}/history`, { params: { period } });
 
 export const getIndicators = () => api.get<IndicatorDefinition[]>('/indicators/');
 export const createIndicator = (
