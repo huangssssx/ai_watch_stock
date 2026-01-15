@@ -7,6 +7,7 @@ import schemas
 import json
 import datetime
 from services.monitor_service import process_stock, update_stock_job, analyze_stock_manual, fetch_stock_indicators_data
+import akshare as ak
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -214,3 +215,59 @@ def preview_stock_indicators(stock_id: int, request: schemas.AIWatchAnalyzeReque
     db.commit()
     
     return result
+
+@router.get("/{symbol}/daily")
+def get_stock_daily_data(symbol: str):
+    """
+    Get intraday minute-level data for a stock symbol (latest trading day).
+    Note: Endpoint name kept as 'daily' to avoid frontend refactor, but returns intraday data.
+    """
+    try:
+        # Clean symbol (remove sh/sz prefix if exists)
+        clean_symbol = symbol.lower().replace("sh", "").replace("sz", "")
+        
+        # Fetch minute data (period='1' means 1-minute interval)
+        # adjust='qfq' is usually good, but for intraday pure price might be better? 
+        # Actually for intraday comparison, qfq is fine or no adjust.
+        # stock_zh_a_hist_min_em returns recent data.
+        df = ak.stock_zh_a_hist_min_em(symbol=clean_symbol, period='1', adjust='qfq')
+        
+        if df is None or df.empty:
+            return {"ok": False, "error": "No data found"}
+            
+        # Filter for the latest date
+        # '时间' column format: '2025-01-15 09:30:00'
+        last_dt = df.iloc[-1]['时间']
+        last_date_str = last_dt.split(" ")[0]
+        today_data = df[df['时间'].str.startswith(last_date_str)]
+        
+        # Format columns
+        # akshare returns: 时间, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 均价
+        result = []
+        for _, row in today_data.iterrows():
+            # Extract time part HH:MM
+            dt_str = row["时间"]
+            time_str = dt_str.split(" ")[1][:5] # '09:30:00' -> '09:30'
+            
+            result.append({
+                "date": dt_str,      # Full datetime for reference
+                "time": time_str,    # HH:MM for X-axis
+                "open": row["开盘"],
+                "close": row["收盘"],
+                "high": row["最高"],
+                "low": row["最低"],
+                "volume": row["成交量"],
+                "avg": row["均价"]
+            })
+            
+        return {
+            "ok": True, 
+            "data": result, 
+            "info": {
+                "date": last_date_str,
+                "symbol": symbol
+            }
+        }
+        
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

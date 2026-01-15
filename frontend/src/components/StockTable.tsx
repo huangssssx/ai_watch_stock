@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag, Card, Space } from 'antd';
+import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag, Card, Space, Tabs } from 'antd';
 import type { Stock, AIConfig, StockTestRunResponse, IndicatorDefinition } from '../types';
 import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock, getIndicators } from '../api';
 import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, EyeOutlined, TableOutlined, EditOutlined } from '@ant-design/icons';
@@ -7,6 +7,7 @@ import StockConfigModal from './StockConfigModal.tsx';
 import LogsViewer from './LogsViewer.tsx';
 import AIWatchModal from './AIWatchModal.tsx';
 import IndicatorPreviewModal from './IndicatorPreviewModal.tsx';
+import StockCharts from './StockCharts.tsx';
 import type { ColumnsType } from 'antd/es/table';
 
 const RemarkCell: React.FC<{ stock: Stock; onSave: (id: number, val: string) => void }> = ({ stock, onSave }) => {
@@ -96,6 +97,8 @@ const StockTable: React.FC = () => {
 
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewStock, setPreviewStock] = useState<Stock | null>(null);
+  
+  const [activeTab, setActiveTab] = useState('list');
 
   const [form] = Form.useForm();
 
@@ -256,10 +259,25 @@ const StockTable: React.FC = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: 16 }}>
-        <Button type="primary" onClick={() => setIsModalVisible(true)}>添加股票</Button>
-      </div>
-      <Table dataSource={stocks} columns={columns} rowKey="id" loading={loading} />
+      <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
+        {
+          key: 'list',
+          label: '股票列表',
+          children: (
+            <>
+              <div style={{ marginBottom: 16 }}>
+                <Button type="primary" onClick={() => setIsModalVisible(true)}>添加股票</Button>
+              </div>
+              <Table dataSource={stocks} columns={columns} rowKey="id" loading={loading} />
+            </>
+          )
+        },
+        {
+          key: 'charts',
+          label: '走势概览',
+          children: <StockCharts stocks={stocks} active={activeTab === 'charts'} />
+        }
+      ]} />
 
       <Modal title="添加股票" open={isModalVisible} onOk={form.submit} onCancel={() => setIsModalVisible(false)}>
         <Form form={form} onFinish={handleAdd} layout="vertical">

@@ -28,6 +28,8 @@ export const deleteStock = (id: number) => api.delete(`/stocks/${id}`);
 export const testRunStock = (id: number, options?: { send_alerts?: boolean; bypass_checks?: boolean }) =>
   api.post<StockTestRunResponse>(`/stocks/${id}/test-run`, undefined, { params: options });
 
+export const getStockDaily = (symbol: string) => api.get<{ ok: boolean; data?: any[]; error?: string }>(`/stocks/${symbol}/daily`);
+
 export const getIndicators = () => api.get<IndicatorDefinition[]>('/indicators/');
 export const createIndicator = (
   indicator: Pick<IndicatorDefinition, 'name'> &
