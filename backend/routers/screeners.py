@@ -17,6 +17,7 @@ class ScreenerCreate(BaseModel):
     script_content: Optional[str] = ""
     cron_expression: Optional[str] = None
     is_active: bool = False
+    is_pinned: bool = False
 
 class ScreenerUpdate(BaseModel):
     name: Optional[str] = None
@@ -24,6 +25,7 @@ class ScreenerUpdate(BaseModel):
     script_content: Optional[str] = None
     cron_expression: Optional[str] = None
     is_active: Optional[bool] = None
+    is_pinned: Optional[bool] = None
 
 @router.get("/")
 def list_screeners(db: Session = Depends(get_db)):
@@ -36,7 +38,8 @@ def create_screener(screener: ScreenerCreate, db: Session = Depends(get_db)):
         description=screener.description,
         script_content=screener.script_content,
         cron_expression=screener.cron_expression,
-        is_active=screener.is_active
+        is_active=screener.is_active,
+        is_pinned=screener.is_pinned
     )
     db.add(db_screener)
     db.commit()
@@ -57,6 +60,7 @@ def update_screener(screener_id: int, screener: ScreenerUpdate, db: Session = De
     if screener.script_content is not None: db_screener.script_content = screener.script_content
     if screener.cron_expression is not None: db_screener.cron_expression = screener.cron_expression
     if screener.is_active is not None: db_screener.is_active = screener.is_active
+    if screener.is_pinned is not None: db_screener.is_pinned = screener.is_pinned
     
     db.commit()
     db.refresh(db_screener)

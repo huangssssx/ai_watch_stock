@@ -56,6 +56,7 @@ class IndicatorDefinitionBase(BaseModel):
     params_json: Optional[str] = None
     post_process_json: Optional[str] = None
     python_code: Optional[str] = None
+    is_pinned: bool = False
 
 class IndicatorDefinitionCreate(IndicatorDefinitionBase):
     pass
@@ -66,6 +67,7 @@ class IndicatorDefinitionUpdate(BaseModel):
     params_json: Optional[str] = None
     post_process_json: Optional[str] = None
     python_code: Optional[str] = None
+    is_pinned: Optional[bool] = None
 
 class IndicatorDefinition(ORMModel, IndicatorDefinitionBase):
     id: int
@@ -201,6 +203,7 @@ class ResearchScriptBase(BaseModel):
     title: str
     description: Optional[str] = None
     script_content: str
+    is_pinned: bool = False
 
 class ResearchScriptCreate(ResearchScriptBase):
     pass
@@ -209,6 +212,7 @@ class ResearchScriptUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     script_content: Optional[str] = None
+    is_pinned: Optional[bool] = None
 
 class ResearchScript(ORMModel, ResearchScriptBase):
     id: int
@@ -232,6 +236,7 @@ class RuleScriptBase(BaseModel):
     name: str
     description: Optional[str] = None
     code: str
+    is_pinned: bool = False
 
 class RuleScriptCreate(RuleScriptBase):
     pass
@@ -240,6 +245,7 @@ class RuleScriptUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     code: Optional[str] = None
+    is_pinned: Optional[bool] = None
 
 class RuleScript(ORMModel, RuleScriptBase):
     id: int

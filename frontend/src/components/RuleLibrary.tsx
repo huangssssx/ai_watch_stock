@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Table, Button, Modal, Form, Input, message, Space, Card, Tag, Tooltip } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, PlayCircleOutlined, InfoCircleOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import type { RuleScript, RuleTestResponse } from '../types';
 import { getRules, createRule, updateRule, deleteRule, testRule } from '../api';
 
@@ -27,12 +27,26 @@ const RuleLibrary: React.FC = () => {
     setLoading(true);
     try {
       const res = await getRules();
-      setRules(res.data);
+      const data = res.data;
+      data.sort((a, b) => {
+          if (!!a.is_pinned === !!b.is_pinned) return 0;
+          return a.is_pinned ? -1 : 1;
+      });
+      setRules(data);
     } catch {
       message.error('Failed to load rules');
     } finally {
       setLoading(false);
     }
+  };
+
+  const togglePin = async (record: RuleScript) => {
+      try {
+          await updateRule(record.id, { is_pinned: !record.is_pinned });
+          fetchData();
+      } catch {
+          message.error('Failed to update pin status');
+      }
   };
 
   useEffect(() => {
@@ -207,13 +221,28 @@ else:
 
   const columns = [
     { title: 'ID', dataIndex: 'id', width: 60 },
-    { title: 'Name', dataIndex: 'name', width: 200 },
+    { 
+        title: 'Name', 
+        dataIndex: 'name', 
+        width: 200,
+        render: (text: string, record: RuleScript) => (
+            <span>
+                {record.is_pinned && <PushpinFilled style={{color: '#1890ff', marginRight: 5}} />}
+                {text}
+            </span>
+        )
+    },
     { title: 'Description', dataIndex: 'description' },
     {
       title: 'Action',
       width: 250,
       render: (_: unknown, record: RuleScript) => (
         <Space>
+          <Button 
+              type="text" 
+              icon={record.is_pinned ? <PushpinFilled style={{color: '#1890ff'}} /> : <PushpinOutlined />} 
+              onClick={() => togglePin(record)} 
+          />
           <Button icon={<PlayCircleOutlined />} onClick={() => openTestModal(record)}>Test</Button>
           <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
           <Button danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />

@@ -21,6 +21,7 @@ export interface RuleScript {
   code: string;
   created_at?: string;
   updated_at?: string;
+  is_pinned?: boolean;
 }
 
 export interface RuleTestPayload {
@@ -40,6 +41,7 @@ export interface IndicatorDefinition {
   params_json?: string | null;
   post_process_json?: string | null;
   python_code?: string | null;
+  is_pinned?: boolean;
 }
 
 export interface IndicatorTestRequest {
@@ -175,6 +177,7 @@ export interface ResearchScript {
   last_run_status?: string;
   created_at?: string;
   updated_at?: string;
+  is_pinned?: boolean;
 }
 
 export interface ResearchRunResponse {

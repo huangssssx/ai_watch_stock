@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Button, Form, Input, Modal, Table, message, Space, Collapse, Radio, Tag, Tooltip, Typography } from 'antd';
-import { DeleteOutlined, EditOutlined, CodeOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, CodeOutlined, PlayCircleOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import type { IndicatorDefinition, IndicatorTestResponse } from '../types';
 import { createIndicator, deleteIndicator, getIndicators, testIndicator, updateIndicator } from '../api';
 import type { ColumnsType } from 'antd/es/table';
@@ -37,12 +37,26 @@ const IndicatorLibrary: React.FC = () => {
     setLoading(true);
     try {
       const res = await getIndicators();
-      setItems(res.data);
+      const data = res.data;
+      data.sort((a, b) => {
+          if (!!a.is_pinned === !!b.is_pinned) return 0;
+          return a.is_pinned ? -1 : 1;
+      });
+      setItems(data);
     } catch {
       message.error('加载指标库失败');
     } finally {
       setLoading(false);
     }
+  };
+
+  const togglePin = async (record: IndicatorDefinition) => {
+      try {
+          await updateIndicator(record.id, { is_pinned: !record.is_pinned });
+          refresh();
+      } catch {
+          message.error('Failed to update pin status');
+      }
   };
 
   useEffect(() => {
@@ -203,7 +217,18 @@ const IndicatorLibrary: React.FC = () => {
   };
 
   const columns: ColumnsType<IndicatorDefinition> = [
-    { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
+    { 
+        title: '名称', 
+        dataIndex: 'name', 
+        key: 'name', 
+        width: 150,
+        render: (text: string, record: IndicatorDefinition) => (
+            <span>
+                {record.is_pinned && <PushpinFilled style={{color: '#1890ff', marginRight: 5}} />}
+                {text}
+            </span>
+        )
+    },
     {
       title: '模式',
       key: 'mode',
@@ -290,6 +315,11 @@ const IndicatorLibrary: React.FC = () => {
       width: 160,
       render: (_: unknown, record: IndicatorDefinition) => (
         <Space>
+          <Button 
+              type="text" 
+              icon={record.is_pinned ? <PushpinFilled style={{color: '#1890ff'}} /> : <PushpinOutlined />} 
+              onClick={() => togglePin(record)} 
+          />
           <Button icon={<PlayCircleOutlined />} onClick={() => handleOpenTest(record)} />
           <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
           <Button danger icon={<DeleteOutlined />} onClick={() => handleDelete(record.id)} />

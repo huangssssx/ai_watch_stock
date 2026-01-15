@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Layout, Menu, Button, Input, Tabs, Table, message, Modal, Splitter, Typography, Space, Tooltip } from 'antd';
-import { PlusOutlined, SaveOutlined, PlayCircleOutlined, DeleteOutlined, CodeOutlined, FullscreenOutlined, FullscreenExitOutlined, PlaySquareOutlined } from '@ant-design/icons';
+import { PlusOutlined, SaveOutlined, PlayCircleOutlined, DeleteOutlined, CodeOutlined, FullscreenOutlined, FullscreenExitOutlined, PlaySquareOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import Editor from '@monaco-editor/react';
 import { getResearchScripts, createResearchScript, updateResearchScript, deleteResearchScript, runResearchScript, runStreamlitScript } from '../api';
 import type { ResearchScript } from '../types';
@@ -131,10 +131,25 @@ const ResearchPageContent: React.FC = () => {
   const fetchScripts = async () => {
     try {
       const res = await getResearchScripts();
-      setScripts(res.data);
+      const data = res.data;
+      data.sort((a, b) => {
+          if (!!a.is_pinned === !!b.is_pinned) return 0;
+          return a.is_pinned ? -1 : 1;
+      });
+      setScripts(data);
     } catch {
       message.error('Failed to load scripts');
     }
+  };
+
+  const togglePin = async (e: React.MouseEvent, script: ResearchScript) => {
+      e.stopPropagation();
+      try {
+          await updateResearchScript(script.id, { is_pinned: !script.is_pinned });
+          fetchScripts();
+      } catch {
+          message.error('Failed to update pin status');
+      }
   };
 
   const handleSelectScript = (script: ResearchScript) => {
@@ -336,8 +351,18 @@ const ResearchPageContent: React.FC = () => {
           style={{ borderRight: 0 }}
           items={scripts.map(s => ({
             key: String(s.id),
-            icon: <CodeOutlined />,
-            label: s.title,
+            icon: s.is_pinned ? <PushpinFilled style={{color: '#1890ff'}} /> : <CodeOutlined />,
+            label: (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
+                    <Button 
+                        type="text" 
+                        size="small" 
+                        icon={s.is_pinned ? <PushpinFilled style={{color: '#1890ff', fontSize: 12}} /> : <PushpinOutlined style={{fontSize: 12}} />} 
+                        onClick={(e) => togglePin(e, s)}
+                    />
+                </div>
+            ),
             onClick: () => handleSelectScript(s)
           }))}
         />

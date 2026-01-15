@@ -60,6 +60,7 @@ class RuleScript(Base):
     name = Column(String, unique=True, index=True)
     description = Column(String, nullable=True)
     code = Column(Text, default="") # Python code
+    is_pinned = Column(Boolean, default=False)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
@@ -73,6 +74,7 @@ class IndicatorDefinition(Base):
     params_json = Column(String)
     post_process_json = Column(Text, nullable=True)
     python_code = Column(Text, nullable=True)
+    is_pinned = Column(Boolean, default=False)
 
     stocks = relationship("Stock", secondary=stock_indicators, back_populates="indicators")
 
@@ -128,6 +130,7 @@ class StockScreener(Base):
     script_content = Column(Text, default="")
     cron_expression = Column(String, nullable=True)  # e.g., "0 15 * * *"
     is_active = Column(Boolean, default=False)
+    is_pinned = Column(Boolean, default=False)
     
     last_run_at = Column(DateTime(timezone=True), nullable=True)
     last_run_status = Column(String, default="pending") # pending, success, failed
@@ -156,6 +159,7 @@ class ResearchScript(Base):
     title = Column(String, unique=True, index=True)
     description = Column(String, nullable=True)
     script_content = Column(Text, default="")
+    is_pinned = Column(Boolean, default=False)
     
     last_run_at = Column(DateTime(timezone=True), nullable=True)
     last_run_status = Column(String, default="pending") # pending, success, failed

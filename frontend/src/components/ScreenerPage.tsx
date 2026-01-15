@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Layout, List, Button, Input, Switch, Card, Table, Tabs, message, Modal, Space, Tag } from 'antd';
-import { PlusOutlined, PlayCircleOutlined, SaveOutlined, DeleteOutlined, EyeOutlined } from '@ant-design/icons';
+import { PlusOutlined, PlayCircleOutlined, SaveOutlined, DeleteOutlined, EyeOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import Editor from '@monaco-editor/react';
 import axios from 'axios';
 import { api } from '../api';
@@ -16,6 +16,7 @@ interface Screener {
   script_content: string;
   cron_expression: string;
   is_active: boolean;
+  is_pinned: boolean;
   last_run_at: string;
   last_run_status: string;
   last_run_log?: string;
@@ -75,11 +76,26 @@ const ScreenerPage: React.FC = () => {
   const fetchScreeners = async () => {
     try {
         const res = await api.get<Screener[]>('/screeners/');
-        setScreeners(res.data);
+        const data = res.data;
+        data.sort((a, b) => {
+            if (a.is_pinned === b.is_pinned) return 0;
+            return a.is_pinned ? -1 : 1;
+        });
+        setScreeners(data);
     } catch (err) {
         console.error(err);
         message.error("Failed to load screeners");
     }
+  };
+
+  const togglePin = async (e: React.MouseEvent, item: Screener) => {
+      e.stopPropagation();
+      try {
+          await api.put(`/screeners/${item.id}`, { is_pinned: !item.is_pinned });
+          fetchScreeners();
+      } catch (err) {
+          message.error("Failed to update pin status");
+      }
   };
 
   useEffect(() => {
@@ -290,9 +306,19 @@ const ScreenerPage: React.FC = () => {
                 <List.Item 
                     style={{ padding: '10px 20px', cursor: 'pointer', background: selectedId === item.id ? '#e6f7ff' : 'transparent' }}
                     onClick={() => setSelectedId(item.id)}
+                    actions={[
+                        <Button 
+                            type="text" 
+                            icon={item.is_pinned ? <PushpinFilled style={{color: '#1890ff'}} /> : <PushpinOutlined />} 
+                            onClick={(e) => togglePin(e, item)}
+                        />
+                    ]}
                 >
                     <div style={{ width: '100%' }}>
-                        <div style={{ fontWeight: 'bold' }}>{item.name}</div>
+                        <div style={{ fontWeight: 'bold' }}>
+                            {item.is_pinned && <PushpinFilled style={{color: '#1890ff', marginRight: 5}} />}
+                            {item.name}
+                        </div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#999' }}>
                              <span>{item.is_active ? <Tag color="green">Active</Tag> : <Tag>Stopped</Tag>}</span>
                              <span>{item.last_run_status === 'success' ? <Tag color="blue">OK</Tag> : item.last_run_status === 'failed' ? <Tag color="red">Fail</Tag> : ''}</span>
