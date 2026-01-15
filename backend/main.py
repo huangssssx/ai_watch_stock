@@ -58,6 +58,10 @@ def ensure_db_schema():
                 # Add column, default True (1 in SQLite/MySQL usually works with BOOLEAN)
                 conn.execute(text("ALTER TABLE stocks ADD COLUMN only_trade_days BOOLEAN DEFAULT 1"))
 
+        if "is_pinned" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE stocks ADD COLUMN is_pinned BOOLEAN DEFAULT 0"))
+
 @app.on_event("startup")
 def startup_event():
     ensure_db_schema()

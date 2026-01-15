@@ -12,6 +12,7 @@ export interface Stock {
   monitoring_mode?: 'ai_only' | 'script_only' | 'hybrid';
   rule_script_id?: number;
   indicators: IndicatorDefinition[];
+  is_pinned?: boolean;
 }
 
 export interface RuleScript {

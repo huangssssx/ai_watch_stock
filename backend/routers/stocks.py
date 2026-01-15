@@ -13,7 +13,7 @@ router = APIRouter(prefix="/stocks", tags=["stocks"])
 
 @router.get("/", response_model=List[schemas.Stock])
 def read_stocks(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    stocks = db.query(models.Stock).offset(skip).limit(limit).all()
+    stocks = db.query(models.Stock).order_by(models.Stock.is_pinned.desc(), models.Stock.id.asc()).offset(skip).limit(limit).all()
     return stocks
 
 @router.post("/", response_model=schemas.Stock)

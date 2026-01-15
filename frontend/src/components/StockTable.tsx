@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Table, Button, Modal, Form, Input, InputNumber, Select, message, Tag, Card, Space, Tabs } from 'antd';
 import type { Stock, AIConfig, StockTestRunResponse, IndicatorDefinition } from '../types';
 import { getStocks, updateStock, deleteStock, createStock, getAIConfigs, testRunStock, getIndicators } from '../api';
-import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, EyeOutlined, TableOutlined, EditOutlined } from '@ant-design/icons';
+import { SettingOutlined, DeleteOutlined, PlayCircleOutlined, PauseCircleOutlined, FileTextOutlined, EyeOutlined, TableOutlined, EditOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import StockConfigModal from './StockConfigModal.tsx';
 import LogsViewer from './LogsViewer.tsx';
 import AIWatchModal from './AIWatchModal.tsx';
@@ -139,8 +139,17 @@ const StockTable: React.FC = () => {
     void fetchIndicators();
   }, [isModalVisible]);
 
-  const handleToggleMonitor = async (stock: Stock) => {
+  const handleTogglePin = async (stock: Stock) => {
     try {
+      await updateStock(stock.id, { is_pinned: !stock.is_pinned });
+      message.success(stock.is_pinned ? '已取消置顶' : '已置顶');
+      fetchData();
+    } catch {
+      message.error('操作失败');
+    }
+  };
+
+  const handleToggleMonitor = async (stock: Stock) => {   try {
       await updateStock(stock.id, { is_monitoring: !stock.is_monitoring });
       message.success(`${stock.symbol} ${!stock.is_monitoring ? '已开始监视' : '已停止监视'}`);
       fetchData();
@@ -203,6 +212,19 @@ const StockTable: React.FC = () => {
   };
 
   const columns: ColumnsType<Stock> = [
+    {
+      title: '置顶',
+      key: 'pin',
+      width: 60,
+      align: 'center',
+      render: (_: unknown, record: Stock) => (
+        <Button
+          type="text"
+          icon={record.is_pinned ? <PushpinFilled style={{ color: '#1890ff' }} /> : <PushpinOutlined />}
+          onClick={() => handleTogglePin(record)}
+        />
+      ),
+    },
     { title: '代码', dataIndex: 'symbol', key: 'symbol' },
     { title: '名称', dataIndex: 'name', key: 'name' },
     {

@@ -29,6 +29,7 @@ class Stock(Base):
     # Monitoring Strategy
     monitoring_mode = Column(String, default="ai_only") # ai_only, script_only, hybrid
     rule_script_id = Column(Integer, ForeignKey("rule_scripts.id"), nullable=True)
+    is_pinned = Column(Boolean, default=False)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

@@ -97,6 +97,7 @@ class StockBase(BaseModel):
     only_trade_days: Optional[bool] = True
     monitoring_mode: Optional[str] = "ai_only"
     rule_script_id: Optional[int] = None
+    is_pinned: bool = False
 
 class StockCreate(StockBase):
     indicator_ids: Optional[List[int]] = None
@@ -113,6 +114,7 @@ class StockUpdate(BaseModel):
     monitoring_mode: Optional[str] = None
     rule_script_id: Optional[int] = None
     remark: Optional[str] = None
+    is_pinned: Optional[bool] = None
 
 class Stock(ORMModel, StockBase):
     id: int
