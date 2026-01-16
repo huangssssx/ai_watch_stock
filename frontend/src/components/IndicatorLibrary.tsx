@@ -198,7 +198,7 @@ const IndicatorLibrary: React.FC = () => {
       title: '类型',
       key: 'type',
       width: 100,
-      render: (_: unknown) => (
+      render: () => (
         <Tooltip title="Pure Python Script">
            <Tag icon={<CodeOutlined />} color="geekblue">Script</Tag>
         </Tooltip>

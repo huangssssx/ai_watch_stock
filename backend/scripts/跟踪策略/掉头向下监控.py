@@ -1,11 +1,71 @@
 # ==============================================================================
-# 掉头向下监控 (Downturn Monitor)
+# 掉头向下监控 (Downturn Monitor) - 增强版 v3.1 (A股深度优化)
 # ------------------------------------------------------------------------------
-# 目标：监测股票是否出现掉头向下的迹象，并区分是“技术性调整”还是“趋势反转/阴跌”。
-# 核心逻辑：
-# 1. 趋势反转 (Danger)：跌破MA20、放量下跌、或高位MACD死叉 -> STRONG_SELL
-# 2. 技术调整 (Warning)：跌破MA5但缩量且守住MA20 -> SELL (减仓/止盈) 或 WAIT (观察)
+# 目标：基于自适应均线、周线趋势、微观结构与市场宽度构建的高精度预警系统。
+# 核心逻辑体系 (A股特供)：
+# 1. 💀 一级预警 (DANGER -> STRONG_SELL)：
+#    - [趋势反转] 价格有效跌破 KAMA慢线(20) 且 周线MACD死叉(趋势向下)
+#    - [诱多陷阱] 前日涨停炸板/封板后，今日放量低走 (Exploding Board)
+#    - [系统风险] 市场环境弱势(指数破位) + 个股跌破MA20
+# 2. 📉 二级预警 (WARNING -> SELL)：
+#    - [利润保护] 严重过热(RSI>75) 且 跌破 KAMA快线(10) (带ATR缓冲)
+#    - [顶部衰竭] Alpha因子示警 (放量滞涨/高位衰竭)
+# 3. ⏳ 观察期 (WAIT)：
+#    - 缩量回踩但守住 POC (成交密集区) 或 KAMA慢线
 # ==============================================================================
+
+import talib
+import numpy as np
+import pandas as pd
+import akshare as ak
+import datetime
+
+# --- Helper Functions ---
+
+def get_weekly_trend(df):
+    """计算周线趋势 (MACD)"""
+    try:
+        df_w = df.copy()
+        df_w["date"] = pd.to_datetime(df_w["date"])
+        df_w.set_index("date", inplace=True)
+        # Resample to weekly
+        weekly = df_w.resample("W").agg({
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum"
+        }).dropna()
+        
+        if len(weekly) < 26: return "NEUTRAL"
+        
+        close_w = weekly["close"].values
+        macd, signal, hist = talib.MACD(close_w, fastperiod=12, slowperiod=26, signalperiod=9)
+        
+        # Dead Cross State
+        if macd[-1] < signal[-1]: return "DOWN"
+        elif macd[-1] > signal[-1]: return "UP"
+        else: return "NEUTRAL"
+    except:
+        return "NEUTRAL"
+
+def calculate_poc(df, window=20, bins=20):
+    """计算近似 POC (Point of Control)"""
+    try:
+        subset = df.iloc[-window:]
+        if subset.empty: return 0
+        price_min = subset["low"].min()
+        price_max = subset["high"].max()
+        if price_min == price_max: return price_min
+        
+        typical_price = (subset["high"] + subset["low"] + subset["close"]) / 3
+        hist, bin_edges = np.histogram(typical_price, bins=bins, range=(price_min, price_max), weights=subset["volume"])
+        max_idx = np.argmax(hist)
+        return (bin_edges[max_idx] + bin_edges[max_idx+1]) / 2
+    except:
+        return 0
+
+# ------------------------
 
 # 1. 初始化
 triggered = False
@@ -20,103 +80,157 @@ try:
 
     # 3. 获取数据
     now = datetime.datetime.now()
-    start_dt = (now - datetime.timedelta(days=120)).strftime("%Y%m%d")
+    start_dt = (now - datetime.timedelta(days=400)).strftime("%Y%m%d") # 需足够长计算周线
     end_dt = now.strftime("%Y%m%d")
     
+    # 个股数据
     df = ak.stock_zh_a_hist(symbol=symbol_code, period="daily", start_date=start_dt, end_date=end_dt, adjust="qfq")
+    
+    # 指数数据 (沪深300) - 用于判断市场环境
+    # 注意：实盘中每次请求可能耗时，若对性能敏感可移除或使用全局缓存
+    try:
+        index_df = ak.stock_zh_index_daily(symbol="sh000300")
+        index_df["date"] = pd.to_datetime(index_df["date"])
+    except:
+        index_df = pd.DataFrame()
 
     if df is None or df.empty or len(df) < 60:
-        message = "未触发：历史数据不足"
+        message = "未触发：历史数据不足 (需至少60天)"
     else:
-        # 4. 指标计算
-        close = pd.to_numeric(df["收盘"], errors="coerce")
-        volume = pd.to_numeric(df["成交量"], errors="coerce")
-        
-        # 均线
-        ma5 = close.rolling(window=5).mean()
-        ma20 = close.rolling(window=20).mean()
-        ma60 = close.rolling(window=60).mean()
-        
-        # 成交量均线
-        vol_ma5 = volume.rolling(window=5).mean()
-        
-        # MACD
-        exp1 = close.ewm(span=12, adjust=False).mean()
-        exp2 = close.ewm(span=26, adjust=False).mean()
-        macd = exp1 - exp2
-        signal_line = macd.ewm(span=9, adjust=False).mean()
-        
-        # 获取最新数据
-        curr_price = close.iloc[-1]
-        prev_price = close.iloc[-2]
-        curr_vol = volume.iloc[-1]
-        curr_vol_ma5 = vol_ma5.iloc[-1]
-        
-        curr_ma5 = ma5.iloc[-1]
-        curr_ma20 = ma20.iloc[-1]
-        curr_ma60 = ma60.iloc[-1]
-        
-        curr_macd = macd.iloc[-1]
-        curr_signal = signal_line.iloc[-1]
-        prev_macd = macd.iloc[-2]
-        prev_signal = signal_line.iloc[-2]
-        
-        # 5. 逻辑判断
-        
-        # 前置条件：之前应该是在上涨或高位震荡 (至少价格在MA60之上，或者MA20是向上的)
-        # 如果已经是空头排列(价格<MA5<MA20<MA60)，那就是阴跌中
-        is_downtrend_already = (curr_price < curr_ma5) and (curr_ma5 < curr_ma20) and (curr_ma20 < curr_ma60)
-        
-        # 判定 A: 趋势反转/大跌风险 (Strong Sell)
-        # A1. 有效跌破MA20 (生命线)
-        break_ma20 = (curr_price < curr_ma20) and (prev_price >= curr_ma20)
-        # A2. 放量下跌 (跌幅>2% 且 量能 > 1.5倍MA5量)
-        pct_change = (curr_price - prev_price) / prev_price
-        heavy_volume_drop = (pct_change < -0.02) and (curr_vol > 1.5 * curr_vol_ma5)
-        # A3. MACD 高位死叉 (MACD > 0)
-        macd_dead_cross = (prev_macd > prev_signal) and (curr_macd < curr_signal) and (curr_macd > 0)
-        
-        is_danger = break_ma20 or heavy_volume_drop or (macd_dead_cross and curr_price < curr_ma5) or is_downtrend_already
-        
-        # 判定 B: 技术性调整 (Correction)
-        # B1. 跌破MA5
-        break_ma5 = (curr_price < curr_ma5)
-        # B2. 依然守在MA20之上
-        above_ma20 = (curr_price > curr_ma20)
-        # B3. 缩量 (量能 < MA5量 或 略大但不超过1.2倍)
-        shrinking_volume = (curr_vol < 1.2 * curr_vol_ma5)
-        
-        is_correction = break_ma5 and above_ma20 and shrinking_volume
-        
-        reasons = []
-        if is_danger:
-            if is_downtrend_already:
-                reasons.append("已呈空头排列(阴跌)")
-            if break_ma20:
-                reasons.append("跌破MA20生命线")
-            if heavy_volume_drop:
-                reasons.append(f"放量杀跌({pct_change*100:.1f}%)")
-            if macd_dead_cross:
-                reasons.append("MACD高位死叉")
+        # 4. 数据清洗
+        df = df.rename(columns={
+            "日期": "date", "开盘": "open", "收盘": "close", 
+            "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount"
+        })
+        df["date"] = pd.to_datetime(df["date"])
+        cols = ["open", "close", "high", "low", "volume", "amount"]
+        for col in cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
             
+        # 5. 指标计算
+        close = df["close"].values
+        high = df["high"].values
+        low = df["low"].values
+        volume = df["volume"].values.astype(float)
+        
+        # A. KAMA 自适应均线
+        kama_fast = talib.KAMA(close, timeperiod=10)
+        kama_slow = talib.KAMA(close, timeperiod=20) # A股优化参数
+        
+        # B. 基础均线
+        ma5 = talib.SMA(close, timeperiod=5)
+        ma20 = talib.SMA(close, timeperiod=20)
+        
+        # C. 辅助指标
+        atr = talib.ATR(high, low, close, timeperiod=14)
+        rsi = talib.RSI(close, timeperiod=14)
+        vol_ma5 = talib.SMA(volume, timeperiod=5)
+        
+        # D. 周线趋势
+        weekly_trend = get_weekly_trend(df)
+        
+        # E. 市场环境 (Index Weakness)
+        is_market_weak = False
+        if not index_df.empty:
+            # Filter index to match current date logic (latest available)
+            # Check if Index < Index MA20
+            idx_close = index_df["close"].values
+            if len(idx_close) > 20:
+                idx_ma20 = talib.SMA(idx_close, timeperiod=20)
+                if idx_close[-1] < idx_ma20[-1]:
+                    is_market_weak = True
+        
+        # F. POC
+        poc_price = calculate_poc(df, window=20)
+        
+        # 6. 获取当前切片
+        curr_price = close[-1]
+        prev_price = close[-2]
+        curr_kama_fast = kama_fast[-1]
+        curr_kama_slow = kama_slow[-1]
+        curr_ma20 = ma20[-1]
+        curr_atr = atr[-1]
+        curr_rsi = rsi[-1]
+        curr_vol = volume[-1]
+        curr_vol_ma5 = vol_ma5[-1]
+        
+        bias20 = (curr_price - curr_ma20) / curr_ma20 if curr_ma20 != 0 else 0
+        
+        # 7. 核心逻辑判定 (v3.1)
+        danger_reasons = []
+        warning_reasons = []
+        info_reasons = []
+        
+        # --- Logic 1: STRONG_SELL (Trend Reversal) ---
+        
+        # A. 趋势共振破位 (Event Driven: CrossUnder)
+        # 跌破 KAMA慢线 且 周线MACD死叉
+        is_cross_under_kama = (curr_price < curr_kama_slow) and (prev_price >= kama_slow[-2])
+        if is_cross_under_kama and (weekly_trend == "DOWN"):
+             danger_reasons.append("跌破KAMA慢线+周线向下")
+        
+        # B. 涨停陷阱 (Limit Up Trap)
+        # 前日涨幅 > 9.5% (近似涨停)，今日低收且放量
+        prev_pct = (close[-2] - close[-3]) / close[-3] if len(close) > 2 else 0
+        if (prev_pct > 0.095):
+            if (curr_price < close[-2]) and (curr_vol > 1.2 * curr_vol_ma5):
+                 danger_reasons.append("涨停次日放量杀跌(诱多)")
+                 
+        # C. 弱势市场共振
+        # 市场弱势 + 个股跌破生命线 (Event Driven)
+        is_cross_under_ma20 = (curr_price < curr_ma20) and (prev_price >= ma20[-2])
+        if is_market_weak and is_cross_under_ma20:
+             danger_reasons.append("弱势市场跌破生命线")
+             
+        # --- Logic 2: SELL (Profit Protection) ---
+        
+        # A. 过热回撤止盈
+        is_overheat = (curr_rsi > 75) or (bias20 > 0.15)
+        if is_overheat:
+            stop_price = curr_kama_fast - (0.5 * curr_atr) # 宽幅震荡给予0.5ATR缓冲
+            if curr_price < stop_price:
+                 warning_reasons.append(f"过热期跌破KAMA快线(止盈)")
+                 
+        # B. 顶部衰竭信号 (Alpha Check)
+        # 简单化：RSI 高位且 KAMA 快线拐头向下
+        if (curr_rsi > 70) and (curr_kama_fast < kama_fast[-2]):
+             warning_reasons.append("RSI高位+动能衰竭")
+
+        # --- Logic 3: WAIT (Correction) ---
+        
+        # 跌破 MA5 或 KAMA快线，但获得支撑 (POC 或 KAMA慢线) 且 缩量
+        is_drop = (curr_price < curr_kama_fast) or (curr_price < ma5[-1])
+        is_supported = (curr_price > poc_price) and (curr_price > curr_kama_slow)
+        is_shrink_vol = (curr_vol < 1.0 * curr_vol_ma5)
+        
+        wait_msg = []
+        if is_drop and is_supported and is_shrink_vol and not danger_reasons and not warning_reasons:
+            wait_msg = [f"缩量回踩POC({poc_price:.2f})支撑有效"]
+
+        # 8. 信号输出
+        if danger_reasons:
             triggered = True
             signal = "STRONG_SELL"
-            message = f"📉【趋势反转】{' + '.join(reasons)} | 建议离场"
+            message = f"📉【趋势反转】{' + '.join(danger_reasons)} | 建议离场"
             
-        elif is_correction:
+        elif warning_reasons:
             triggered = True
-            signal = "SELL" # 标记为卖出信号，提醒用户注意，或者作为减仓提示
-            message = f"⚠️【技术调整】跌破MA5但缩量，MA20({curr_ma20:.2f})仍有支撑 | 建议观察或减仓"
+            signal = "SELL"
+            message = f"🪂【二级预警】{' + '.join(warning_reasons)} | 建议止盈/减仓"
+            
+        elif wait_msg:
+            triggered = False
+            signal = "WAIT"
+            message = f"⏳【技术调整】{' '.join(wait_msg)}"
             
         else:
-            # 可能是正常波动
-            if curr_price < curr_ma5:
-                 message = f"未触发：股价在MA5下方但未破位"
-            else:
-                 message = f"未触发：趋势暂稳 (>{curr_ma5:.2f})"
+            triggered = False
+            signal = "SAFE"
+            trend_s = "多头" if curr_price > curr_kama_slow else "震荡"
+            message = f"✅【趋势暂稳】{trend_s} | 现价:{curr_price:.2f}"
 
 except Exception as e:
     triggered = False
     signal = "WAIT"
-    message = f"脚本错误：{str(e)}"
+    message = f"脚本错误: {str(e)}"
     print(f"[Error] {e}")
