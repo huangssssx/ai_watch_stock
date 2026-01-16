@@ -65,7 +65,87 @@ def calculate_poc(df, window=20, bins=20):
     except:
         return 0
 
+def calculate_chop(df, window=14):
+    """计算 Choppiness Index (CHOP)"""
+    try:
+        if len(df) < window + 1: return 50.0
+        
+        # True Range
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        
+        # Talib TRANGE returns numpy array
+        tr1 = talib.TRANGE(high.values, low.values, close.values)
+        tr1_s = pd.Series(tr1, index=df.index)
+        
+        sum_tr = tr1_s.rolling(window=window).sum()
+        max_hi = high.rolling(window=window).max()
+        min_lo = low.rolling(window=window).min()
+        
+        range_hl = max_hi - min_lo
+        # Avoid division by zero
+        range_hl = range_hl.replace(0, np.nan)
+        
+        # CHOP Formula: 100 * Log10(SumTR / RangeHL) / Log10(Window)
+        chop = 100 * np.log10(sum_tr / range_hl) / np.log10(window)
+        
+        val = chop.iloc[-1]
+        return 50.0 if np.isnan(val) else val
+    except:
+        return 50.0
+
 # ------------------------
+
+# 0. 板块自适应配置 (Sector Adaptive Config)
+# 针对不同波动率的板块，调整 CHOP 阈值和放量标准
+# High Beta (科技/券商/新能源): 波动大，需更严格的过滤 (CHOP低阈值，Volume高阈值)
+# Low Beta (银行/公用/消费): 波动小，标准放宽
+SECTOR_MAP = {
+    # High Beta
+    "sz300750": "HIGH_BETA", # 宁德时代
+    "sz300059": "HIGH_BETA", # 东方财富
+    "sz300308": "HIGH_BETA", # 中际旭创
+    "sh601138": "HIGH_BETA", # 工业富联
+    "sz000063": "HIGH_BETA", # 中兴通讯
+    "sz002475": "HIGH_BETA", # 立讯精密
+    "sh600104": "HIGH_BETA", # 上汽集团(近期活跃) -> 修正：汽车算中高
+    
+    # Low Beta / Defensive
+    "sh600900": "LOW_BETA",  # 长江电力
+    "sh600036": "LOW_BETA",  # 招商银行
+    "sh601398": "LOW_BETA",  # 工商银行
+    "sh601857": "LOW_BETA",  # 中国石油
+    
+    # Stable Growth
+    "sh600519": "STABLE",    # 贵州茅台
+    "sh600887": "STABLE",    # 伊利股份
+    "sh600030": "STABLE",    # 中信证券(偏稳)
+    "sh601899": "STABLE",    # 紫金矿业
+}
+
+SECTOR_PARAMS = {
+    "HIGH_BETA": {
+        "chop_threshold": 50.0,  # 极严苛的震荡过滤 (原55.0 -> 50.0)
+        "vol_multiplier": 2.0,   # 维持高量能要求
+        "kama_slow_period": 30,  # 均线周期拉长 (原25 -> 30)，减少假摔
+    },
+    "LOW_BETA": {
+        "chop_threshold": 60.0,  # 稍微收紧 (原65.0 -> 60.0)
+        "vol_multiplier": 1.2,   # 维持低门槛
+        "kama_slow_period": 20,  # 维持标准
+    },
+    "STABLE": {
+        "chop_threshold": 61.8,  # 标准黄金分割
+        "vol_multiplier": 1.5,   # 标准放量
+        "kama_slow_period": 20,
+    },
+    "DEFAULT": {
+        "chop_threshold": 61.8,
+        "vol_multiplier": 1.5,
+        "kama_slow_period": 20,
+    }
+}
 
 # 1. 初始化
 triggered = False
@@ -78,6 +158,11 @@ try:
     if symbol.startswith(("sh", "sz", "bj")):
         symbol_code = symbol[2:]
 
+    # 获取板块配置
+    full_symbol = symbol if symbol.startswith(("sh", "sz")) else ("sh" if symbol.startswith("6") else "sz") + symbol
+    sector_type = SECTOR_MAP.get(full_symbol, "DEFAULT")
+    params = SECTOR_PARAMS.get(sector_type, SECTOR_PARAMS["DEFAULT"])
+    
     # 3. 获取数据
     now = datetime.datetime.now()
     start_dt = (now - datetime.timedelta(days=400)).strftime("%Y%m%d") # 需足够长计算周线
@@ -113,9 +198,9 @@ try:
         low = df["low"].values
         volume = df["volume"].values.astype(float)
         
-        # A. KAMA 自适应均线
+        # A. KAMA 自适应均线 (Adaptive Params)
         kama_fast = talib.KAMA(close, timeperiod=10)
-        kama_slow = talib.KAMA(close, timeperiod=20) # A股优化参数
+        kama_slow = talib.KAMA(close, timeperiod=params["kama_slow_period"]) 
         
         # B. 基础均线
         ma5 = talib.SMA(close, timeperiod=5)
@@ -142,6 +227,10 @@ try:
         
         # F. POC
         poc_price = calculate_poc(df, window=20)
+
+        # G. CHOP (市场体制 - Adaptive Params)
+        chop_val = calculate_chop(df, window=14)
+        is_choppy = chop_val > params["chop_threshold"]
         
         # 6. 获取当前切片
         curr_price = close[-1]
@@ -156,7 +245,7 @@ try:
         
         bias20 = (curr_price - curr_ma20) / curr_ma20 if curr_ma20 != 0 else 0
         
-        # 7. 核心逻辑判定 (v3.1)
+        # 7. 核心逻辑判定 (v3.1 + Adaptive)
         danger_reasons = []
         warning_reasons = []
         info_reasons = []
@@ -167,7 +256,11 @@ try:
         # 跌破 KAMA慢线 且 周线MACD死叉
         is_cross_under_kama = (curr_price < curr_kama_slow) and (prev_price >= kama_slow[-2])
         if is_cross_under_kama and (weekly_trend == "DOWN"):
-             danger_reasons.append("跌破KAMA慢线+周线向下")
+             # [优化] 震荡体制下，屏蔽普通跌破，除非放量
+             if not is_choppy:
+                 danger_reasons.append("跌破KAMA慢线+周线向下")
+             elif curr_vol > params["vol_multiplier"] * curr_vol_ma5:
+                 danger_reasons.append(f"震荡区放量(>{params['vol_multiplier']}x)跌破KAMA")
         
         # B. 涨停陷阱 (Limit Up Trap)
         # 前日涨幅 > 9.5% (近似涨停)，今日低收且放量
@@ -180,7 +273,8 @@ try:
         # 市场弱势 + 个股跌破生命线 (Event Driven)
         is_cross_under_ma20 = (curr_price < curr_ma20) and (prev_price >= ma20[-2])
         if is_market_weak and is_cross_under_ma20:
-             danger_reasons.append("弱势市场跌破生命线")
+             if not is_choppy:
+                 danger_reasons.append("弱势市场跌破生命线")
              
         # --- Logic 2: SELL (Profit Protection) ---
         

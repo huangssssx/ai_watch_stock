@@ -188,6 +188,8 @@ def _canonicalize_signal(signal_value) -> str:
         return "WAIT"
 
     upper = text.upper()
+    if upper in ["SAFE", "HOLD", "NEUTRAL"]:
+        return "WAIT"
     if upper in ["STRONG_BUY", "BUY", "WAIT", "SELL", "STRONG_SELL"]:
         return upper
 
