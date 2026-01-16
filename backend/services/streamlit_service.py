@@ -11,12 +11,26 @@ PORT = 8501
 _PRELUDE = (
     "import os\n"
     "import sys\n"
+    "import builtins\n"
+    "try:\n"
+    "    getattr(sys.stdout, 'flush', lambda: None)()\n"
+    "except Exception:\n"
+    "    try:\n"
+    "        sys.stdout = open(os.devnull, 'w')\n"
+    "    except Exception:\n"
+    "        pass\n"
     "try:\n"
     "    getattr(sys.stderr, 'flush', lambda: None)()\n"
     "except Exception:\n"
     "    try:\n"
     "        sys.stderr = open(os.devnull, 'w')\n"
     "    except Exception:\n"
+    "        pass\n"
+    "_orig_print = builtins.print\n"
+    "def print(*args, **kwargs):\n"
+    "    try:\n"
+    "        _orig_print(*args, **kwargs)\n"
+    "    except OSError:\n"
     "        pass\n"
     "os.environ.setdefault('TQDM_DISABLE', '1')\n"
     "_backend_dir = os.path.dirname(os.path.abspath(__file__))\n"
@@ -88,7 +102,7 @@ def start_streamlit():
         # Note: If running in a background service, inherit might not work well, but here it's fine.
         _process = subprocess.Popen(
             cmd,
-            stdout=sys.stdout, 
+            stdout=subprocess.DEVNULL,
             stderr=sys.stderr,
             text=True
         )

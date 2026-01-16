@@ -1,5 +1,14 @@
+# -*- coding: utf-8 -*-
 import os
 import sys
+import builtins
+try:
+    getattr(sys.stdout, 'flush', lambda: None)()
+except Exception:
+    try:
+        sys.stdout = open(os.devnull, 'w')
+    except Exception:
+        pass
 try:
     getattr(sys.stderr, 'flush', lambda: None)()
 except Exception:
@@ -7,325 +16,305 @@ except Exception:
         sys.stderr = open(os.devnull, 'w')
     except Exception:
         pass
+_orig_print = builtins.print
+def print(*args, **kwargs):
+    try:
+        _orig_print(*args, **kwargs)
+    except OSError:
+        pass
 os.environ.setdefault('TQDM_DISABLE', '1')
 _backend_dir = os.path.dirname(os.path.abspath(__file__))
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 from pymr_compat import ensure_py_mini_racer
 ensure_py_mini_racer()
-
 import streamlit as st
-import os
-import sys
-import akshare as ak
 import pandas as pd
-import json
-import datetime
-import time
+import akshare as ak
+import altair as alt
+from datetime import datetime
 import traceback
+import logging
+import sys
+import io
 
+# ==============================================================================
+# 0. 日志配置 (增强版)
+# ==============================================================================
+# 创建一个 StringIO 对象来捕获日志流，以便在 UI 上显示
+log_capture_string = io.StringIO()
+
+# 配置日志记录器
+logger = logging.getLogger("StockApp")
+logger.setLevel(logging.INFO)
+
+# 清除旧的处理器，防止 Streamlit 重载导致重复打印
+if logger.hasHandlers():
+    logger.handlers.clear()
+
+# 1. 控制台处理器 (打印到终端)
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(console_handler)
+
+# 2. 字符串流处理器 (用于在 UI 显示)
+stream_handler = logging.StreamHandler(log_capture_string)
+stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(stream_handler)
+
+def log_info(msg):
+    """统一日志记录入口"""
+    logger.info(msg)
+
+def log_error(msg):
+    """统一错误记录入口"""
+    logger.error(msg)
+
+# ==============================================================================
+# 1. 页面基础配置
+# ==============================================================================
+st.set_page_config(
+    page_title="A股行业资金流向看板 (修正版)",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# 兼容性检查
 try:
-    sys.stderr = open(os.devnull, "w")
-except Exception:
+    st_version = st.__version__
+    major, minor, patch = map(int, st_version.split('.')[:3])
+    if major < 1 or (major == 1 and minor < 35):
+        st.error(f"⚠️ 检测到您的 Streamlit 版本 ({st_version}) 较旧。建议升级到 1.35.0+")
+except:
     pass
 
-# --- Configuration ---
-st.set_page_config(page_title="大盘全景看板", layout="wide")
-
-# --- Styles ---
-st.markdown("""
-<style>
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        text-align: center;
-    }
-    .metric-value {
-        font-size: 24px;
-        font-weight: bold;
-    }
-    .metric-delta {
-        font-size: 14px;
-    }
-    .stButton>button {
-        width: 100%;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# --- Data Fetching (Cached) ---
-@st.cache_data(ttl=60)
-def load_market_data(run_token: str):
-    data = {}
-    logs = []
-
-    def _try_call(label: str, fn, retries: int = 2, sleep_s: float = 0.6):
-        last_err = None
-        for i in range(retries + 1):
-            t0 = time.time()
+# ==============================================================================
+# 2. 核心逻辑区 - 数据获取与处理
+# ==============================================================================
+class DataManager:
+    """数据管理类：负责数据的获取、清洗与缓存"""
+    
+    @staticmethod
+    def _safe_numeric(series):
+        """辅助函数：安全地将含有单位(万/亿)的字符串转为数值"""
+        def convert(x):
+            if pd.isna(x) or x == "": return 0.0
+            if isinstance(x, (int, float)): return float(x)
+            x = str(x).replace("元", "").replace(",", "")
+            factor = 1.0
+            if "万" in x:
+                factor = 10000.0
+                x = x.replace("万", "")
+            elif "亿" in x:
+                factor = 100000000.0
+                x = x.replace("亿", "")
             try:
-                v = fn()
-                dt = time.time() - t0
-                logs.append(f"[OK] {label} {dt:.2f}s")
-                return v
-            except Exception as e:
-                dt = time.time() - t0
-                last_err = e
-                logs.append(f"[ERR] {label} {dt:.2f}s {repr(e)}")
-                logs.append(traceback.format_exc())
-                if i < retries:
-                    time.sleep(sleep_s)
-        raise last_err
+                return float(x) * factor
+            except:
+                return 0.0
+        return series.apply(convert)
 
-    # 1. Indices (Sina is fast and stable)
-    try:
-        df_index = _try_call("stock_zh_index_spot_sina", lambda: ak.stock_zh_index_spot_sina())
-        # Filter Key Indices
-        targets = ["上证指数", "深证成指", "创业板指", "科创50"] 
-        # Note: Sina names might vary slightly, e.g. "上证指数"
-        if isinstance(df_index, pd.DataFrame) and (not df_index.empty) and ("名称" in df_index.columns):
-            data['indices'] = df_index[df_index['名称'].isin(targets)].copy()
-        else:
-            data['indices'] = pd.DataFrame()
-    except Exception as e:
-        st.error(f"指数数据获取失败: {e}")
-        data['indices'] = pd.DataFrame()
+    @staticmethod
+    @st.cache_data(ttl=300)
+    def get_sector_flow_rank():
+        """获取行业资金流向排名数据"""
+        log_info("🚀 [Start] 开始调用 ak.stock_sector_fund_flow_rank()...")
+        try:
+            with st.spinner("正在从 AkShare 拉取行业数据..."):
+                df = ak.stock_sector_fund_flow_rank()
+                
+            if df is None or df.empty:
+                log_error("❌ [Error] 接口返回数据为空 (None or Empty)")
+                st.warning("接口返回数据为空")
+                return pd.DataFrame()
 
-    # 2. Northbound Funds
-    try:
-        df_north = _try_call("stock_hsgt_fund_flow_summary_em", lambda: ak.stock_hsgt_fund_flow_summary_em())
-        if isinstance(df_north, pd.DataFrame):
-            data['hsgt'] = df_north.copy()
-        else:
-            data['hsgt'] = pd.DataFrame()
-        # Usually row 0 is Northbound (沪股通+深股通 sum is not directly given, need to sum)
-        # Structure: 沪股通(North), 港股通(South), 深股通(North), 港股通(South)
-        # We need rows where "资金方向" == "北向"
-        if not df_north.empty and '资金方向' in df_north.columns:
-            data['north'] = df_north[df_north['资金方向'] == '北向'].copy()
-            data['south'] = df_north[df_north['资金方向'] == '南向'].copy()
-        else:
-            data['north'] = pd.DataFrame()
-            data['south'] = pd.DataFrame()
-    except Exception as e:
-        # Fallback
-        data['hsgt'] = pd.DataFrame()
-        data['north'] = pd.DataFrame()
-        data['south'] = pd.DataFrame()
+            log_info(f"✅ [Fetch] 原始数据获取成功，形状: {df.shape}")
 
-    # 3. Market Summary (Breadth)
-    try:
-        sse = _try_call("stock_sse_summary", lambda: ak.stock_sse_summary())
-        szse = _try_call("stock_szse_summary", lambda: ak.stock_szse_summary())
-        data['sse'] = sse
-        data['szse'] = szse
-    except:
-        pass
+            # 数据清洗
+            df = df.dropna(how='all').drop_duplicates()
+            
+            # 列名兼容性处理
+            col_mapping = {
+                "名称": "行业名称",
+                "今日主力净流入-净额": "主力净流入",
+                "今日主力净流入-净占比": "主力净流入-净占比"
+            }
+            df = df.rename(columns=col_mapping)
+            
+            # 检查列名是否映射成功
+            if "行业名称" not in df.columns:
+                log_error(f"❌ [Error] 缺少 '行业名称' 列，当前列名: {list(df.columns)}")
+                return pd.DataFrame()
 
-    # 4. Sectors
-    try:
-        sectors = _try_call("stock_board_industry_name_em", lambda: ak.stock_board_industry_name_em())
-        data['sectors'] = sectors
-    except:
-        data['sectors'] = pd.DataFrame()
+            # 类型转换
+            num_cols = ["主力净流入", "主力净流入-净占比"]
+            for col in num_cols:
+                if col in df.columns:
+                    df[col] = DataManager._safe_numeric(df[col])
+            
+            # 排序
+            df = df.sort_values(by="主力净流入", ascending=False).reset_index(drop=True)
+            return df
 
-    data["_logs"] = "\n".join(logs[-120:])
-    return data
+        except Exception as e:
+            err_msg = traceback.format_exc()
+            log_error(f"❌ [Exception] 获取行业数据发生异常:\n{err_msg}")
+            return pd.DataFrame()
 
-# --- UI Layout ---
+    @staticmethod
+    @st.cache_data(ttl=600)
+    def get_sector_details(sector_name):
+        """
+        获取指定行业的成分股列表
+        使用 ak.stock_board_industry_cons_em 接口 (稳健)
+        """
+        log_info(f"🚀 [Start] 获取板块成分股: {sector_name}")
+        try:
+            # 使用用户指定的接口
+            df = ak.stock_board_industry_cons_em(symbol=sector_name)
+            
+            if df is not None and not df.empty:
+                log_info(f"✅ [Fetch] 成分股获取成功，行数: {len(df)}")
+                # 筛选核心列
+                cols_to_keep = ['代码', '名称', '最新价', '涨跌幅', '成交额', '换手率', '市盈率-动态']
+                # 兼容不同版本返回的列名
+                existing_cols = [c for c in cols_to_keep if c in df.columns]
+                df = df[existing_cols]
+                
+                # 简单数值处理
+                if '成交额' in df.columns:
+                    df['成交额'] = DataManager._safe_numeric(df['成交额'])
+                    
+                return df
+            else:
+                log_error(f"❌ [Error] 板块 [{sector_name}] 返回数据为空")
+                return pd.DataFrame()
+        except Exception as e:
+            log_error(f"❌ [Exception] 获取成分股失败: {str(e)}")
+            return pd.DataFrame()
 
-col_header_1, col_header_2 = st.columns([3, 1])
-with col_header_1:
-    st.title("📊 A股大盘全景监测")
-    st.caption(f"最后更新: {datetime.datetime.now().strftime('%H:%M:%S')}")
+# ==============================================================================
+# 3. UI 组件区
+# ==============================================================================
 
-with col_header_2:
-    if st.button("🔄 立即刷新数据"):
-        st.session_state["_market_run_token"] = str(time.time())
-        st.rerun()
-
-if "_market_run_token" not in st.session_state:
-    st.session_state["_market_run_token"] = str(time.time())
-
-if "_market_first_enter_done" not in st.session_state:
-    st.session_state["_market_first_enter_done"] = True
-    st.session_state["_market_run_token"] = str(time.time())
-
-# Load Data
-with st.spinner("正在连接行情中心..."):
-    market_data = load_market_data(st.session_state["_market_run_token"])
-
-with st.expander("运行日志", expanded=False):
-    st.code(market_data.get("_logs", ""), language="text")
-
-with st.expander("导出数据(JSON)", expanded=False):
-    indices_df_export = market_data.get("indices", pd.DataFrame())
-    hsgt_df_export = market_data.get("hsgt", pd.DataFrame())
-    sectors_df_export = market_data.get("sectors", pd.DataFrame())
-
-    include_full_sectors = st.checkbox("包含全量行业列表", value=False)
-    export_payload = {
-        "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
-        "indices": indices_df_export.to_dict(orient="records") if isinstance(indices_df_export, pd.DataFrame) else [],
-        "fund_flow": hsgt_df_export.to_dict(orient="records") if isinstance(hsgt_df_export, pd.DataFrame) else [],
-        "sectors_top10": [],
-        "sectors_bottom10": [],
-        "sectors": [],
-    }
-
-    if isinstance(sectors_df_export, pd.DataFrame) and (not sectors_df_export.empty) and ("涨跌幅" in sectors_df_export.columns):
-        top_10_export = sectors_df_export.sort_values(by="涨跌幅", ascending=False).head(10)
-        bottom_10_export = sectors_df_export.sort_values(by="涨跌幅", ascending=True).head(10)
-        export_payload["sectors_top10"] = top_10_export.to_dict(orient="records")
-        export_payload["sectors_bottom10"] = bottom_10_export.to_dict(orient="records")
-        if include_full_sectors:
-            export_payload["sectors"] = sectors_df_export.to_dict(orient="records")
-
-    export_json = json.dumps(export_payload, ensure_ascii=False, indent=2, default=str)
-    st.download_button(
-        "⬇️ 导出 JSON",
-        data=export_json,
-        file_name=f"market_dashboard_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-        mime="application/json",
-        use_container_width=True,
-    )
-    st.code(export_json, language="json")
-
-# --- Section 1: Key Indices ---
-st.subheader("核心指数")
-cols = st.columns(4)
-indices_df = market_data.get('indices', pd.DataFrame())
-
-if not indices_df.empty:
-    # Sort to ensure order if possible, or just iterate
-    # Target order: SH, SZ, CYB, KC50
-    target_order = ["上证指数", "深证成指", "创业板指", "科创50"]
-    
-    for i, name in enumerate(target_order):
-        row = indices_df[indices_df['名称'] == name]
-        if not row.empty:
-            price = pd.to_numeric(row.iloc[0]['最新价'], errors='coerce')
-            change = pd.to_numeric(row.iloc[0]['涨跌幅'], errors='coerce')
-            with cols[i]:
-                st.metric(label=name, value=f"{price:.2f}" if pd.notna(price) else "-", delta=f"{change:.2f}%" if pd.notna(change) else None)
+if hasattr(st, "dialog"):
+    @st.dialog("板块个股详情", width="large")
+    def show_stock_list_dialog(sector_name):
+        _render_stock_list(sector_name)
 else:
-    st.warning("暂无指数数据")
+    def show_stock_list_dialog(sector_name):
+        st.sidebar.markdown("---")
+        st.sidebar.subheader(f"📌 {sector_name} - 个股详情")
+        _render_stock_list(sector_name)
 
-st.divider()
-
-# --- Section 2: Market Sentiment & Funds ---
-col_fund, col_breadth = st.columns([1, 2])
-
-with col_fund:
-    st.subheader("💸 资金风向")
-    hsgt_df = market_data.get('hsgt', pd.DataFrame())
-    if not hsgt_df.empty:
-        direction = st.segmented_control(
-            "资金方向",
-            options=["北向", "南向", "全部"],
-            default="北向",
-            label_visibility="collapsed",
+def _render_stock_list(sector_name):
+    """抽离的渲染逻辑"""
+    st.caption(f"当前板块：{sector_name} (数据源: 东方财富-板块成份)")
+    
+    with st.spinner(f"正在加载 {sector_name} 的股票列表..."):
+        df_stocks = DataManager.get_sector_details(sector_name)
+    
+    if df_stocks.empty:
+        st.warning(f"⚠️ 未能获取到 [{sector_name}] 的成分股数据，请稍后重试。")
+    else:
+        # 配置列显示格式
+        column_cfg = {
+            "代码": st.column_config.TextColumn("代码"),
+            "名称": st.column_config.TextColumn("名称"),
+            "最新价": st.column_config.NumberColumn("最新价", format="%.2f"),
+            "涨跌幅": st.column_config.NumberColumn("涨跌幅", format="%.2f%%"),
+            "成交额": st.column_config.NumberColumn("成交额", format="￥%.0f"),
+            "换手率": st.column_config.NumberColumn("换手率", format="%.2f%%"),
+            "市盈率-动态": st.column_config.NumberColumn("PE(动)", format="%.1f"),
+        }
+        
+        st.dataframe(
+            df_stocks,
+            use_container_width=True,
+            hide_index=True,
+            column_config=column_cfg
         )
-        if direction == "北向":
-            df_flow = hsgt_df[hsgt_df.get('资金方向', '') == '北向'].copy()
-        elif direction == "南向":
-            df_flow = hsgt_df[hsgt_df.get('资金方向', '') == '南向'].copy()
-        else:
-            df_flow = hsgt_df.copy()
 
-        total_in = float("nan")
-        total_buy = float("nan")
-        try:
-            if '资金净流入' in df_flow.columns:
-                total_in = pd.to_numeric(df_flow['资金净流入'], errors='coerce').sum(min_count=1)
-            if '成交净买额' in df_flow.columns:
-                total_buy = pd.to_numeric(df_flow['成交净买额'], errors='coerce').sum(min_count=1)
-        except:
-            pass
-
-        status_hint = ""
-        try:
-            if '交易状态' in df_flow.columns:
-                status_vals = [str(x) for x in pd.unique(df_flow['交易状态'].dropna()).tolist()]
-                if status_vals:
-                    status_hint = f"交易状态: {', '.join(status_vals)}"
-        except:
-            pass
-
-        if pd.isna(total_buy) and pd.isna(total_in):
-            st.info("资金接口返回为空或字段无法解析")
-        elif pd.notna(total_buy):
-            st.metric(
-                f"{direction}成交净买额(合计)",
-                f"{total_buy:.2f}",
-                delta="流入" if total_buy > 0 else "流出"
-            )
-        elif pd.notna(total_in):
-            st.metric(
-                f"{direction}资金净流入(合计)",
-                f"{total_in:.2f}",
-                delta="流入" if total_in > 0 else "流出"
-            )
-
-        if direction == "北向" and (pd.notna(total_buy) and abs(float(total_buy)) < 1e-9) and status_hint:
-            st.caption(f"提示：当前北向数据为 0，{status_hint}（可能休市/上游暂无数据）")
-        elif status_hint:
-            st.caption(status_hint)
-
-        show_cols = [c for c in ['交易日', '板块', '资金方向', '交易状态', '资金净流入', '成交净买额', '当日资金余额'] if c in df_flow.columns]
-        if show_cols:
-            st.dataframe(df_flow[show_cols], hide_index=True)
-        else:
-            st.dataframe(df_flow, hide_index=True)
-    else:
-        st.info("资金数据不可用")
-
-with col_breadth:
-    st.subheader("🌡️ 市场温度")
-    # Calculate approximate Up/Down from Summary if available, or just verify
-    # SSE Summary has '上市股票' but not Up/Down count directly. 
-    # SZSE Summary also general.
-    # To get exact Up/Down, we need a snapshot or estimate.
-    # Let's use Sectors as a proxy for heat.
-    
-    sectors = market_data.get('sectors', pd.DataFrame())
-    if not sectors.empty:
-        up_sectors = len(sectors[sectors['涨跌幅'] > 0])
-        down_sectors = len(sectors[sectors['涨跌幅'] < 0])
-        total_sectors = len(sectors)
+# ==============================================================================
+# 4. 主程序入口
+# ==============================================================================
+def main():
+    # --- 侧边栏 ---
+    with st.sidebar:
+        st.header("⚙️ 参数配置")
+        top_n = st.slider("展示行业数量", 10, 50, 20)
+        refresh_btn = st.button("🔄 刷新数据")
         
-        st.write(f"行业板块涨跌分布: 🟥 {up_sectors} 涨 / 🟩 {down_sectors} 跌")
-        
-        # Simple progress bar for sentiment
-        sentiment_score = up_sectors / total_sectors if total_sectors > 0 else 0.5
-        st.progress(sentiment_score, text=f"市场情绪 (行业维度): {int(sentiment_score*100)}%")
-    else:
-        st.info("板块数据不可用")
+        if refresh_btn:
+            st.cache_data.clear()
+            st.rerun()
 
-st.divider()
-
-# --- Section 3: Sector Performance ---
-st.subheader("🚀 行业热度榜")
-
-sectors = market_data.get('sectors', pd.DataFrame())
-if not sectors.empty:
-    # Top 10 Gainers
-    top_10 = sectors.sort_values(by="涨跌幅", ascending=False).head(10)
-    # Bottom 10 Losers
-    bottom_10 = sectors.sort_values(by="涨跌幅", ascending=True).head(10)
+    st.title("🚀 A股行业资金流向透视")
     
-    col_top, col_bottom = st.columns(2)
+    # 1. 获取主榜单数据
+    df_all = DataManager.get_sector_flow_rank()
     
-    with col_top:
-        st.markdown("**涨幅 Top 10**")
-        df_up = top_10[['板块名称', '涨跌幅']].set_index('板块名称')
-        st.bar_chart(df_up, height=380)
-        
-    with col_bottom:
-        st.markdown("**跌幅 Top 10**")
-        df_down = bottom_10[['板块名称', '涨跌幅']].set_index('板块名称')
-        st.bar_chart(df_down, height=380)
-else:
-    st.error("无法加载行业数据")
+    if df_all.empty:
+        st.error("数据加载失败，请检查网络或稍后重试。")
+        st.stop()
 
+    # 2. 截取 Top N
+    df_view = df_all.head(top_n).copy()
+
+    # --- 核心交互图表 (Altair) ---
+    st.subheader(f"📊 热门行业资金流向 (Top {top_n})")
+    st.info("👆 点击下方的柱状图，可查看该行业的成分股列表")
+
+    # 定义基础图表
+    base = alt.Chart(df_view).encode(
+        x=alt.X('行业名称', sort=None, title="行业板块"),
+        y=alt.Y('主力净流入', title="主力净流入(元)"),
+        tooltip=['行业名称', '主力净流入', '主力净流入-净占比']
+    ).properties(height=450)
+
+    # [关键修复] 定义具名选择器，用于捕获点击事件
+    # name='select_sector' 是必须的，这样在 event.selection 中才能通过这个名字取值
+    click_selection = alt.selection_point(name='select_sector', fields=['行业名称'], on='click')
+
+    # 绘制柱状图，并绑定选择器
+    bars = base.mark_bar().encode(
+        # 选中时完全不透明，未选中时半透明
+        opacity=alt.condition(click_selection, alt.value(1.0), alt.value(0.3)),
+        color=alt.condition(
+            alt.datum['主力净流入'] > 0,
+            alt.value("#f5222d"),  # 红
+            alt.value("#52c41a")   # 绿
+        )
+    ).add_params(click_selection)
+
+    # 渲染图表，on_select="rerun" 触发生效
+    try:
+        event = st.altair_chart(bars, use_container_width=True, on_select="rerun")
+    except TypeError:
+        st.altair_chart(bars, use_container_width=True)
+        st.error("您的 Streamlit 版本不支持 on_select，请升级到 1.35.0 以上。")
+        return
+
+    # --- 处理点击事件 ---
+    # [关键修复] 之前的 AttributeError 是因为使用了 event.selection.rows
+    # 正确的做法是根据选择器名称 ('select_sector') 从字典中取出数据
+    if event.selection and 'select_sector' in event.selection:
+        selection_list = event.selection['select_sector']
+        
+        if selection_list and len(selection_list) > 0:
+            # 获取被点击的行业名称
+            sector_data = selection_list[0]
+            sector_name = sector_data.get("行业名称")
+            
+            if sector_name:
+                log_info(f"🖱️ 用户点击了: {sector_name}")
+                # 弹出模态窗口
+                show_stock_list_dialog(sector_name)
+
+    # --- 底部数据预览 ---
+    with st.expander("查看榜单源数据"):
+        st.dataframe(df_view)
+
+if __name__ == "__main__":
+    main()
