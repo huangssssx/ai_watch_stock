@@ -359,7 +359,7 @@ const StockTable: React.FC = () => {
               loading={loadingIndicators}
               options={allIndicators.map((x) => ({
                 value: x.id,
-                label: `${x.name}（${x.akshare_api || '纯脚本'}）`,
+                label: x.name,
               }))}
             />
           </Form.Item>

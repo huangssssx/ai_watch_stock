@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Form, Input, Modal, Table, message, Space, Collapse, Radio, Tag, Tooltip, Typography } from 'antd';
+import { Button, Form, Input, Modal, Table, message, Space, Tag, Tooltip, Typography } from 'antd';
 import { DeleteOutlined, EditOutlined, CodeOutlined, PlayCircleOutlined, PushpinOutlined, PushpinFilled } from '@ant-design/icons';
 import type { IndicatorDefinition, IndicatorTestResponse } from '../types';
 import { createIndicator, deleteIndicator, getIndicators, testIndicator, updateIndicator } from '../api';
@@ -13,10 +13,6 @@ import 'prismjs/themes/prism.css';
 
 type IndicatorCreateFormValues = {
   name: string;
-  mode?: 'akshare' | 'pure_script';
-  akshare_api?: string | null;
-  params_json?: string | null;
-  post_process_json?: string | null;
   python_code?: string | null;
 };
 
@@ -31,7 +27,6 @@ const IndicatorLibrary: React.FC = () => {
   const [testIndicatorItem, setTestIndicatorItem] = useState<IndicatorDefinition | null>(null);
   const [testResult, setTestResult] = useState<IndicatorTestResponse | null>(null);
   const [testForm] = Form.useForm();
-  const mode = Form.useWatch('mode', form) as IndicatorCreateFormValues['mode'];
 
   const refresh = async () => {
     setLoading(true);
@@ -65,11 +60,8 @@ const IndicatorLibrary: React.FC = () => {
 
   const handleSubmit = async (values: IndicatorCreateFormValues) => {
     try {
-      const payload: Omit<IndicatorCreateFormValues, 'mode'> = {
+      const payload: IndicatorCreateFormValues = {
         name: values.name,
-        akshare_api: values.mode === 'pure_script' ? '' : values.akshare_api || '',
-        params_json: values.mode === 'pure_script' ? '' : values.params_json || '{}',
-        post_process_json: values.post_process_json || '',
         python_code: values.python_code || '',
       };
       if (editingId) {
@@ -90,13 +82,8 @@ const IndicatorLibrary: React.FC = () => {
 
   const handleEdit = (record: IndicatorDefinition) => {
     setEditingId(record.id);
-    const recordMode: IndicatorCreateFormValues['mode'] = record.akshare_api ? 'akshare' : 'pure_script';
     form.setFieldsValue({
       name: record.name,
-      mode: recordMode,
-      akshare_api: record.akshare_api || '',
-      params_json: record.params_json || '{}',
-      post_process_json: record.post_process_json || '',
       python_code: record.python_code || '',
     });
     setOpen(true);
@@ -170,46 +157,6 @@ const IndicatorLibrary: React.FC = () => {
     return testResult.error || testResult.raw || '';
   })();
 
-  const getRowMode = (record: IndicatorDefinition) => (record.akshare_api ? 'akshare' : 'pure_script');
-
-  const formatJsonMaybe = (text?: string | null) => {
-    const raw = String(text || '').trim();
-    if (!raw) return '';
-    try {
-      const obj = JSON.parse(raw) as unknown;
-      return JSON.stringify(obj, null, 2);
-    } catch {
-      return raw;
-    }
-  };
-
-  const tryParseObject = (text?: string | null) => {
-    const raw = String(text || '').trim();
-    if (!raw) return null;
-    try {
-      const obj = JSON.parse(raw) as unknown;
-      if (obj && typeof obj === 'object' && !Array.isArray(obj)) return obj as Record<string, unknown>;
-      return null;
-    } catch {
-      return null;
-    }
-  };
-
-  const getParamsPreview = (record: IndicatorDefinition) => {
-    const obj = tryParseObject(record.params_json);
-    if (!obj) return '';
-    const keys = ['symbol', 'market', 'period', 'start_date', 'end_date', 'begin', 'end', 'date', 'adjust'];
-    const pairs: string[] = [];
-    for (const k of keys) {
-      if (k in obj) {
-        const v = obj[k];
-        pairs.push(`${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
-      }
-      if (pairs.length >= 4) break;
-    }
-    return pairs.join('  ');
-  };
-
   const getScriptStats = (code?: string | null) => {
     const raw = String(code || '').trim();
     if (!raw) return { ok: false, lines: 0, chars: 0 };
@@ -221,7 +168,7 @@ const IndicatorLibrary: React.FC = () => {
         title: '名称', 
         dataIndex: 'name', 
         key: 'name', 
-        width: 150,
+        width: 200,
         render: (text: string, record: IndicatorDefinition) => (
             <span>
                 {record.is_pinned && <PushpinFilled style={{color: '#1890ff', marginRight: 5}} />}
@@ -230,84 +177,32 @@ const IndicatorLibrary: React.FC = () => {
         )
     },
     {
-      title: '模式',
-      key: 'mode',
-      width: 110,
+      title: '脚本状态',
+      key: 'status',
+      width: 200,
       render: (_: unknown, record: IndicatorDefinition) => {
-        const modeValue = getRowMode(record);
-        return modeValue === 'akshare' ? <Tag color="blue">AkShare</Tag> : <Tag color="purple">纯脚本</Tag>;
-      },
-    },
-    {
-      title: '来源/接口',
-      key: 'source',
-      width: 220,
-      render: (_: unknown, record: IndicatorDefinition) => {
-        if (getRowMode(record) === 'pure_script') return <Typography.Text type="secondary">Script</Typography.Text>;
-        return <Typography.Text code>{record.akshare_api}</Typography.Text>;
-      },
-    },
-    {
-      title: '配置摘要',
-      key: 'summary',
-      ellipsis: true,
-      render: (_: unknown, record: IndicatorDefinition) => {
-        if (getRowMode(record) === 'pure_script') {
-          const st = getScriptStats(record.python_code);
-          return (
-            <Space size={6} wrap>
-              <Tag color={st.ok ? 'green' : 'red'}>{st.ok ? '脚本✅' : '脚本❌'}</Tag>
-              {st.ok ? (
-                <Typography.Text type="secondary">
-                  {st.lines} 行 / {st.chars} 字符
-                </Typography.Text>
-              ) : null}
-            </Space>
-          );
-        }
-
-        const obj = tryParseObject(record.params_json);
-        const ok = Boolean(obj);
-        const preview = ok ? getParamsPreview(record) : '';
+        const st = getScriptStats(record.python_code);
         return (
           <Space size={6} wrap>
-            <Tag color={ok ? 'green' : 'red'}>{ok ? 'JSON✅' : 'JSON❌'}</Tag>
-            {preview ? (
-              <Tooltip title={preview}>
-                <Typography.Text type="secondary" ellipsis style={{ maxWidth: 420 }}>
-                  {preview}
-                </Typography.Text>
-              </Tooltip>
+            <Tag color={st.ok ? 'green' : 'red'}>{st.ok ? '脚本✅' : '脚本❌'}</Tag>
+            {st.ok ? (
+              <Typography.Text type="secondary">
+                {st.lines} 行 / {st.chars} 字符
+              </Typography.Text>
             ) : null}
           </Space>
         );
       },
     },
     {
-      title: '脚本',
-      key: 'scripts',
-      width: 140,
-      render: (_: unknown, record: IndicatorDefinition) => {
-        const hasPython = Boolean(String(record.python_code || '').trim());
-        const hasPost = Boolean(String(record.post_process_json || '').trim());
-        if (!hasPython && !hasPost) return <Typography.Text type="secondary">-</Typography.Text>;
-        return (
-          <Space size={6} wrap>
-            {hasPython ? (
-              <Tooltip title="python_code">
-                <Tag icon={<CodeOutlined />} color="geekblue">
-                  py
-                </Tag>
-              </Tooltip>
-            ) : null}
-            {hasPost ? (
-              <Tooltip title="post_process_json">
-                <Tag color="gold">post</Tag>
-              </Tooltip>
-            ) : null}
-          </Space>
-        );
-      },
+      title: '类型',
+      key: 'type',
+      width: 100,
+      render: (_: unknown) => (
+        <Tooltip title="Pure Python Script">
+           <Tag icon={<CodeOutlined />} color="geekblue">Script</Tag>
+        </Tooltip>
+      ),
     },
     {
       title: '操作',
@@ -341,48 +236,27 @@ const IndicatorLibrary: React.FC = () => {
         dataSource={items}
         columns={columns}
         expandable={{
-          rowExpandable: (record) => Boolean(record.akshare_api || record.params_json || record.python_code || record.post_process_json),
+          rowExpandable: (record) => Boolean(record.python_code),
           expandedRowRender: (record) => {
-            const modeValue = getRowMode(record);
-            const parts: { title: string; content: string }[] = [];
-            if (modeValue === 'akshare') {
-              parts.push({ title: 'AkShare 接口名', content: String(record.akshare_api || '') });
-              parts.push({ title: '参数 JSON', content: formatJsonMaybe(record.params_json) });
-            } else {
-              parts.push({ title: '纯脚本', content: String(record.python_code || '').trim() });
-            }
-            if (modeValue === 'akshare' && String(record.python_code || '').trim()) {
-              parts.push({ title: 'Python 处理脚本', content: String(record.python_code || '').trim() });
-            }
-            if (String(record.post_process_json || '').trim()) {
-              parts.push({ title: 'Post Process JSON', content: formatJsonMaybe(record.post_process_json) });
-            }
-
             return (
               <div style={{ padding: 8 }}>
-                <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                  {parts.map((p) => (
-                    <div key={p.title}>
-                      <Typography.Text strong>{p.title}</Typography.Text>
-                      <pre
-                        style={{
-                          marginTop: 6,
-                          marginBottom: 0,
-                          padding: 10,
-                          border: '1px solid #f0f0f0',
-                          borderRadius: 6,
-                          background: '#fafafa',
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                          maxHeight: 260,
-                          overflow: 'auto',
-                        }}
-                      >
-                        {p.content || '-'}
-                      </pre>
-                    </div>
-                  ))}
-                </Space>
+                <Typography.Text strong>Python 脚本</Typography.Text>
+                <pre
+                  style={{
+                    marginTop: 6,
+                    marginBottom: 0,
+                    padding: 10,
+                    border: '1px solid #f0f0f0',
+                    borderRadius: 6,
+                    background: '#fafafa',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    maxHeight: 260,
+                    overflow: 'auto',
+                  }}
+                >
+                  {String(record.python_code || '').trim() || '-'}
+                </pre>
               </div>
             );
           },
@@ -400,93 +274,22 @@ const IndicatorLibrary: React.FC = () => {
           form={form}
           onFinish={handleSubmit}
           layout="vertical"
-          initialValues={{ mode: 'akshare', params_json: '{}', post_process_json: '', python_code: '' }}
+          initialValues={{ python_code: '' }}
         >
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
             <Input placeholder="例如：ATR指标、MACD指标" />
           </Form.Item>
-          <Form.Item name="mode" label="模式" rules={[{ required: true, message: '请选择模式' }]}>
-            <Radio.Group
-              options={[
-                { label: 'AkShare + 参数(JSON)', value: 'akshare' },
-                { label: '纯 Python 脚本', value: 'pure_script' },
-              ]}
-              optionType="button"
-              buttonStyle="solid"
-            />
-          </Form.Item>
-          <Form.Item
-            name="akshare_api"
-            label="AkShare 接口名"
-            rules={[
-              {
-                validator: async (_, value) => {
-                  if (mode === 'pure_script') return;
-                  if (String(value || '').trim()) return;
-                  throw new Error('请输入 AkShare 接口名');
-                },
-              },
-            ]}
-          >
-            <Input placeholder="例如：stock_zh_a_hist" disabled={mode === 'pure_script'} />
-          </Form.Item>
-          <Form.Item
-            name="params_json"
-            label="参数 JSON"
-            rules={[
-              {
-                validator: async (_, value) => {
-                  if (mode === 'pure_script') return;
-                  const raw = String(value || '').trim();
-                  if (!raw) throw new Error('请输入参数 JSON');
-                  try {
-                    JSON.parse(raw);
-                  } catch {
-                    throw new Error('参数 JSON 不是合法 JSON');
-                  }
-                },
-              },
-            ]}
-          >
-            <Input.TextArea
-              rows={2}
-              disabled={mode === 'pure_script'}
-              placeholder='{"symbol":"{symbol}","period":"daily","start_date":"{today-50}","end_date":"{today}"}'
-            />
-          </Form.Item>
 
           <Form.Item 
             name="python_code" 
-            label={mode === 'pure_script' ? 'Python 脚本 (必须设置 df 或 result)' : 'Python 处理脚本 (df 为 Pandas DataFrame)'}
-            help={mode === 'pure_script' ? "可用变量: context, ak, pd, np, requests, json, datetime, time。输出: df(DataFrame) 或 result(list/dict)。" : "可用变量: df (DataFrame), pd (pandas), np (numpy)。直接修改 df 即可。"}
+            label="Python 脚本 (必须设置 df 或 result)"
+            help="可用变量: context, ak, pd, np, requests, json, datetime, time。输出: df(DataFrame) 或 result(list/dict)。"
             rules={[
-              {
-                validator: async (_, value) => {
-                  if (mode !== 'pure_script') return;
-                  if (String(value || '').trim()) return;
-                  throw new Error('纯脚本模式下必须填写 Python 脚本');
-                },
-              },
+              { required: true, message: '请输入 Python 脚本' }
             ]}
           >
             <PythonEditor />
           </Form.Item>
-
-          <Collapse 
-            ghost
-            items={[{
-              key: '1',
-              label: '旧版配置 (Post Process JSON)',
-              children: (
-                <Form.Item name="post_process_json" label="后处理 JSON">
-                  <Input.TextArea
-                    rows={4}
-                    placeholder='{"rename_columns": {"最高": "high"}, "numeric_columns": ["high"], "tail": 1}'
-                  />
-                </Form.Item>
-              )
-            }]}
-          />
         </Form>
       </Modal>
 

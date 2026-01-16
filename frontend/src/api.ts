@@ -36,12 +36,12 @@ export const getStockHistory = (symbol: string, period: string = 'daily') =>
 export const getIndicators = () => api.get<IndicatorDefinition[]>('/indicators/');
 export const createIndicator = (
   indicator: Pick<IndicatorDefinition, 'name'> &
-    Partial<Pick<IndicatorDefinition, 'akshare_api' | 'params_json' | 'post_process_json' | 'python_code' | 'is_pinned'>>,
+    Partial<Pick<IndicatorDefinition, 'python_code' | 'is_pinned'>>,
 ) =>
   api.post<IndicatorDefinition>('/indicators/', indicator);
 export const updateIndicator = (
   id: number,
-  indicator: Partial<Pick<IndicatorDefinition, 'name' | 'akshare_api' | 'params_json' | 'post_process_json' | 'python_code' | 'is_pinned'>>,
+  indicator: Partial<Pick<IndicatorDefinition, 'name' | 'python_code' | 'is_pinned'>>,
 ) =>
   api.put<IndicatorDefinition>(`/indicators/${id}`, indicator);
 export const deleteIndicator = (id: number) => api.delete(`/indicators/${id}`);

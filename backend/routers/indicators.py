@@ -17,17 +17,9 @@ def _normalize_optional_str(value: Any) -> Optional[str]:
         return v if v else None
     return str(value).strip() or None
 
-def _validate_indicator_payload(akshare_api: Optional[str], params_json: Optional[str], python_code: Optional[str]) -> None:
-    if akshare_api:
-        if not params_json:
-            raise HTTPException(status_code=400, detail="params_json is required when akshare_api is provided")
-        try:
-            json.loads(params_json)
-        except Exception:
-            raise HTTPException(status_code=400, detail="params_json must be valid JSON")
-        return
-    if not python_code:
-        raise HTTPException(status_code=400, detail="python_code is required when akshare_api is empty")
+def _validate_indicator_payload(python_code: Optional[str]) -> None:
+    if not python_code or not python_code.strip():
+        raise HTTPException(status_code=400, detail="python_code is required")
 
 @router.get("/", response_model=List[schemas.IndicatorDefinition])
 def read_indicators(skip: int = 0, limit: int = 200, db: Session = Depends(get_db)):
@@ -37,12 +29,14 @@ def read_indicators(skip: int = 0, limit: int = 200, db: Session = Depends(get_d
 @router.post("/", response_model=schemas.IndicatorDefinition)
 def create_indicator(indicator: schemas.IndicatorDefinitionCreate, db: Session = Depends(get_db)):
     payload = indicator.dict()
-    payload["akshare_api"] = _normalize_optional_str(payload.get("akshare_api"))
-    payload["params_json"] = _normalize_optional_str(payload.get("params_json"))
-    payload["post_process_json"] = _normalize_optional_str(payload.get("post_process_json"))
+    
+    # Enforce Pure Python Mode
+    payload["akshare_api"] = None
+    payload["params_json"] = None
+    payload["post_process_json"] = None
     payload["python_code"] = _normalize_optional_str(payload.get("python_code"))
 
-    _validate_indicator_payload(payload.get("akshare_api"), payload.get("params_json"), payload.get("python_code"))
+    _validate_indicator_payload(payload.get("python_code"))
 
     db_indicator = models.IndicatorDefinition(**payload)
     db.add(db_indicator)
@@ -61,19 +55,20 @@ def update_indicator(indicator_id: int, indicator: schemas.IndicatorDefinitionUp
         raise HTTPException(status_code=404, detail="Indicator not found")
     
     update_data = indicator.dict(exclude_unset=True)
+    
+    # Enforce Pure Python Mode - ignore legacy fields from input and ensure they are cleared if somehow set
     if "akshare_api" in update_data:
-        update_data["akshare_api"] = _normalize_optional_str(update_data.get("akshare_api"))
+        update_data["akshare_api"] = None
     if "params_json" in update_data:
-        update_data["params_json"] = _normalize_optional_str(update_data.get("params_json"))
+        update_data["params_json"] = None
     if "post_process_json" in update_data:
-        update_data["post_process_json"] = _normalize_optional_str(update_data.get("post_process_json"))
+        update_data["post_process_json"] = None
+        
     if "python_code" in update_data:
         update_data["python_code"] = _normalize_optional_str(update_data.get("python_code"))
 
-    candidate_akshare_api = update_data.get("akshare_api", _normalize_optional_str(db_indicator.akshare_api))
-    candidate_params_json = update_data.get("params_json", _normalize_optional_str(db_indicator.params_json))
     candidate_python_code = update_data.get("python_code", _normalize_optional_str(db_indicator.python_code))
-    _validate_indicator_payload(candidate_akshare_api, candidate_params_json, candidate_python_code)
+    _validate_indicator_payload(candidate_python_code)
 
     for key, value in update_data.items():
         setattr(db_indicator, key, value)
@@ -106,12 +101,14 @@ def test_indicator(indicator_id: int, payload: schemas.IndicatorTestRequest, db:
         raise HTTPException(status_code=404, detail="Indicator not found")
 
     context = {"symbol": payload.symbol, "name": payload.name or ""}
+    
+    # Use fetch which now only supports script mode
     raw = data_fetcher.fetch(
-        db_indicator.akshare_api,
-        db_indicator.params_json,
-        context,
-        db_indicator.post_process_json,
-        db_indicator.python_code,
+        api_name=None,
+        params_json=None,
+        context=context,
+        post_process_json=None,
+        python_code=db_indicator.python_code,
     )
 
     if isinstance(raw, str) and (raw.startswith("Error") or raw.startswith("No data returned")):
