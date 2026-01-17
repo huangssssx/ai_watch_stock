@@ -57,6 +57,43 @@ def _round(x, nd=3):
         return None
     return round(v, nd)
 
+def _to_str(x):
+    if _is_na(x):
+        return None
+    try:
+        s = str(x).strip()
+    except Exception:
+        return None
+    return s if s else None
+
+def _clip_str(s, max_len=400):
+    if s is None:
+        return None
+    ss = _to_str(s)
+    if ss is None:
+        return None
+    return ss if len(ss) <= int(max_len) else (ss[: int(max_len)] + "…")
+
+def _split_terms(s):
+    ss = _to_str(s)
+    if ss is None:
+        return []
+    for sep in ["；", ";", "、", "，", ",", "|", "/", " "]:
+        ss = ss.replace(sep, "|")
+    parts = [p.strip() for p in ss.split("|")]
+    return [p for p in parts if p]
+
+def _clip_record(obj, max_len=400):
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(v, str):
+                out[k] = _clip_str(v, max_len=max_len)
+            else:
+                out[k] = v
+        return out
+    return obj
+
 def _clean_obj(obj):
     if isinstance(obj, dict):
         return {k: _clean_obj(v) for k, v in obj.items()}
@@ -86,6 +123,11 @@ meta = {
     "generated_at": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
     "covers_indicators": [
         "最近 20 日：日线（K 线）",
+        "量能指标 (VOL/OBV/MFI/ADL)",
+        "次新股属性 (上市时长/流通盘/筹码)",
+        "交易规则约束 (涨跌停/T+1)",
+        "基本面概览 (行业/股本/财务指标)",
+        "公司画像与题材 (主营/概念/互动)",
         "资金流向（个股近 100 个交易日内）",
         "5 分钟数据（分时历史）",
         "近 10 天换手率",
@@ -113,6 +155,7 @@ meta = {
 snapshot = {}
 order_book = {}
 daily = {}
+volume_indicators = {}
 intraday = {}
 relative = {}
 money_flow = {}
@@ -123,6 +166,12 @@ lhb = {}
 margin = {}
 fund_holding = {}
 big_deal = {}
+share_structure = {}
+fundamental = {}
+trading_rules = {}
+new_stock = {}
+company = {}
+disclosure = {}
 
 if not symbol:
     result = {
@@ -131,6 +180,13 @@ if not symbol:
         "snapshot": snapshot,
         "order_book": order_book,
         "daily": daily,
+        "volume": volume_indicators,
+        "share_structure": share_structure,
+        "fundamental": fundamental,
+        "trading_rules": trading_rules,
+        "new_stock": new_stock,
+        "company": company,
+        "disclosure": disclosure,
         "intraday": intraday,
         "technicals": technicals,
         "relative": relative,
@@ -173,6 +229,66 @@ else:
         snapshot = {"error": str(e)}
 
     try:
+        info_df = ak.stock_individual_info_em(symbol=symbol)
+        if info_df is not None and not info_df.empty and "item" in info_df.columns and "value" in info_df.columns:
+            info = info_df.set_index("item")["value"].to_dict()
+            share_structure = {
+                "industry": str(info.get("行业")).strip() if info.get("行业") is not None else None,
+                "listing_date": info.get("上市时间") if info.get("上市时间") is not None else info.get("上市日期"),
+                "total_shares": _to_float(info.get("总股本")),
+                "float_shares": _to_float(info.get("流通股")),
+                "free_float_mv": _to_float(snapshot.get("circ_mv")) if isinstance(snapshot, dict) else None,
+                "raw": info,
+            }
+
+            listing_dt = pd.to_datetime(share_structure.get("listing_date"), errors="coerce")
+            days_since_listing = None if pd.isna(listing_dt) else int((pd.Timestamp.now().normalize() - listing_dt.normalize()).days)
+            new_stock = {
+                "listing_date": share_structure.get("listing_date"),
+                "days_since_listing": days_since_listing,
+                "is_recent_ipo": bool(days_since_listing is not None and days_since_listing <= 365),
+                "float_mv_yi": _round((_to_float(snapshot.get("circ_mv")) / 1e8) if isinstance(snapshot, dict) else None, 3),
+            }
+
+            profile = {
+                "name": stock_name or _to_str(info.get("股票简称")),
+                "industry": str(info.get("行业")).strip() if info.get("行业") is not None else None,
+                "region": _to_str(info.get("地区")) or _to_str(info.get("所属地区")),
+                "listing_date": share_structure.get("listing_date"),
+                "main_business": _clip_str(info.get("主营业务") or info.get("主营业务描述") or info.get("主营")),
+                "business_scope": _clip_str(info.get("经营范围") or info.get("经营范围描述")),
+                "website": _to_str(info.get("公司网址") or info.get("网址")),
+                "chairman": _to_str(info.get("董事长")),
+                "gm": _to_str(info.get("总经理")),
+            }
+            concepts_raw = (
+                _to_str(info.get("所属概念"))
+                or _to_str(info.get("概念"))
+                or _to_str(info.get("概念题材"))
+                or _to_str(info.get("题材"))
+            )
+            company = {
+                "profile": profile,
+                "concepts": _split_terms(concepts_raw),
+            }
+    except Exception as e:
+        share_structure = {"error": str(e)}
+
+    try:
+        fa_fn = getattr(ak, "stock_financial_analysis_indicator", None)
+        if callable(fa_fn):
+            fa_df = fa_fn(symbol=symbol)
+        else:
+            fa_df = pd.DataFrame()
+        if fa_df is not None and not fa_df.empty:
+            fa_df = fa_df.copy().tail(4)
+            fundamental = {"financial_analysis_last_4": fa_df.to_dict("records")}
+        else:
+            fundamental = {"hint": "无财务分析指标数据"}
+    except Exception as e:
+        fundamental = {"error": str(e)}
+
+    try:
         bidask_df = ak.stock_bid_ask_em(symbol=symbol)
         if bidask_df is not None and not bidask_df.empty and "item" in bidask_df.columns and "value" in bidask_df.columns:
             d = bidask_df.set_index("item")["value"].to_dict()
@@ -204,6 +320,117 @@ else:
             }
     except Exception as e:
         order_book = {"error": str(e)}
+
+    try:
+        prev_close = None
+        if isinstance(snapshot, dict):
+            prev_close = _to_float(snapshot.get("prev_close"))
+        if prev_close is None and isinstance(order_book, dict):
+            prev_close = _to_float(order_book.get("prev_close"))
+
+        limit_up = _to_float(order_book.get("limit_up")) if isinstance(order_book, dict) else None
+        limit_down = _to_float(order_book.get("limit_down")) if isinstance(order_book, dict) else None
+
+        limit_up_pct = None
+        limit_down_pct = None
+        if prev_close and limit_up:
+            limit_up_pct = _round((limit_up / prev_close - 1.0) * 100.0, 2)
+        if prev_close and limit_down:
+            limit_down_pct = _round((limit_down / prev_close - 1.0) * 100.0, 2)
+
+        trading_rules = {
+            "t_plus_1": True,
+            "limit_up": _round(limit_up),
+            "limit_down": _round(limit_down),
+            "limit_up_pct": limit_up_pct,
+            "limit_down_pct": limit_down_pct,
+        }
+    except Exception as e:
+        trading_rules = {"error": str(e)}
+
+    try:
+        disclosure = {}
+        irm_fn = getattr(ak, "stock_irm_cninfo", None)
+        if callable(irm_fn):
+            irm_df = irm_fn(symbol=symbol)
+        else:
+            irm_df = pd.DataFrame()
+        if irm_df is not None and not irm_df.empty:
+            irm_df = irm_df.copy()
+            for c in ["提问时间", "更新时间"]:
+                if c in irm_df.columns:
+                    irm_df[c] = pd.to_datetime(irm_df[c], errors="coerce")
+            sort_col = "更新时间" if ("更新时间" in irm_df.columns and irm_df["更新时间"].notna().any()) else ("提问时间" if "提问时间" in irm_df.columns else None)
+            if sort_col:
+                irm_df = irm_df.sort_values(sort_col, ascending=False)
+            ans_col = "回答内容" if "回答内容" in irm_df.columns else None
+            if ans_col:
+                answered = irm_df[irm_df[ans_col].notna() & (irm_df[ans_col].astype(str).str.len() > 0)].copy()
+            else:
+                answered = pd.DataFrame()
+            if answered is not None and not answered.empty:
+                answered = answered.head(10)
+                records = []
+                for _, rr in answered.iterrows():
+                    rec = {
+                        "question": _clip_str(rr.get("问题"), 500),
+                        "answer": _clip_str(rr.get("回答内容"), 800),
+                        "asker": _to_str(rr.get("提问者")),
+                        "source": _to_str(rr.get("来源")),
+                        "ask_time": rr.get("提问时间"),
+                        "update_time": rr.get("更新时间"),
+                    }
+                    rec = _clip_record(rec, max_len=800)
+                    records.append(rec)
+                disclosure["irm_qna_top10"] = records
+            unanswered_count = None
+            if ans_col:
+                unanswered_count = int((irm_df[ans_col].isna() | (irm_df[ans_col].astype(str).str.len() == 0)).sum())
+            disclosure["irm_total_rows"] = int(len(irm_df))
+            if unanswered_count is not None:
+                disclosure["irm_unanswered_count"] = unanswered_count
+        else:
+            disclosure["irm_hint"] = "无互动易问答数据"
+    except Exception as e:
+        disclosure = {"irm_error": str(e)}
+
+    try:
+        rep_fn = getattr(ak, "stock_zh_a_disclosure_report_cninfo", None)
+        if callable(rep_fn):
+            end_str = now_dt.strftime("%Y%m%d")
+            start_str = (now_dt - pd.Timedelta(days=120)).strftime("%Y%m%d")
+            rep_df = rep_fn(symbol=symbol, market="沪深京", keyword="", category="", start_date=start_str, end_date=end_str)
+        else:
+            rep_df = pd.DataFrame()
+        if rep_df is not None and not rep_df.empty:
+            rep_df = rep_df.copy()
+            if "公告时间" in rep_df.columns:
+                rep_df["公告时间"] = pd.to_datetime(rep_df["公告时间"], errors="coerce")
+                rep_df = rep_df.sort_values("公告时间", ascending=False)
+            rep_df = rep_df.head(10)
+            recs = []
+            for _, rr in rep_df.iterrows():
+                rec = {
+                    "title": _clip_str(rr.get("公告标题"), 500),
+                    "time": rr.get("公告时间"),
+                    "url": _to_str(rr.get("公告链接")),
+                }
+                rec = _clip_record(rec, max_len=600)
+                recs.append(rec)
+            if not isinstance(disclosure, dict) or "irm_error" in disclosure:
+                disclosure = {}
+            disclosure["announcements_top10"] = recs
+        else:
+            if not isinstance(disclosure, dict) or "irm_error" in disclosure:
+                disclosure = {}
+            disclosure["announcements_hint"] = "无公告数据"
+    except Exception as e:
+        if not isinstance(disclosure, dict) or "irm_error" in disclosure:
+            disclosure = {}
+        disclosure["announcements_error"] = str(e)
+
+    if not isinstance(disclosure, dict) or len(disclosure) == 0:
+        disclosure = {"hint": "无公告/互动数据"}
 
     try:
         end_dt = now_dt
@@ -265,6 +492,7 @@ else:
                 tail["pct_change"] = tail["收盘"].pct_change() * 100.0
                 daily_items = []
                 for _, rr in tail.iterrows():
+                    amt_v = _to_float(rr.get("成交额"))
                     daily_items.append(
                         {
                             "date": rr["日期"].strftime("%Y-%m-%d") if not pd.isna(rr["日期"]) else None,
@@ -273,7 +501,8 @@ else:
                             "low": _round(rr.get("最低")),
                             "close": _round(rr.get("收盘")),
                             "volume": _to_float(rr.get("成交量")),
-                            "amount": _to_float(rr.get("成交额")),
+                            "amount": amt_v,
+                            "amount_yi": _round((amt_v / 1e8) if amt_v is not None else None, 3),
                             "turnover_rate": _round(rr.get("换手率"), 2),
                             "pct_change": _round(rr.get("pct_change"), 2),
                         }
@@ -326,6 +555,91 @@ else:
                     "vwap_20": vwap_20,
                 }
             }
+
+            if len(vol):
+                vol_s = pd.Series(vol)
+                vol_ma5 = vol_s.rolling(5).mean()
+                vol_ma10 = vol_s.rolling(10).mean()
+                vol_ma20 = vol_s.rolling(20).mean()
+                vol_std20 = vol_s.rolling(20).std()
+
+                cur_vol = _to_float(vol_s.iloc[-1])
+                vol_ma5_v = _to_float(vol_ma5.iloc[-1])
+                vol_ma10_v = _to_float(vol_ma10.iloc[-1])
+                vol_ma20_v = _to_float(vol_ma20.iloc[-1])
+                vol_std20_v = _to_float(vol_std20.iloc[-1])
+
+                vol_ratio_5 = None if (cur_vol is None or not vol_ma5_v) else _round(cur_vol / vol_ma5_v, 3)
+                vol_ratio_10 = None if (cur_vol is None or not vol_ma10_v) else _round(cur_vol / vol_ma10_v, 3)
+                vol_ratio_20 = None if (cur_vol is None or not vol_ma20_v) else _round(cur_vol / vol_ma20_v, 3)
+
+                vol_z20 = None
+                if cur_vol is not None and vol_ma20_v is not None and vol_std20_v is not None and vol_std20_v:
+                    vol_z20 = _round((cur_vol - vol_ma20_v) / vol_std20_v, 3)
+
+                obv_v = None
+                obv_ma20_v = None
+                mfi14_v = None
+                ad_v = None
+                adosc_v = None
+                vpt_v = None
+
+                try:
+                    obv_arr = talib.OBV(close, vol)
+                    if len(obv_arr):
+                        obv_v = _round(obv_arr[-1], 3)
+                        obv_ma20 = pd.Series(obv_arr).rolling(20).mean()
+                        obv_ma20_v = _round(obv_ma20.iloc[-1], 3)
+                except Exception:
+                    pass
+
+                try:
+                    mfi14 = talib.MFI(high, low, close, vol, timeperiod=14)
+                    if len(mfi14):
+                        mfi14_v = _round(mfi14[-1], 3)
+                except Exception:
+                    pass
+
+                try:
+                    ad_arr = talib.AD(high, low, close, vol)
+                    if len(ad_arr):
+                        ad_v = _round(ad_arr[-1], 3)
+                except Exception:
+                    pass
+
+                try:
+                    adosc_arr = talib.ADOSC(high, low, close, vol, fastperiod=3, slowperiod=10)
+                    if len(adosc_arr):
+                        adosc_v = _round(adosc_arr[-1], 3)
+                except Exception:
+                    pass
+
+                try:
+                    close_s = pd.Series(close)
+                    ret = close_s.pct_change().fillna(0.0)
+                    vpt = (ret * vol_s).cumsum()
+                    vpt_v = _round(vpt.iloc[-1], 3)
+                except Exception:
+                    pass
+
+                volume_indicators = {
+                    "latest": {
+                        "volume": cur_vol,
+                        "volume_ma5": vol_ma5_v,
+                        "volume_ma10": vol_ma10_v,
+                        "volume_ma20": vol_ma20_v,
+                        "volume_ratio_5": vol_ratio_5,
+                        "volume_ratio_10": vol_ratio_10,
+                        "volume_ratio_20": vol_ratio_20,
+                        "volume_zscore_20": vol_z20,
+                        "obv": obv_v,
+                        "obv_ma20": obv_ma20_v,
+                        "mfi_14": mfi14_v,
+                        "ad": ad_v,
+                        "adosc_3_10": adosc_v,
+                        "vpt": vpt_v,
+                    }
+                }
 
             last_close = _to_float(close[-1])
             bias6_pct = None
@@ -425,6 +739,7 @@ else:
                 "day_low": _round(day_low),
                 "total_volume_hands": int(total_vol_hands) if total_vol_hands is not None else None,
                 "total_amount": total_amount,
+                "total_amount_yi": _round(total_amount / 1e8, 3),
             }
     except Exception as e:
         intraday = {"error": str(e)}
@@ -752,6 +1067,13 @@ else:
     snapshot = _attach_describe(snapshot, "实时快照：价格/涨跌幅/估值/成交等概览")
     order_book = _attach_describe(order_book, "盘口信息：五档买卖/涨跌停/外内盘等")
     daily = _attach_describe(daily, "日线数据：最近K线、涨跌幅、换手率等")
+    volume_indicators = _attach_describe(volume_indicators, "量能指标：成交量均线/量能强弱/OBV/MFI/AD 等")
+    share_structure = _attach_describe(share_structure, "股本结构：行业/上市日期/总股本/流通股等")
+    fundamental = _attach_describe(fundamental, "基本面：财务分析指标（如可用）与概览")
+    trading_rules = _attach_describe(trading_rules, "交易规则：涨跌停价/涨跌停幅度推算/T+1")
+    new_stock = _attach_describe(new_stock, "次新股属性：上市时长/是否次新/流通市值等")
+    company = _attach_describe(company, "公司画像：主营/题材/管理层等（如可用）")
+    disclosure = _attach_describe(disclosure, "公告/互动：互动易问答摘要（如可用）")
     intraday = _attach_describe(intraday, "分时数据：1分钟/5分钟、VWAP、日内高低等")
     technicals = _attach_describe(technicals, "技术指标：MA/MACD/RSI/BOLL/ATR/唐奇安等")
     relative = _attach_describe(relative, "相对强弱：相对沪深300的RS与状态")
@@ -768,6 +1090,13 @@ else:
         "snapshot": snapshot,
         "order_book": order_book,
         "daily": daily,
+        "volume": volume_indicators,
+        "share_structure": share_structure,
+        "fundamental": fundamental,
+        "trading_rules": trading_rules,
+        "new_stock": new_stock,
+        "company": company,
+        "disclosure": disclosure,
         "intraday": intraday,
         "technicals": technicals,
         "relative": relative,
@@ -813,6 +1142,11 @@ def _add_cov(name, ok, detail=None):
     coverage.append(item)
 
 _add_cov("最近 20 日：日线（K 线）", _non_empty(_pick(result, "daily.last_20")), {"rows": len(_pick(result, "daily.last_20") or [])})
+_add_cov("量能指标 (VOL/OBV/MFI/ADL)", _pick(result, "volume.latest.volume") is not None or _pick(result, "volume.latest.obv") is not None or _pick(result, "volume.latest.mfi_14") is not None)
+_add_cov("次新股属性 (上市时长/流通盘/筹码)", _pick(result, "new_stock.days_since_listing") is not None or _pick(result, "new_stock.float_mv_yi") is not None)
+_add_cov("交易规则约束 (涨跌停/T+1)", _pick(result, "trading_rules.limit_up") is not None or _pick(result, "trading_rules.limit_down") is not None)
+_add_cov("基本面概览 (行业/股本/财务指标)", _non_empty(_pick(result, "share_structure.raw")) or _non_empty(_pick(result, "fundamental.financial_analysis_last_4")))
+_add_cov("公司画像与题材 (主营/概念/互动)", _non_empty(_pick(result, "company.profile")) or _non_empty(_pick(result, "company.concepts")) or _non_empty(_pick(result, "disclosure.irm_qna_top10")) or _non_empty(_pick(result, "disclosure.announcements_top10")))
 _add_cov("资金流向（个股近 100 个交易日内）", _non_empty(_pick(result, "money_flow.history_last_100")), {"rows": len(_pick(result, "money_flow.history_last_100") or [])})
 _add_cov("5 分钟数据（分时历史）", _non_empty(_pick(result, "intraday.bars_5m_last_48")), {"rows": len(_pick(result, "intraday.bars_5m_last_48") or [])})
 _add_cov("近 10 天换手率", _non_empty(_pick(result, "daily.turnover_last_10")), {"rows": len(_pick(result, "daily.turnover_last_10") or [])})
