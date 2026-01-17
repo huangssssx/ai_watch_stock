@@ -26,15 +26,16 @@ class AIService:
             "【输出要求】\n"
             "请严格只输出一个合法的 JSON 对象，不要包含 Markdown 代码块标记（如 ```json），格式如下：\n"
             "{\n"
-            "  \"type\": \"info\" | \"warning\" | \"error\",  // info=正常分析, warning=数据不足或风险极高, error=无法分析\n"
-            "  \"signal\": \"STRONG_BUY\" | \"BUY\" | \"WAIT\" | \"SELL\" | \"STRONG_SELL\", // 明确的信号\n"
-            "  \"action_advice\": \"...\", // 一句话的大白话操作建议，例如：'现价25.5元立即买入，目标27元'\n"
-            "  \"suggested_position\": \"...\", // 建议仓位，例如：'3成仓' 或 '空仓观望'\n"
-            "  \"duration\": \"...\", // 建议持仓时间，例如：'短线T+1' 或 '中线持股2周'\n"
-            "  \"support_pressure\": {\"support\": 价格, \"pressure\": 价格}, // 支撑压力位\n"
-            "  \"stop_loss_price\": 价格, // 严格的止损价格\n"
-            "  \"message\": \"...\" // 详细的逻辑分析摘要，解释为什么这么做，不超过100字\n"
-            "}"
+            "  \"type\": \"info\",\n"
+            "  \"signal\": \"STRONG_BUY\",\n"
+            "  \"action_advice\": \"现价25.5元立即买入，目标27元\",\n"
+            "  \"suggested_position\": \"3成仓\",\n"
+            "  \"duration\": \"短线T+1\",\n"
+            "  \"support_pressure\": {\"support\": 24.0, \"pressure\": 28.0},\n"
+            "  \"stop_loss_price\": 23.5,\n"
+            "  \"message\": \"详细逻辑分析...\"\n"
+            "}\n"
+            "注意：type可选 info/warning/error；signal可选 STRONG_BUY/BUY/WAIT/SELL/STRONG_SELL。"
         )
 
     def _build_user_content(self, data_context: str, prompt_template: str, current_time_str: Optional[str] = None) -> str:
@@ -64,7 +65,8 @@ class AIService:
         try:
             client = OpenAI(
                 api_key=ai_config["api_key"],
-                base_url=ai_config["base_url"]
+                base_url=ai_config["base_url"],
+                timeout=300.0,
             )
             
             system_prompt = self._build_system_prompt()
@@ -107,7 +109,8 @@ class AIService:
         try:
             client = OpenAI(
                 api_key=ai_config["api_key"],
-                base_url=ai_config["base_url"]
+                base_url=ai_config["base_url"],
+                timeout=300.0,
             )
             
             system_prompt = self._build_system_prompt()
@@ -146,7 +149,8 @@ class AIService:
     def chat(self, message: str, ai_config: Dict[str, Any], system_prompt: Optional[str] = None) -> str:
         client = OpenAI(
             api_key=ai_config["api_key"],
-            base_url=ai_config["base_url"]
+            base_url=ai_config["base_url"],
+            timeout=120.0,
         )
         normalized_system_prompt = (system_prompt or "").strip()
         normalized_message = (message or "").strip()
@@ -184,7 +188,8 @@ class AIService:
         try:
             client = OpenAI(
                 api_key=ai_config["api_key"],
-                base_url=ai_config["base_url"]
+                base_url=ai_config["base_url"],
+                timeout=300.0,
             )
 
             # Build user content: data + custom prompt only, no extra formatting
