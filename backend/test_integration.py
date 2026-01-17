@@ -1,6 +1,11 @@
 import unittest
 from unittest.mock import MagicMock, patch
+import os
+import sys
 import json
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from services.data_fetcher import DataFetcher
 from services.ai_service import AIService
 from services.monitor_service import process_stock
@@ -36,11 +41,12 @@ class TestIntegration(unittest.TestCase):
             interval_seconds=10,
             ai_provider_id=self.ai_config.id,
             monitoring_schedule=json.dumps([{"start": "00:00", "end": "23:59"}]),
+            only_trade_days=False,
         )
         self.db.add(self.stock)
         self.db.commit()
         
-        self.indicator = IndicatorDefinition(name="Spot", akshare_api="stock_zh_a_spot_em", params_json='{"symbol": "{symbol}"}')
+        self.indicator = IndicatorDefinition(name="Spot", akshare_api="stock_zh_a_spot_em", params_json="{}")
         self.db.add(self.indicator)
         self.db.commit()
         self.stock.indicators = [self.indicator]
@@ -58,7 +64,8 @@ class TestIntegration(unittest.TestCase):
     @patch('services.alert_service.smtplib')
     def test_process_loop(self, mock_smtp, mock_openai, mock_ak):
         # 1. Mock Data Fetch
-        mock_ak.stock_zh_a_spot_em.return_value.to_json.return_value = '[{"symbol": "600000", "price": 10.5}]'
+        import pandas as pd
+        mock_ak.stock_zh_a_spot_em.return_value = pd.DataFrame([{"symbol": "600000", "price": 10.5}])
         
         # 2. Mock AI Response
         mock_client = MagicMock()
@@ -82,7 +89,8 @@ class TestIntegration(unittest.TestCase):
     @patch('services.ai_service.OpenAI')
     @patch('services.monitor_service.alert_service.send_email')
     def test_test_run_can_send_email_when_enabled(self, mock_send_email, mock_openai, mock_ak):
-        mock_ak.stock_zh_a_spot_em.return_value.to_json.return_value = '[{"symbol": "600000", "price": 10.5}]'
+        import pandas as pd
+        mock_ak.stock_zh_a_spot_em.return_value = pd.DataFrame([{"symbol": "600000", "price": 10.5}])
 
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
@@ -113,7 +121,8 @@ class TestIntegration(unittest.TestCase):
     @patch('services.data_fetcher.ak')
     @patch('services.ai_service.OpenAI')
     def test_bypass_checks_runs_even_if_not_monitoring(self, mock_openai, mock_ak):
-        mock_ak.stock_zh_a_spot_em.return_value.to_json.return_value = '[{"symbol": "600000", "price": 10.5}]'
+        import pandas as pd
+        mock_ak.stock_zh_a_spot_em.return_value = pd.DataFrame([{"symbol": "600000", "price": 10.5}])
 
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
