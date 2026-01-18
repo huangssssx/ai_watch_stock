@@ -30,6 +30,51 @@ EVAL_DAYS_SECONDARY = 5
 MANUAL_SUPPORT_PRICE = None
 GAP_DOWN_OPEN_LT_PREV_LOW_PCT = 0.995
 
+def _nth_trade_day_after(date0, n):
+    import datetime as _datetime
+
+    if n <= 0:
+        return date0
+
+    try:
+        import akshare as _ak
+        import pandas as _pd
+
+        trade_df = _ak.tool_trade_date_hist_sina()
+        if trade_df is not None and (not trade_df.empty) and ("trade_date" in trade_df.columns):
+            trade_dates = (
+                _pd.to_datetime(trade_df["trade_date"], errors="coerce")
+                .dt.date.dropna()
+                .tolist()
+            )
+            trade_dates = sorted(set(trade_dates))
+            if trade_dates:
+                pos = None
+                for i, d in enumerate(trade_dates):
+                    if d == date0:
+                        pos = i
+                        break
+                    if d > date0:
+                        pos = i - 1
+                        break
+                if pos is None:
+                    pos = len(trade_dates) - 1
+                target = pos + n
+                if 0 <= target < len(trade_dates):
+                    return trade_dates[target]
+    except Exception:
+        pass
+
+    d = date0
+    cnt = 0
+    for _ in range(30):
+        d = d + _datetime.timedelta(days=1)
+        if d.weekday() < 5:
+            cnt += 1
+            if cnt >= n:
+                return d
+    return None
+
 now_cn = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
 start_date = (now_cn - datetime.timedelta(days=LOOKBACK_DAYS * 3)).strftime("%Y%m%d")
 end_date = (now_cn - datetime.timedelta(days=1)).strftime("%Y%m%d")
@@ -173,11 +218,16 @@ else:
             if break_ref_high:
                 manual_signals.append(f"Close_Above_RefHigh({ref_high:.2f})")
 
-            verdict = "UNDECIDED"
+            days_after_available = max(0, len(full_recent) - (zhaban_idx + 1))
+            need_wait = (len(script_signals) == 0) and (not break_ref_high) and (days_after_available < EVAL_DAYS_SECONDARY)
+
+            verdict = "未分胜负"
             if len(script_signals) > 0:
-                verdict = "SCRIPT_RIGHT"
+                verdict = "脚本胜"
             elif break_ref_high:
-                verdict = "MANUAL_RIGHT"
+                verdict = "人类胜"
+            elif need_wait:
+                verdict = "数据不足"
 
             print(f"symbol={symbol_raw} code={symbol_code}")
             print(f"ref_date={ref_date} prev_close={prev_close:.2f} prev_low={prev_low:.2f} ref_high={ref_high:.2f} ref_close={ref_close:.2f} ref_low={ref_low:.2f}")
@@ -186,12 +236,21 @@ else:
             print(f"manual_signals={manual_signals}")
             print(f"verdict={verdict}")
 
-            if verdict == "SCRIPT_RIGHT":
+            if verdict == "脚本胜":
                 triggered = True
-                message = f"🧪验证: {verdict} | 炸板={ref_date} | {' + '.join(script_signals)}"
-            elif verdict == "MANUAL_RIGHT":
+                message = f"🧪验证: 脚本胜 | 炸板={ref_date} | {' + '.join(script_signals)}"
+            elif verdict == "人类胜":
                 triggered = False
-                message = f"🧪验证: {verdict} | 炸板={ref_date} | {' + '.join(manual_signals)}"
+                message = f"🧪验证: 人类胜 | 炸板={ref_date} | {' + '.join(manual_signals)}"
+            elif verdict == "数据不足":
+                need_until = _nth_trade_day_after(datetime.date.fromisoformat(ref_date), EVAL_DAYS_SECONDARY)
+                if need_until is not None:
+                    message = f"🧪验证: 数据不足，需要等到 {need_until.isoformat()} 收盘后再裁决 | 炸板={ref_date} | 已有{days_after_available}/{EVAL_DAYS_SECONDARY}日"
+                else:
+                    message = f"🧪验证: 数据不足，需要等到后续交易日补齐{EVAL_DAYS_SECONDARY}日窗口 | 炸板={ref_date} | 已有{days_after_available}/{EVAL_DAYS_SECONDARY}日"
             else:
                 triggered = False
-                message = f"🧪验证: {verdict} | 炸板={ref_date} | 观察: GapDown/破位({support_price:.2f})/站回前高({ref_high:.2f})"
+                message = f"🧪验证: 未分胜负 | 炸板={ref_date} | 观察: GapDown/破位({support_price:.2f})/站回前高({ref_high:.2f})"
+
+print(f"triggered={triggered}")
+print(f"message={message}")
