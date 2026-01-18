@@ -119,6 +119,72 @@ On backend startup (`main.py`):
 3. `restore_screener_jobs()` - Restores persistent screener jobs
 4. `start_streamlit()` - Launches the Streamlit dashboard subprocess
 
+## Recent Improvements (2024)
+
+### Frontend Enhancements
+1. **Unified Error Handling** (`frontend/src/lib/apiError.ts`)
+   - Centralized API error parsing and display
+   - Automatic error type detection (network, validation, server, permission)
+   - Form field error mapping for validation feedback
+
+2. **Enhanced API Client** (`frontend/src/lib/apiClient.ts`)
+   - Request/response interceptors
+   - Automatic timeout handling (30s default)
+   - Helper methods for common CRUD operations
+
+3. **Global Loading State** (`frontend/src/contexts/LoadingContext.tsx`)
+   - Context-based loading state management
+   - Support for both global and component-level loading
+   - `runAsync()` helper for automatic loading management
+
+4. **Reusable Components** (`frontend/src/components/common/`)
+   - `EditableTableModal`: Generic CRUD modal with form and table
+   - `GlobalLoading`: Global loading overlay component
+   - `LogsViewerOptimized`: Performance-optimized logs viewer with memoization
+
+5. **Custom Hooks** (`frontend/src/hooks/`)
+   - `useTableData`: Automatic data fetching with polling support
+   - `useTableDataWithPagination`: Built-in pagination for large datasets
+
+### Backend Enhancements
+1. **Custom Exception Classes** (`backend/core/exceptions.py`)
+   - `ValidationError`: Data validation errors (400)
+   - `NotFoundError`: Resource not found (404)
+   - `ConflictError`: Resource conflicts (409)
+   - `AIServiceError`: AI service integration errors (502)
+   - `BusinessRuleError`: Business logic violations (422)
+
+2. **AI Service Retry Mechanism** (`backend/core/ai_retry.py`)
+   - Exponential backoff retry strategy
+   - Configurable max attempts and wait times
+   - `@ai_retry` decorator for automatic retries
+   - Fallback value support for graceful degradation
+
+3. **Database Index Optimization** (`backend/db_optimize_indexes.py`)
+   - Automated index creation for frequently queried columns
+   - Composite indexes for common query patterns
+   - Run `python db_optimize_indexes.py` to optimize
+
+### New File Structure
+```
+frontend/src/
+├── lib/
+│   ├── apiError.ts          # Unified error handling
+│   └── apiClient.ts          # Enhanced API client
+├── contexts/
+│   └── LoadingContext.tsx   # Global loading state
+├── hooks/
+│   └── useTableData.ts      # Table data hooks
+└── components/common/
+    ├── EditableTableModal.tsx  # Generic CRUD modal
+    ├── GlobalLoading.tsx        # Loading components
+    └── LogsViewerOptimized.tsx  # Optimized logs viewer
+
+backend/core/
+├── exceptions.py            # Custom exception classes
+└── ai_retry.py              # AI service retry logic
+```
+
 ## Important Notes
 
 - **Language**: The application and UI are primarily in Chinese (stock symbols, prompts, AI responses)
@@ -126,3 +192,6 @@ On backend startup (`main.py`):
 - **AI Prompts**: The system prompt is in Chinese, designed for quantitative fund manager persona
 - **Database Safety**: The app will refuse to start if `stock_watch.db` doesn't exist (prevents accidental data loss)
 - **Indicator Context**: When fetching indicators, the context includes `symbol` and `name` for parameter substitution
+- **Error Handling**: Use `showApiError()` from `lib/apiError.ts` for consistent error display
+- **Loading States**: Use `useLoading()` hook for automatic loading state management
+- **AI Resilience**: AI calls automatically retry with exponential backoff (3 attempts by default)

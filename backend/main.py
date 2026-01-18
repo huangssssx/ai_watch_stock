@@ -65,6 +65,10 @@ def ensure_db_schema():
 @app.on_event("startup")
 def startup_event():
     ensure_db_schema()
+    # 可选：自动优化数据库索引（首次运行或定期执行）
+    # from db_optimize_indexes import DatabaseIndexOptimizer
+    # optimizer = DatabaseIndexOptimizer()
+    # optimizer.optimize_all_tables()
     start_scheduler()
     restore_screener_jobs()
     start_streamlit()
