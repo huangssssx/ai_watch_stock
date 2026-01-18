@@ -1,436 +1,238 @@
 # -*- coding: utf-8 -*-
 """
-山谷狙击选股策略 V2.0 (实战工程版)
-Valley Sniper Strategy V2.0 - Production Ready
+Valley Sniper V5 - Alpha Selection System (Production Ready)
+山谷狙击 V5 - 量化选股系统 (实战部署版)
 
-【核心升级】
-1. Map-Reduce 架构: 主线程向量化初筛 + 线程池并发回测 (耗时压缩 90%)
-2. 鲁棒性增强: 指数退避重试 (Retry) + 交易日历锚点 (Trade Date Anchor)
-3. 数据工程: T+0 几何不变性数据合成 (Geometric Synthesis)
-4. 风控升级: 板块分层 (BJ剔除) + 动态环境滤网 (Regime Filter) + 微观结构修正 (IBS)
+策略核心 (The Alpha):
+    1. 动量 (Momentum): 热门板块右侧启动，K线实体阳线，拒绝杂音。
+    2. 均值回归 (Mean Reversion): 锁定底部抬高但未暴涨的蓄势区 (-10% ~ 20%)。
+    3. 流动性 (Liquidity): 聚焦中盘股 (30亿-500亿)，机构游资共舞。
+    4. 健壮性 (Robustness): 分层防御网络异常与数据真空。
 
-【使用说明】
-- 本脚本由系统自动调度，也可在本地手动运行测试。
-- 依赖: akshare, pandas, numpy, talib, scipy
+执行标准:
+    - 运行时间: 交易日 14:45 (确认收盘形态)
+    - 数据单位: 元 (CNY) / 百分比数值 (Percentage Value)
 """
 
 import akshare as ak
 import pandas as pd
-import numpy as np
-import talib
-import datetime
 import time
 import random
-import warnings
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import sys
 from functools import wraps
-from scipy.signal import argrelextrema
 
-warnings.filterwarnings("ignore")
+# --- 0. 配置参数 (Configuration) ---
+RETRY_CONFIG = {
+    'max_retries': 3,
+    'initial_delay': 1.0,
+    'backoff': 2.0
+}
 
-# --- 配置参数 ---
-MAX_WORKERS = 8  # 并发线程数
-RETRY_CONFIG = {'max_retries': 3, 'initial_delay': 1.0, 'backoff': 2.0, 'jitter': 0.5}
+# 核心 Alpha 阈值 (Hard Constraints)
+ALPHA_PARAMS = {
+    'min_pct_chg': 2.0,      # 最小涨幅 2.0% (过滤随波逐流)
+    'max_pct_chg': 6.0,      # 最大涨幅 6.0% (防炸板/透支)
+    'shadow_ratio': 0.6,     # 上影线/实体 比例上限 (防避雷针)
+    'min_trend_60': -10.0,   # 60日涨幅下限 (防下降通道)
+    'max_trend_60': 20.0,    # 60日涨幅上限 (防高位接盘)
+    'min_cap': 30 * 10**8,   # 最小流通市值 30亿 (防庄股)
+    'max_cap': 500 * 10**8,  # 最大流通市值 500亿 (防大象)
+    'min_vr': 1.5,           # 最小量比 (确认资金进场)
+    'max_vr': 6.0,           # 最大量比 (防情绪过热)
+    'min_turnover': 3.0,     # 最小换手 (确认承接)
+    'max_turnover': 15.0     # 最大换手 (防高位出货)
+}
 
-# 基础过滤参数
-MIN_TURNOVER = 1.0   # 换手率下限 %
-MAX_TURNOVER = 15.0  # 换手率上限 %
-MAX_PCT_CHG = 9.0    # 涨跌幅绝对值上限 % (避开涨停/跌停/过热)
-MIN_PRICE = 5.0      # 最低股价
+# --- 1. 健壮性模块 (Robustness Module) ---
 
-# 评分阈值 (动态调整前)
-THRESHOLD_HIGH_QUALITY = 7
-THRESHOLD_POTENTIAL = 4
+class FatalError(Exception):
+    """不可恢复的系统级错误 (如网络瘫痪)"""
+    pass
 
-# 策略参数
-MA_LONG = 60
-MA_SHORT = 20
-VWAP_WINDOW = 20
-IBS_THRESHOLD = 0.6
-VRP_WINDOW = 20
+class DataEmptyError(Exception):
+    """接口通畅但返回空数据 (如非交易日)"""
+    pass
 
-# --- 1. 工程底座 (Foundation) ---
-
-def fetch_with_retry(max_retries=3, initial_delay=1.0, backoff=2.0, jitter=0.5):
-    """装饰器：带指数退避与抖动的自动重试"""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            delay = initial_delay
-            last_exc = None
-            for i in range(max_retries + 1):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    last_exc = e
-                    if i == max_retries: break
-                    sleep_t = delay * (1 + random.uniform(-jitter, jitter))
-                    time.sleep(max(0.1, sleep_t))
-                    delay *= backoff
-            print(f"❌ [Retry] 函数 {func.__name__} 失败: {last_exc}")
-            raise last_exc
-        return wrapper
-    return decorator
-
-@fetch_with_retry(**RETRY_CONFIG)
-def get_trade_date_anchor():
-    """获取最近的一个交易日作为全局时间锚点"""
-    try:
-        # 尝试获取交易日历
-        tool_trade_date_hist_sina_df = ak.tool_trade_date_hist_sina()
-        recent_dates = pd.to_datetime(tool_trade_date_hist_sina_df['trade_date']).dt.date
-        today = datetime.date.today()
-        # 找到今天或今天之前的最近交易日
-        trade_date = recent_dates[recent_dates <= today].iloc[-1]
-        return trade_date.strftime("%Y-%m-%d")
-    except Exception:
-        # 降级方案：如果是周六日，推到周五
-        today = datetime.date.today()
-        if today.weekday() == 5: # Sat
-            return (today - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        elif today.weekday() == 6: # Sun
-            return (today - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
-        return today.strftime("%Y-%m-%d")
-
-def synthesize_realtime_data(hist_df: pd.DataFrame, spot_row: pd.Series, trade_date: str) -> pd.DataFrame:
+def fetch_market_data_with_retry():
     """
-    T+0 数据合成 (核心算法)
-    利用涨跌幅比率的几何不变性，将 Snapshot 拼接到 History
+    分层防御的数据获取函数
+    Layer 1: 网络重试 (Exponential Backoff)
+    Layer 2: 数据完整性校验 (Data Validation)
     """
-    if hist_df.empty: return hist_df
+    max_retries = RETRY_CONFIG['max_retries']
+    delay = RETRY_CONFIG['initial_delay']
     
-    # 1. 日期防重检查
-    try:
-        last_hist_date = pd.to_datetime(hist_df.iloc[-1]['日期']).strftime("%Y-%m-%d")
-    except:
-        last_hist_date = "1970-01-01"
-        
-    if last_hist_date >= trade_date:
-        # 历史数据已包含今日，或今日非交易日
-        return hist_df
-
-    # 2. 几何合成
-    last_adj_close = float(hist_df.iloc[-1]["收盘"])
-    
-    spot_pre = float(spot_row.get("昨收", 0))
-    if spot_pre == 0: return hist_df # 异常数据
-    
-    # 计算比率 (Ratios)
-    r_open = float(spot_row.get("开盘", 0)) / spot_pre
-    r_close = float(spot_row.get("最新价", 0)) / spot_pre
-    r_high = float(spot_row.get("最高", 0)) / spot_pre
-    r_low = float(spot_row.get("最低", 0)) / spot_pre
-    
-    # 推导今日复权价
-    new_row = {
-        "日期": trade_date,
-        "开盘": last_adj_close * r_open,
-        "收盘": last_adj_close * r_close,
-        "最高": last_adj_close * r_high,
-        "最低": last_adj_close * r_low,
-        "成交量": float(spot_row.get("成交量", 0)),
-        "成交额": float(spot_row.get("成交额", 0)),
-        "换手率": float(spot_row.get("换手率", 0))
-    }
-    
-    # 3. 拼接
-    return pd.concat([hist_df, pd.DataFrame([new_row])], ignore_index=True)
-
-# --- 2. 策略逻辑 (Logic) ---
-
-def _kalman_filter_1d(values: pd.Series, q=1e-5, r_scale=0.20):
-    """Kalman 降噪"""
-    v = values.values
-    if len(v) == 0: return values
-    x = v[0]
-    p = 1.0
-    out = np.empty_like(v)
-    for i in range(len(v)):
-        p += q
-        k = p / (p + r_scale)
-        x += k * (v[i] - x)
-        p *= (1 - k)
-        out[i] = x
-    return pd.Series(out, index=values.index)
-
-def calculate_ibs(close, high, low):
-    """Internal Bar Strength"""
-    rng = high - low
-    if rng == 0: return 0.5 # 边界保护：一字板/停牌视为中性
-    return (close - low) / rng
-
-def check_market_regime():
-    """大盘环境滤网"""
-    try:
-        # 获取上证指数
-        idx_df = ak.stock_zh_index_daily(symbol="sh000001")
-        if idx_df.empty: return 0
-        
-        close = idx_df['close']
-        ma20 = close.rolling(20).mean()
-        ma60 = close.rolling(60).mean()
-        
-        curr_p = close.iloc[-1]
-        curr_ma20 = ma20.iloc[-1]
-        curr_ma60 = ma60.iloc[-1]
-        
-        penalty = 0
-        if curr_p < curr_ma20:
-            penalty += 1 # 黄灯
-        if curr_p < curr_ma60:
-            penalty += 1 # 红灯 (累积+2)
+    for i in range(max_retries + 1):
+        try:
+            print(f"📡 正在获取全市场行情 (尝试 {i+1}/{max_retries+1})...")
+            # 获取全市场实时行情
+            df = ak.stock_zh_a_spot_em()
             
-        return penalty
-    except:
-        return 0 # 获取失败默认正常
-
-def process_single_stock(code, name, spot_row, trade_date, threshold_adj):
-    """
-    Reduce 阶段：单只股票深度分析
-    """
-    try:
-        # 1. 拉取历史数据 (QFQ)
-        df_hist = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
-        if df_hist is None or df_hist.empty or len(df_hist) < 250: # 次新股过滤
-            return None
-            
-        # 2. T+0 数据合成
-        df = synthesize_realtime_data(df_hist, spot_row, trade_date)
-        if len(df) < 250: return None
-        
-        # 3. 准备数据序列
-        close = df["收盘"]
-        high = df["最高"]
-        low = df["最低"]
-        vol = df["成交量"]
-        
-        curr_price = close.iloc[-1]
-        
-        score = 0
-        signals = []
-        
-        # --- A. 成本与趋势 (Cost & Trend) ---
-        ma60 = close.rolling(60).mean()
-        # VWAP 20 (简易计算: Amount/Vol 近似为 Close*Vol/Vol = Close 的加权)
-        # 准确 VWAP 需要 Amount, 这里用典型价格近似
-        typ_price = (high + low + close) / 3
-        vwap20 = (typ_price * vol).rolling(20).sum() / vol.rolling(20).sum()
-        
-        curr_ma60 = ma60.iloc[-1]
-        curr_vwap = vwap20.iloc[-1]
-        prev_vwap = vwap20.iloc[-2]
-        
-        # 成本支撑逻辑: 必须在 VWAP 之上 或 VWAP 拐头向上
-        cost_support = (curr_price > curr_vwap) or (curr_vwap > prev_vwap)
-        
-        # BIAS 保护: 如果离 MA60 太远 (深跌), 必须有强力底背离才行
-        bias60 = (curr_price - curr_ma60) / curr_ma60
-        is_deep_fall = bias60 < -0.20
-        
-        if not cost_support:
-            return None # 连短期成本都站不稳，直接放弃
-            
-        # --- B. 策略打分 (Scoring) ---
-        
-        # 1. 缩量 (Volume)
-        vol5_med = vol.iloc[-5:].median()
-        vol120_quantile = vol.iloc[-120:].rank(pct=True).iloc[-1] # 当前量在120天分位
-        
-        # 动态缩量分: 市值越大要求越松 (此处简化，统一逻辑)
-        if vol.iloc[-1] < vol.rolling(20).mean().iloc[-1]: # 今日缩量
-            if vol120_quantile < 0.15:
-                score += 3
-                signals.append(f"极缩量({int(vol120_quantile*100)}%)")
-            elif vol120_quantile < 0.25:
-                score += 1
-                signals.append("缩量")
+            # Layer 2: 校验层
+            if df is None or df.empty:
+                raise DataEmptyError("接口返回数据为空")
                 
-        # 2. VRP (恐慌溢价)
-        ret = close.pct_change()
-        rv = ret.rolling(5).std()
-        iv_proxy = ret.rolling(VRP_WINDOW).std()
-        vrp = iv_proxy - rv
-        # VRP 分位
-        vrp_rank = vrp.rolling(120).rank(pct=True).iloc[-1]
-        if vrp_rank > 0.8:
-            score += 2
-            signals.append("VRP恐慌")
+            # 检查关键字段是否存在 (防止接口变动)
+            required_cols = ['代码', '名称', '最新价', '涨跌幅', '最高', '今开', '流通市值', '60日涨跌幅', '量比', '换手率']
+            missing = [col for col in required_cols if col not in df.columns]
+            if missing:
+                raise ValueError(f"缺失关键字段: {missing}")
+                
+            print(f"✅ 数据获取成功: {len(df)} 条记录")
+            return df
             
-        # 3. Kalman MACD/RSI (背离)
-        smooth_c = _kalman_filter_1d(close)
-        
-        # MACD
-        dif, dea, macd_bar = talib.MACD(smooth_c.values)
-        # 简单底背离检测: 价格新低(近20天) 但 MACD 未新低
-        low_20 = close.rolling(20).min().iloc[-1]
-        macd_low_20 = pd.Series(dif).rolling(20).min().iloc[-1]
-        
-        if close.iloc[-1] <= low_20 * 1.02 and dif[-1] > macd_low_20:
-             # 二次确认: 金叉或即将金叉
-             if macd_bar[-1] > macd_bar[-2]:
-                 score += 3
-                 signals.append("MACD背离")
-        
-        # RSI
-        rsi = talib.RSI(smooth_c.values, timeperiod=14)
-        if rsi[-1] < 30:
-            score += 1
-            signals.append("RSI超卖")
-        elif rsi[-1] < 45 and rsi[-1] > rsi[-2]: # 低位回升
-            score += 1
+        except (DataEmptyError, ValueError) as e:
+            # 数据逻辑错误，重试可能无效，但为了稳健仍可重试或直接抛出
+            # 这里选择直接抛出，因为字段缺失重试通常没用
+            print(f"❌ 数据校验失败: {e}")
+            if isinstance(e, DataEmptyError) and i < max_retries:
+                time.sleep(delay)
+                delay *= RETRY_CONFIG['backoff']
+                continue
+            raise FatalError(f"数据校验未通过: {e}")
             
-        # 4. 微观结构 IBS (资金承接)
-        ibs = calculate_ibs(close.iloc[-1], high.iloc[-1], low.iloc[-1])
-        ma5_vol = vol.rolling(5).mean().iloc[-1]
-        if ibs > 0.6 and vol.iloc[-1] > ma5_vol:
-            score += 2
-            signals.append("资金承接")
+        except Exception as e:
+            # 网络/连接错误，进行指数退避重试
+            print(f"⚠️ 网络/接口异常: {e}")
+            if i == max_retries:
+                raise FatalError(f"重试耗尽，系统终止: {e}")
             
-        # 5. MA60 奖励 (右侧确认)
-        if curr_price > curr_ma60:
-            score += 1
-            signals.append("站上生命线")
-            
-        # 6. 深跌保护逻辑校验
-        if is_deep_fall:
-            # 深跌时，必须有 MACD 背离 或 VRP 恐慌 才能入选
-            if not ("MACD背离" in signals or "VRP恐慌" in signals):
-                return None
+            sleep_time = delay * (1 + random.uniform(-0.1, 0.1)) # Add Jitter
+            print(f"⏳ 等待 {sleep_time:.1f}s 后重试...")
+            time.sleep(sleep_time)
+            delay *= RETRY_CONFIG['backoff']
 
-        # --- C. 结果组装 ---
-        final_threshold = THRESHOLD_POTENTIAL + threshold_adj
-        
-        if score >= final_threshold:
-            return {
-                "代码": code,
-                "名称": name,
-                "现价": float(spot_row["最新价"]),
-                "涨跌%": float(spot_row["涨跌幅"]),
-                "评分": score,
-                "IBS": round(ibs, 2),
-                "VRP分位": round(vrp_rank, 2),
-                "缩量分位": round(vol120_quantile, 2),
-                "BIAS60": round(bias60, 2),
-                "信号": "+".join(signals)
-            }
-            
-    except Exception as e:
-        # print(f"Error processing {code}: {e}")
-        return None
-    return None
+# --- 2. 策略核心逻辑 (Alpha Logic) ---
 
-# --- 3. Map 阶段 (Map) ---
-
-@fetch_with_retry(**RETRY_CONFIG)
-def get_candidates():
-    """全市场快照与向量化初筛"""
-    print("📡 Map阶段: 获取全市场快照...")
-    df = ak.stock_zh_a_spot_em()
+def run_valley_sniper(df):
+    """
+    执行 5 重 Alpha 因子过滤
+    Trader's Note: 严格执行，宁缺毋滥。
+    """
+    print("\n🔍 开始执行 Valley Sniper V5 策略扫描...")
     
-    total = len(df)
+    # 0. 数据预处理 (Data Cleaning)
+    # 确保数值列类型正确，处理 '-' 或 NaN
+    numeric_cols = ['最新价', '涨跌幅', '最高', '今开', '流通市值', '60日涨跌幅', '量比', '换手率']
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    # 1. 板块过滤 (剔除 BJ/8/4/9)
-    # 兼容: 代码列可能叫 '代码' 或 'code'
-    code_col = '代码' if '代码' in df.columns else 'code'
-    df[code_col] = df[code_col].astype(str)
+    # 剔除无法计算的行 (NaN)
+    df.dropna(subset=numeric_cols, inplace=True)
     
-    mask_bj = df[code_col].str.match(r'^(8|4|9|bj)')
-    df = df[~mask_bj]
+    initial_count = len(df)
     
-    # 2. ST 过滤
-    name_col = '名称' if '名称' in df.columns else 'name'
-    mask_st = df[name_col].str.contains('ST|退', na=False)
-    df = df[~mask_st]
-    
-    # 3. 流动性与价格过滤
-    # 确保数值列为 float
-    num_cols = ['最新价', '涨跌幅', '换手率', '成交量', '成交额', '最高', '最低', '开盘', '昨收']
-    for col in num_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-    mask_valid = (
-        (df['换手率'] > MIN_TURNOVER) & 
-        (df['换手率'] < MAX_TURNOVER) & 
-        (df['最新价'] >= MIN_PRICE) & 
-        (df['涨跌幅'].abs() < MAX_PCT_CHG)
+    # 1. 基础清洗 (Basic Filter)
+    # 剔除 ST, 退市, 北交所 (8/4/92开头)
+    mask_basic = (
+        (~df['名称'].str.contains('ST|退')) &
+        (~df['代码'].str.match(r'^(8|4|92)'))
     )
-    df = df[mask_valid]
+    df = df[mask_basic]
+    print(f"1️⃣ 基础清洗: {initial_count} -> {len(df)} (剔除ST/北交所)")
     
-    print(f"🧹 清洗完成: {total} -> {len(df)} (剔除北交所/ST/僵尸股/涨停股)")
+    # 2. 涨跌幅门槛 (Price Change)
+    # Trader's Note: 2% < chg < 6%
+    # < 2%: 没启动，随波逐流，浪费时间。
+    # > 6%: 接近涨停或炸板风险区，盈亏比下降。
+    mask_price = (
+        (df['涨跌幅'] > ALPHA_PARAMS['min_pct_chg']) &
+        (df['涨跌幅'] < ALPHA_PARAMS['max_pct_chg'])
+    )
+    df = df[mask_price]
+    print(f"2️⃣ 涨跌幅过滤: -> {len(df)} (保留 {ALPHA_PARAMS['min_pct_chg']}% - {ALPHA_PARAMS['max_pct_chg']}%)")
+    
+    # 3. K线形态 (Candlestick Pattern)
+    # Trader's Note: 必须是实体阳线 (Close > Open)。
+    # 且上影线不能太长 (High - Close < Entity * 0.6)。
+    # 拒绝十字星 (犹豫)，拒绝避雷针 (抛压大)。
+    entity = df['最新价'] - df['今开']
+    upper_shadow = df['最高'] - df['最新价']
+    
+    mask_kline = (
+        (df['最新价'] > df['今开']) & # 严格阳线
+        (upper_shadow < entity * ALPHA_PARAMS['shadow_ratio']) # 上影线约束
+    )
+    df = df[mask_kline]
+    print(f"3️⃣ K线形态: -> {len(df)} (实体阳线 + 短上影)")
+    
+    # 4. 趋势与位置 (Trend & Position)
+    # Trader's Note: -10% < 60日涨幅 < 20%
+    # < -10%: 趋势坏了，那是接飞刀。
+    # > 20%: 涨多了，空间有限。
+    # 我们要找的是“横盘震荡”或“缓慢爬升”的蓄势股。
+    mask_trend = (
+        (df['60日涨跌幅'] > ALPHA_PARAMS['min_trend_60']) &
+        (df['60日涨跌幅'] < ALPHA_PARAMS['max_trend_60'])
+    )
+    df = df[mask_trend]
+    print(f"4️⃣ 趋势位置: -> {len(df)} (60日涨幅 {ALPHA_PARAMS['min_trend_60']}% - {ALPHA_PARAMS['max_trend_60']}%)")
+    
+    # 5. 资金性质 (Liquidity & Activity)
+    # Trader's Note: 
+    # 市值 30-500亿: 机构游资战场。
+    # 量比 1.5-6.0: 有资金进，但别太疯狂。
+    # 换手 3-15%: 活跃承接。
+    mask_money = (
+        (df['流通市值'] > ALPHA_PARAMS['min_cap']) &
+        (df['流通市值'] < ALPHA_PARAMS['max_cap']) &
+        (df['量比'] > ALPHA_PARAMS['min_vr']) &
+        (df['量比'] < ALPHA_PARAMS['max_vr']) &
+        (df['换手率'] > ALPHA_PARAMS['min_turnover']) &
+        (df['换手率'] < ALPHA_PARAMS['max_turnover'])
+    )
+    df = df[mask_money]
+    print(f"5️⃣ 资金筛选: -> {len(df)} (市值/量比/换手 Alpha)")
+    
     return df
 
-# --- 主程序 ---
+# --- 3. 主程序 (Main) ---
 
 def main():
-    print(f"🚀 山谷狙击 V2.0 启动 | 线程数: {MAX_WORKERS}")
-    
-    # 1. 获取时间锚点
-    trade_date = get_trade_date_anchor()
-    print(f"📅 交易日锚点: {trade_date}")
-    
-    # 2. 检查大盘环境 (Regime)
-    threshold_adj = check_market_regime()
-    regime_msg = ["绿灯 (正常)", "黄灯 (回调 +1)", "红灯 (深跌 +2)"][min(threshold_adj, 2)]
-    print(f"🌡️ 市场环境: {regime_msg}")
-    
-    # 3. Map
-    candidates = get_candidates()
-    if candidates.empty:
-        print("⚠️ 候选池为空，结束运行。")
-        return pd.DataFrame(), []
+    print("🚀 Valley Sniper V5 启动...")
+    try:
+        # Step 1: 获取数据
+        df = fetch_market_data_with_retry()
+        
+        # Step 2: 核心策略
+        result_df = run_valley_sniper(df)
+        
+        # Step 3: 结果展示
+        print("\n" + "="*60)
+        if result_df.empty:
+            # Trader's Note: 空仓也是一种交易。
+            print("⚠️ 今日无符合策略标的 (No Alpha Found)")
+            print("💡 操盘建议: 空仓观察，不要强行出击。")
+        else:
+            print(f"🎯 狙击命中: {len(result_df)} 只标的")
+            print("="*60)
+            
+            # 格式化输出
+            output_cols = ['代码', '名称', '最新价', '涨跌幅', '流通市值', '60日涨跌幅', '量比', '换手率']
+            
+            # 简单美化
+            display_df = result_df[output_cols].copy()
+            display_df['最新价'] = display_df['最新价'].round(2)
+            display_df['涨跌幅'] = display_df['涨跌幅'].apply(lambda x: f"{x:.2f}%")
+            display_df['流通市值'] = display_df['流通市值'].apply(lambda x: f"{x/10**8:.1f}亿")
+            display_df['60日涨跌幅'] = display_df['60日涨跌幅'].apply(lambda x: f"{x:.2f}%")
+            display_df['量比'] = display_df['量比'].round(2)
+            display_df['换手率'] = display_df['换手率'].apply(lambda x: f"{x:.2f}%")
+            
+            # 按综合评分排序 (这里简单按量比排序，代表资金强度)
+            display_df = display_df.sort_values(by='量比', ascending=False)
+            
+            print(display_df.to_string(index=False))
+            print("\n💡 操盘建议: 重点关注前排个股，结合板块效应决策。")
+            
+    except FatalError as e:
+        print(f"\n❌ 程序终止: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ 未知错误: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
-    # 4. Reduce
-    results = []
-    print(f"⚡ Reduce阶段: 并发回测 {len(candidates)} 只标的...")
-    
-    start_time = time.time()
-    
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = []
-        for _, row in candidates.iterrows():
-            futures.append(
-                executor.submit(
-                    process_single_stock, 
-                    row['代码'], row['名称'], row, trade_date, threshold_adj
-                )
-            )
-        
-        # 进度条
-        count = 0
-        total = len(futures)
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                results.append(res)
-            count += 1
-            if count % 50 == 0:
-                print(f"进度: {count}/{total}...")
-                
-    elapsed = time.time() - start_time
-    print(f"\n✅ 运行耗时: {elapsed:.1f}s | 命中: {len(results)} 只")
-    
-    # 5. 输出
-    df_res = pd.DataFrame(results)
-    if not df_res.empty:
-        df_res = df_res.sort_values(by="评分", ascending=False)
-        
-        print("\n" + "="*50)
-        print(f"🌟 【严选榜】 (评分>={THRESHOLD_HIGH_QUALITY + threshold_adj})")
-        print("="*50)
-        high_q = df_res[df_res["评分"] >= (THRESHOLD_HIGH_QUALITY + threshold_adj)]
-        print(high_q.to_string(index=False) if not high_q.empty else "暂无")
-        
-        print("\n" + "-"*50)
-        print(f"👀 【潜力榜】 (评分>={THRESHOLD_POTENTIAL + threshold_adj})")
-        print("-"*50)
-        pot = df_res[(df_res["评分"] >= (THRESHOLD_POTENTIAL + threshold_adj)) & 
-                     (df_res["评分"] < (THRESHOLD_HIGH_QUALITY + threshold_adj))]
-        print(pot.head(50).to_string(index=False) if not pot.empty else "暂无")
-        
-        return df_res, results
-    else:
-        print("未发现符合条件的股票")
-        return pd.DataFrame(), []
-
-df, result = main()
+if __name__ == "__main__":
+    main()
