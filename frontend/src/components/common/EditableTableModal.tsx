@@ -279,3 +279,4 @@ export function EditableTableModal<T extends EditableItem>({
     </Modal>
   );
 }
+
