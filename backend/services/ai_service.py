@@ -3,6 +3,12 @@ import json
 from typing import Dict, Any, Optional, Tuple
 
 class AIService:
+    def _truncate_text(self, text: str, limit: int = 2000) -> str:
+        normalized = text or ""
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[:limit]
+
     def _should_embed_system_prompt_in_user(self, ai_config: Dict[str, Any]) -> bool:
         base_url = (ai_config.get("base_url") or "").strip().lower()
         if not base_url:
@@ -24,7 +30,27 @@ class AIService:
             "3. 风控：任何开仓建议必须包含止损位。\n"
             "\n\n"
             "【输出要求】\n"
-            "请严格只输出一个合法的 JSON 对象，不要包含 Markdown 代码块标记（如 ```json），格式如下：\n"
+            "你必须只输出一个合法的 JSON 对象（RFC8259）。输出必须以 { 开始、以 } 结束。\n"
+            "禁止输出任何非 JSON 内容：禁止 Markdown、禁止代码块标记、禁止解释、禁止前后缀、禁止多余换行或多段输出。\n"
+            "字符串必须使用双引号，禁止单引号；禁止尾随逗号；禁止 NaN/Infinity。\n"
+            "必须包含且仅包含以下顶层字段：type, signal, action_advice, suggested_position, duration, support_pressure, stop_loss_price, message。\n"
+            "support_pressure 必须是对象，且只包含 support 与 pressure。\n"
+            "\n"
+            "如果你无法严格按要求输出（例如信息不足/计算失败/格式不确定），也必须输出合法 JSON，且按下面的兜底模板返回，不允许输出其他任何内容。\n"
+            "\n"
+            "兜底模板（请原样输出字段名，仅替换内容）：\n"
+            "{\n"
+            "  \"type\": \"error\",\n"
+            "  \"signal\": \"WAIT\",\n"
+            "  \"action_advice\": \"观望\",\n"
+            "  \"suggested_position\": \"0成仓\",\n"
+            "  \"duration\": \"-\",\n"
+            "  \"support_pressure\": {\"support\": \"-\", \"pressure\": \"-\"},\n"
+            "  \"stop_loss_price\": \"-\",\n"
+            "  \"message\": \"输出受限：请仅返回合法 JSON 对象\"\n"
+            "}\n"
+            "\n"
+            "正常输出格式如下（示例）：\n"
             "{\n"
             "  \"type\": \"info\",\n"
             "  \"signal\": \"STRONG_BUY\",\n"
@@ -83,7 +109,7 @@ class AIService:
                 
             )
             
-            content = response.choices[0].message.content
+            content = response.choices[0].message.content or ""
             
             try:
                 # Clean markdown code blocks if present
@@ -95,11 +121,16 @@ class AIService:
                     result["signal"] = "WAIT"
                     
                 return result, content
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                clean_content = (content or "").replace("```json", "").replace("```", "").strip()
+                raw_head = self._truncate_text(clean_content, 500)
+                msg = f"AI returned invalid JSON ({str(e)}). raw_head={raw_head}"
                 return {
                     "type": "error", 
-                    "message": "AI returned invalid JSON",
-                    "signal": "WAIT"
+                    "message": msg,
+                    "signal": "WAIT",
+                    "parse_error": str(e),
+                    "raw_response": clean_content,
                 }, content
                 
         except Exception as e:
@@ -126,7 +157,7 @@ class AIService:
                 temperature=ai_config.get("temperature", 0.1),
             )
             
-            content = response.choices[0].message.content
+            content = response.choices[0].message.content or ""
             
             try:
                 clean_content = content.replace("```json", "").replace("```", "").strip()
@@ -136,11 +167,16 @@ class AIService:
                     result["signal"] = "WAIT"
                     
                 return result, content, {"system_prompt": system_prompt, "user_prompt": user_content}
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                clean_content = (content or "").replace("```json", "").replace("```", "").strip()
+                raw_head = self._truncate_text(clean_content, 500)
+                msg = f"AI returned invalid JSON ({str(e)}). raw_head={raw_head}"
                 return {
                     "type": "error", 
-                    "message": "AI returned invalid JSON",
-                    "signal": "WAIT"
+                    "message": msg,
+                    "signal": "WAIT",
+                    "parse_error": str(e),
+                    "raw_response": clean_content,
                 }, content, {"system_prompt": system_prompt, "user_prompt": user_content}
                 
         except Exception as e:

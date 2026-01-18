@@ -297,22 +297,42 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       dataIndex: ['ai_analysis', 'message'],
       key: 'message',
       width: 200,
-      render: (text) => (
-        <Tooltip title={text} placement="topLeft" overlayStyle={{ maxWidth: 500 }}>
-          <div style={{
-            display: '-webkit-box',
-            WebkitLineClamp: 3,
-            WebkitBoxOrient: 'vertical',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            wordBreak: 'break-word',
-            whiteSpace: 'normal',
-            cursor: 'help'
-          }}>
-            {text}
-          </div>
-        </Tooltip>
-      )
+      render: (text, record) => {
+        const rawFromAiAnalysis = typeof record.ai_analysis?.raw_response === 'string' ? record.ai_analysis.raw_response : '';
+        const parseError = typeof record.ai_analysis?.parse_error === 'string' ? record.ai_analysis.parse_error : '';
+        const hasRaw = Boolean(rawFromAiAnalysis);
+        const detailText = parseError ? `parse_error: ${parseError}\n\nraw_response:\n${rawFromAiAnalysis}` : rawFromAiAnalysis;
+
+        return (
+          <Space direction="vertical" size={0}>
+            <Tooltip title={text} placement="topLeft" overlayStyle={{ maxWidth: 500 }}>
+              <div style={{
+                display: '-webkit-box',
+                WebkitLineClamp: 3,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                wordBreak: 'break-word',
+                whiteSpace: 'normal',
+                cursor: 'help'
+              }}>
+                {text}
+              </div>
+            </Tooltip>
+
+            {hasRaw ? (
+              <Button
+                type="link"
+                size="small"
+                style={{ padding: 0, height: 'auto' }}
+                onClick={() => openDetailModal(`解析失败原文：${record.stock?.symbol ?? record.stock_id}`, detailText)}
+              >
+                查看原文
+              </Button>
+            ) : null}
+          </Space>
+        );
+      }
     },
     {
       title: 'AI 原始返回',
@@ -320,10 +340,12 @@ const LogsViewer: React.FC<Props> = ({ stockId }) => {
       key: 'ai_response',
       width: 200,
       render: (text, record) => {
-        const previewText = text?.length > 100 ? text.slice(0, 100) + '...' : (text ?? '');
+        const rawFromAiAnalysis = typeof record.ai_analysis?.raw_response === 'string' ? record.ai_analysis.raw_response : '';
+        const displayText = (text && String(text)) || rawFromAiAnalysis || '';
+        const previewText = displayText.length > 100 ? displayText.slice(0, 100) + '...' : displayText;
         return (
           <Space direction="vertical" size={0}>
-            <Button type="link" size="small" onClick={() => openDetailModal(`AI 原始返回：${record.stock?.symbol ?? record.stock_id}`, text)}>
+            <Button type="link" size="small" onClick={() => openDetailModal(`AI 原始返回：${record.stock?.symbol ?? record.stock_id}`, displayText)}>
               查看完整
             </Button>
             <div style={{
