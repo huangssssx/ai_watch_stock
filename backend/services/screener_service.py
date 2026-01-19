@@ -22,8 +22,10 @@ def execute_screener_script(script_content: str):
     
     # Helper for simple printing to log
     log_buffer = []
-    def log(*args):
-        msg = " ".join(map(str, args))
+    def log(*args, **kwargs):
+        sep = kwargs.get('sep', ' ')
+        msg = sep.join(map(str, args))
+        # Ignore 'end' and 'file' kwargs as we just append to list
         log_buffer.append(msg)
     
     local_scope["print"] = log
