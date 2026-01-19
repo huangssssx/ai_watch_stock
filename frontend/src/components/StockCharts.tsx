@@ -59,6 +59,7 @@ const ChartContainer: React.FC<ChartContainerProps> = ({ children }) => {
 const StockCharts: React.FC<StockChartsProps> = ({ stocks, active }) => {
   const navigate = useNavigate();
   const [dataMap, setDataMap] = useState<Record<string, StockPricePoint[]>>({});
+  const [infoMap, setInfoMap] = useState<Record<string, { prev_close?: number | null }>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
 
   const fetchData = useCallback(() => {
@@ -68,6 +69,7 @@ const StockCharts: React.FC<StockChartsProps> = ({ stocks, active }) => {
         const res = await getStockDaily(stock.symbol);
         if (res.data.ok && res.data.data) {
           setDataMap(prev => ({ ...prev, [stock.symbol]: res.data.data ?? [] }));
+          setInfoMap(prev => ({ ...prev, [stock.symbol]: { prev_close: res.data.info?.prev_close } }));
         }
       } catch (e) {
         console.error(e);
@@ -96,7 +98,10 @@ const StockCharts: React.FC<StockChartsProps> = ({ stocks, active }) => {
       {stocks.map(stock => {
         const data = dataMap[stock.symbol] || [];
         const lastPrice = data.length ? data[data.length - 1].close : 0;
-        const firstPrice = data.length ? data[0].open : lastPrice; // Use open price of the day as base
+        const prevClose = infoMap[stock.symbol]?.prev_close;
+        const firstPrice = data.length
+          ? (typeof prevClose === 'number' && Number.isFinite(prevClose) && prevClose > 0 ? prevClose : data[0].open)
+          : lastPrice;
         const change = lastPrice - firstPrice;
         const percent = firstPrice ? (change / firstPrice) * 100 : 0;
         const color = change >= 0 ? '#cf1322' : '#3f8600'; // Red up, Green down (China style)

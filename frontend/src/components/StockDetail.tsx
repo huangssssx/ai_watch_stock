@@ -59,6 +59,7 @@ const StockDetail: React.FC = () => {
   const [period, setPeriod] = useState<string>('intraday'); // intraday, daily, weekly, monthly
   const [data, setData] = useState<StockPricePoint[]>([]);
   const [loading, setLoading] = useState(false);
+  const [intradayPrevClose, setIntradayPrevClose] = useState<number | null>(null);
   const state = (location.state ?? {}) as Partial<{ stockName: string; returnTo: string }>;
   const [stockName, setStockName] = useState(state.stockName ?? '');
 
@@ -89,11 +90,21 @@ const StockDetail: React.FC = () => {
       
       if (res.data.ok && res.data.data) {
         setData(res.data.data);
+        if (period === 'intraday') {
+          const prevClose = (res as Awaited<ReturnType<typeof getStockDaily>>).data.info?.prev_close;
+          setIntradayPrevClose(
+            typeof prevClose === 'number' && Number.isFinite(prevClose) && prevClose > 0 ? prevClose : null,
+          );
+        } else {
+          setIntradayPrevClose(null);
+        }
       } else {
         setData([]);
+        setIntradayPrevClose(null);
       }
     } catch (e) {
       console.error(e);
+      setIntradayPrevClose(null);
     } finally {
       setLoading(false);
     }
@@ -113,8 +124,11 @@ const StockDetail: React.FC = () => {
   }, [data]);
 
   const lastPrice = data.length ? data[data.length - 1].close : 0;
-  const firstPrice = data.length ? (period === 'intraday' ? data[0].open : data[data.length - 2]?.close || data[0].open) : 0;
-  // For K-line, change is vs previous close. For intraday, vs open (or pre-close if available, but here open is approx)
+  const firstPrice = data.length
+    ? (period === 'intraday'
+        ? (intradayPrevClose ?? data[0].open)
+        : data[data.length - 2]?.close || data[0].open)
+    : 0;
   
   const change = lastPrice - firstPrice;
   const percent = firstPrice ? (change / firstPrice) * 100 : 0;

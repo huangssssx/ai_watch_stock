@@ -29,7 +29,20 @@ export const testRunStock = (id: number, options?: { send_alerts?: boolean; bypa
   api.post<StockTestRunResponse>(`/stocks/${id}/test-run`, undefined, { params: options });
 
 export const getStockDaily = (symbol: string) =>
-  api.get<{ ok: boolean; data?: StockPricePoint[]; error?: string }>(`/stocks/${symbol}/daily`);
+  api.get<{
+    ok: boolean;
+    data?: StockPricePoint[];
+    info?: {
+      date?: string;
+      symbol?: string;
+      prev_close?: number | null;
+      open?: number | null;
+      price?: number | null;
+      pct_change?: number | null;
+      change?: number | null;
+    };
+    error?: string;
+  }>(`/stocks/${symbol}/daily`);
 export const getStockHistory = (symbol: string, period: string = 'daily') =>
   api.get<{ ok: boolean; data?: StockPricePoint[]; error?: string }>(`/stocks/${symbol}/history`, { params: { period } });
 

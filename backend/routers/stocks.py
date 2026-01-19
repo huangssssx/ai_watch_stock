@@ -8,8 +8,58 @@ import json
 import datetime
 from services.monitor_service import process_stock, update_stock_job, analyze_stock_manual, fetch_stock_indicators_data
 import akshare as ak
+import time
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
+
+_spot_cache = {"ts": 0.0, "df": None}
+
+
+def _to_float(v):
+    try:
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        fv = float(v)
+        if fv != fv:
+            return None
+        return fv
+    except Exception:
+        return None
+
+
+def _get_spot_df():
+    now = time.time()
+    df = _spot_cache.get("df", None)
+    ts = float(_spot_cache.get("ts", 0.0) or 0.0)
+    if df is not None and (now - ts) <= 10.0:
+        return df
+    df = ak.stock_zh_a_spot_em()
+    _spot_cache["df"] = df
+    _spot_cache["ts"] = now
+    return df
+
+
+def _get_spot_info(clean_symbol: str):
+    try:
+        df = _get_spot_df()
+        if df is None or getattr(df, "empty", True):
+            return {}
+        rows = df[df["代码"].astype(str) == str(clean_symbol)]
+        if rows is None or getattr(rows, "empty", True):
+            return {}
+        row = rows.iloc[0]
+        return {
+            "price": _to_float(row.get("最新价", None)),
+            "prev_close": _to_float(row.get("昨收", None)),
+            "open": _to_float(row.get("今开", None)),
+            "pct_change": _to_float(row.get("涨跌幅", None)),
+            "change": _to_float(row.get("涨跌额", None)),
+        }
+    except Exception:
+        return {}
+
 
 @router.get("/", response_model=List[schemas.Stock])
 def read_stocks(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
@@ -226,11 +276,13 @@ def get_stock_daily_data(symbol: str):
         # Clean symbol (remove sh/sz prefix if exists)
         clean_symbol = symbol.lower().replace("sh", "").replace("sz", "")
         
+        spot_info = _get_spot_info(clean_symbol)
+
         # Fetch minute data (period='1' means 1-minute interval)
         # adjust='qfq' is usually good, but for intraday pure price might be better? 
         # Actually for intraday comparison, qfq is fine or no adjust.
         # stock_zh_a_hist_min_em returns recent data.
-        df = ak.stock_zh_a_hist_min_em(symbol=clean_symbol, period='1', adjust='qfq')
+        df = ak.stock_zh_a_hist_min_em(symbol=clean_symbol, period='1', adjust='')
         
         if df is None or df.empty:
             return {"ok": False, "error": "No data found"}
@@ -240,7 +292,16 @@ def get_stock_daily_data(symbol: str):
         last_dt = df.iloc[-1]['时间']
         last_date_str = last_dt.split(" ")[0]
         today_data = df[df['时间'].str.startswith(last_date_str)]
-        
+
+        prev_close = spot_info.get("prev_close", None)
+        if prev_close is None:
+            try:
+                prev_rows = df[~df["时间"].str.startswith(last_date_str)]
+                if prev_rows is not None and not prev_rows.empty:
+                    prev_close = _to_float(prev_rows.iloc[-1].get("收盘", None))
+            except Exception:
+                prev_close = None
+
         # Format columns
         # akshare returns: 时间, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 均价
         result = []
@@ -252,12 +313,12 @@ def get_stock_daily_data(symbol: str):
             result.append({
                 "date": dt_str,      # Full datetime for reference
                 "time": time_str,    # HH:MM for X-axis
-                "open": row["开盘"],
-                "close": row["收盘"],
-                "high": row["最高"],
-                "low": row["最低"],
-                "volume": row["成交量"],
-                "avg": row["均价"]
+                "open": _to_float(row.get("开盘", None)),
+                "close": _to_float(row.get("收盘", None)),
+                "high": _to_float(row.get("最高", None)),
+                "low": _to_float(row.get("最低", None)),
+                "volume": _to_float(row.get("成交量", None)),
+                "avg": _to_float(row.get("均价", None)),
             })
             
         return {
@@ -265,7 +326,12 @@ def get_stock_daily_data(symbol: str):
             "data": result, 
             "info": {
                 "date": last_date_str,
-                "symbol": symbol
+                "symbol": symbol,
+                "prev_close": prev_close,
+                "open": spot_info.get("open", None),
+                "price": spot_info.get("price", None),
+                "pct_change": spot_info.get("pct_change", None),
+                "change": spot_info.get("change", None),
             }
         }
         
@@ -296,7 +362,7 @@ def get_stock_history_data(symbol: str, period: str = "daily"):
             period=period, 
             start_date=start_date, 
             end_date=end_date, 
-            adjust="qfq"
+            adjust=""
         )
         
         if df is None or df.empty:
@@ -306,11 +372,11 @@ def get_stock_history_data(symbol: str, period: str = "daily"):
         for _, row in df.iterrows():
             result.append({
                 "date": row["日期"],
-                "open": row["开盘"],
-                "close": row["收盘"],
-                "high": row["最高"],
-                "low": row["最低"],
-                "volume": row["成交量"]
+                "open": _to_float(row.get("开盘", None)),
+                "close": _to_float(row.get("收盘", None)),
+                "high": _to_float(row.get("最高", None)),
+                "low": _to_float(row.get("最低", None)),
+                "volume": _to_float(row.get("成交量", None)),
             })
             
         return {"ok": True, "data": result}
