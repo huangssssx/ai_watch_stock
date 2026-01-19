@@ -17,6 +17,27 @@ def get_rpp(close, high_60, low_60):
     if high_60 == low_60: return 0.5
     return (close - low_60) / (high_60 - low_60)
 
+def _safe_vwap(amount, volume, current_price):
+    """
+    自适应计算 VWAP，自动修正 '手' vs '股' 的单位问题
+    """
+    if volume == 0: return current_price
+    
+    # 尝试1: 假设单位是股
+    raw_vwap = amount / volume
+    
+    # 检查数量级差异
+    if current_price > 0:
+        ratio = raw_vwap / current_price
+        if 80 < ratio < 120: # 偏差约100倍，说明 Volume 是手 (Amount是元, Vol是手) -> 需除以100
+            return raw_vwap / 100.0
+        elif 0.8 < ratio < 1.2: # 偏差不大，说明 Volume 是股
+            return raw_vwap
+            
+    # 兜底：如果无法判断，假设是手（A股 spot 接口通常返回手）
+    # 但为了保险，还是返回修正后的
+    return raw_vwap / 100.0 if raw_vwap > current_price * 50 else raw_vwap
+
 def fetch_stock_data(code, name, sector):
     """
     Worker function to fetch data for a single stock.
@@ -160,9 +181,9 @@ if not spot_df.empty and analyzed_stocks:
         if current_price <= open_price: continue
         
         # 4. 资金实锤 (Price > VWAP)
-        # VWAP ≈ 成交额 / (成交量 * 100) (如果成交量单位是手)
+        # 使用自适应 VWAP 计算，防止单位陷阱
         if volume > 0:
-            vwap = amount / (volume * 100) if volume > 0 else current_price
+            vwap = _safe_vwap(amount, volume, current_price)
             if current_price < vwap: continue
             
             # V2.1 优化：乖离率限制 < 1.5%
