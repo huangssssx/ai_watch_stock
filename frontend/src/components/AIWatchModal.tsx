@@ -65,7 +65,7 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
 
       form.setFieldsValue({
         indicator_ids: indicatorIds.length > 0 ? indicatorIds : undefined,
-        custom_prompt: config.custom_prompt || '',
+        custom_prompt: config.custom_prompt || '请扮演一位任职于顶级买方基金的精英股票分析师。你的任务是结合基本面和宏观视角对目标公司进行深度分析。最后给出主力的想法和未来动向',
         ai_provider_id: config.ai_provider_id || stock.ai_provider_id,
       });
       
@@ -255,7 +255,7 @@ const AIWatchModal: React.FC<Props> = ({ visible, stock, onClose }) => {
             rules={[{ required: true, message: '请输入提示词' }]}
         >
             <Input.TextArea 
-                rows={4} 
+                autoSize={{ minRows: 4, maxRows: 20 }}
                 placeholder="例如：请分析该股的短线趋势，并给出具体买卖点..." 
             />
         </Form.Item>
