@@ -1,6 +1,6 @@
 from pymr_compat import ensure_py_mini_racer
 ensure_py_mini_racer()
-import akshare as ak
+from tushare_client import get_pro_client, get_ts_module
 import pandas as pd
 import numpy as np
 import json
@@ -18,7 +18,14 @@ def execute_screener_script(script_content: str):
     Executes the python script.
     The script must define a variable 'df' or return a list of dicts.
     """
-    local_scope = {"ak": ak, "pd": pd, "datetime": datetime, "np": np, "__name__": "__screener__"}
+    local_scope = {
+        "ts": get_ts_module(),
+        "pro": get_pro_client(),
+        "pd": pd, 
+        "datetime": datetime, 
+        "np": np, 
+        "__name__": "__screener__"
+    }
     
     # Helper for simple printing to log
     log_buffer = []

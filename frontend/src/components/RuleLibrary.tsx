@@ -63,9 +63,9 @@ const RuleLibrary: React.FC = () => {
     setEditingRule(null);
     form.resetFields();
     form.setFieldsValue({
-      code: `import akshare as ak
+      code: `import tushare as ts
 # Example: Check if price > 20
-# df = ak.stock_zh_a_spot_em()
+# df = ts.get_realtime_quotes([symbol])
 # price = ...
 
 triggered = False
@@ -126,8 +126,9 @@ message = "Not Triggered"
 
       <div style={{ fontWeight: 600, marginBottom: 6 }}>1）可用“占位符”（系统注入变量）</div>
       <div style={{ marginBottom: 10, lineHeight: 1.7 }}>
-        <div><code>symbol</code>：当前股票代码（例如 <code>sh600519</code>），脚本里用它去拉取数据。</div>
-        <div><code>ak</code>：<code>akshare</code> 模块（已注入），可直接调用如 <code>ak.stock_zh_a_hist(...)</code>。</div>
+        <div><code>symbol</code>：当前股票代码（例如 <code>600519</code>），脚本里用它去拉取数据。</div>
+        <div><code>ts</code>：<code>tushare</code> 模块（已注入），可直接调用如 <code>ts.get_realtime_quotes(...)</code>。</div>
+        <div><code>pro</code>：<code>tushare.pro_api()</code> 客户端（已注入），可调用 <code>pro.daily(...)</code> 等。</div>
         <div><code>pd</code>：<code>pandas</code> 模块（已注入），用于表格数据处理。</div>
         <div><code>np</code>：<code>numpy</code> 模块（已注入），用于数值计算。</div>
         <div><code>datetime</code>：Python <code>datetime</code> 模块（已注入），用于时间处理。</div>
@@ -151,8 +152,8 @@ message = "Not Triggered"
 # - 当最近一个交易日收盘价创 20 日新高，且成交额较前一日放大（例如 > 1.3 倍）时触发
 #
 # 你可以直接使用以下“占位符/注入变量”：
-# - symbol: 当前股票代码，例如 "sh600519"
-# - ak/pd/np/datetime/time: 已注入可直接用
+# - symbol: 当前股票代码，例如 "600519.SH" 或 "600519"
+# - ts/pro/pd/np/datetime/time: 已注入可直接用
 # - triggered/message: 你必须给它们赋值作为输出
 #
 # 注意：
@@ -163,57 +164,51 @@ message = "Not Triggered"
 triggered = False
 message = "未触发：条件不满足"
 
-# 2) 拉取最近一段日线数据（后复权）
-#    akshare 的 symbol 参数在不同接口可能不同，这里以常用接口为例
-df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="qfq")
+# 2) 拉取最近一段日线数据
+#    Tushare pro.daily 需要 ts_code (如 600519.SH)
+ts_code = symbol
+if not ts_code.endswith((".SH", ".SZ", ".BJ")):
+    # 简单补全逻辑，实际建议用户输入完整代码或自行处理
+    if ts_code.startswith("6"): ts_code += ".SH"
+    elif ts_code.startswith("0") or ts_code.startswith("3"): ts_code += ".SZ"
+    
+end_date = datetime.datetime.now().strftime("%Y%m%d")
+start_date = (datetime.datetime.now() - datetime.timedelta(days=60)).strftime("%Y%m%d")
+
+df = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
 
 # 3) 做健壮性检查：避免数据为空或列缺失导致脚本报错
 if df is None or df.empty:
     message = "未触发：无行情数据"
 else:
-    # 尝试标准化列名（不同数据源列名可能不同）
-    # 常见列：收盘 / 成交额
-    close_col_candidates = ["收盘", "close", "收盘价"]
-    amount_col_candidates = ["成交额", "amount", "成交额(元)"]
+    # Tushare 返回的是倒序（最新在第一行）或正序？通常 pro.daily 可能是乱序或倒序
+    # 建议按日期排序
+    df = df.sort_values("trade_date")
 
-    def pick_col(candidates):
-        for c in candidates:
-            if c in df.columns:
-                return c
-        return None
-
-    close_col = pick_col(close_col_candidates)
-    amount_col = pick_col(amount_col_candidates)
-
-    if close_col is None or amount_col is None:
-        message = f"未触发：缺少必要列 close={close_col} amount={amount_col}"
+    # 4) 只取最近 25 行
+    df2 = df.tail(25).copy()
+    
+    if len(df2) < 21:
+        message = "未触发：数据不足（至少需要 21 个交易日）"
     else:
-        # 4) 只取最近 25 行，足够计算 20 日新高 + 最近两日对比
-        df2 = df.tail(25).copy()
-        df2[close_col] = pd.to_numeric(df2[close_col], errors="coerce")
-        df2[amount_col] = pd.to_numeric(df2[amount_col], errors="coerce")
-        df2 = df2.dropna(subset=[close_col, amount_col])
+        # Tushare 字段: close, amount (千元), vol (手)
+        last_close = float(df2["close"].iloc[-1])
+        high_20d = float(df2["close"].iloc[-20:].max())
 
-        if len(df2) < 21:
-            message = "未触发：数据不足（至少需要 21 个交易日）"
+        last_amount = float(df2["amount"].iloc[-1])
+        prev_amount = float(df2["amount"].iloc[-2])
+
+        amount_ratio = (last_amount / prev_amount) if prev_amount > 0 else 0.0
+        is_new_high = last_close >= high_20d
+        is_amount_spike = amount_ratio >= 1.3
+
+        print(f"[debug] last_close={last_close}, high_20d={high_20d}, amount_ratio={amount_ratio:.2f}")
+
+        if is_new_high and is_amount_spike:
+            triggered = True
+            message = f"触发：20日新高且成交额放大（{amount_ratio:.2f}x）"
         else:
-            last_close = float(df2[close_col].iloc[-1])
-            high_20d = float(df2[close_col].iloc[-20:].max())
-
-            last_amount = float(df2[amount_col].iloc[-1])
-            prev_amount = float(df2[amount_col].iloc[-2])
-
-            amount_ratio = (last_amount / prev_amount) if prev_amount > 0 else 0.0
-            is_new_high = last_close >= high_20d
-            is_amount_spike = amount_ratio >= 1.3
-
-            print(f"[debug] last_close={last_close}, high_20d={high_20d}, amount_ratio={amount_ratio:.2f}")
-
-            if is_new_high and is_amount_spike:
-                triggered = True
-                message = f"触发：20日新高且成交额放大（{amount_ratio:.2f}x）"
-            else:
-                message = f"未触发：新高={is_new_high} 成交额放大={is_amount_spike}（{amount_ratio:.2f}x）"
+            message = f"未触发：新高={is_new_high} 成交额放大={is_amount_spike}（{amount_ratio:.2f}x）"
 `}
       </pre>
     </div>

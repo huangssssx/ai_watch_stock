@@ -15,7 +15,7 @@ import io
 import sys
 from pymr_compat import ensure_py_mini_racer
 ensure_py_mini_racer()
-import akshare as ak
+from tushare_client import get_pro_client, get_ts_module
 import pandas as pd
 import numpy as np
 
@@ -131,16 +131,22 @@ def _check_is_trade_day():
             pass
 
         try:
-            trade_dates_df = ak.tool_trade_date_hist_sina()
-            trade_dates_list = trade_dates_df['trade_date'].astype(str).tolist()
-            today_str = today.strftime("%Y-%m-%d")
-            is_trade = today_str in trade_dates_list
+            pro = get_pro_client()
+            today_str = today.strftime("%Y%m%d")
+            # Tushare uses YYYYMMDD
+            df = pro.trade_cal(start_date=today_str, end_date=today_str)
+            
+            is_trade = True
+            if not df.empty:
+                # is_open: 0=Close, 1=Open
+                is_trade = bool(df.iloc[0]['is_open'])
+            
             _is_trade_day_cache["date"] = today
             _is_trade_day_cache["is_trade"] = is_trade
             print(f"Trade day check for {today_str}: {is_trade}")
             return is_trade
         except Exception as e:
-            print(f"Akshare trade date check failed: {e}. Fallback to weekday check.")
+            print(f"Tushare trade date check failed: {e}. Fallback to weekday check.")
             is_weekday = today.weekday() < 5
             _is_trade_day_cache["date"] = today
             _is_trade_day_cache["is_trade"] = is_weekday
@@ -261,7 +267,8 @@ def _execute_rule_script(stock, rule_script):
         sys.stdout = new_stdout
 
         local_scope = {
-            "ak": ak,
+            "ts": get_ts_module(),
+            "pro": get_pro_client(),
             "pd": pd,
             "np": np,
             "datetime": datetime,

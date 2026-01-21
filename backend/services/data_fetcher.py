@@ -1,13 +1,14 @@
 from pymr_compat import ensure_py_mini_racer
 ensure_py_mini_racer()
-import akshare as ak
+from tushare_client import get_pro_client, get_ts_module
 import json
 import datetime
 from typing import Dict, Any, Optional
 
 class DataFetcher:
     def __init__(self):
-        pass
+        self.pro = get_pro_client()
+        self.ts = get_ts_module()
 
     def execute_script(self, python_code: str, context: Dict[str, Any], df=None) -> str:
         if not python_code or not python_code.strip():
@@ -20,8 +21,10 @@ class DataFetcher:
             import json
             import time
             
+            # Inject Tushare clients instead of AkShare
             local_scope = {
-                "ak": ak,
+                "ts": self.ts,
+                "pro": self.pro,
                 "pd": pd,
                 "np": np,
                 "requests": requests,
@@ -198,11 +201,23 @@ class DataFetcher:
         import pandas as pd
 
         if api_name:
-            fn = getattr(ak, str(api_name), None)
+            # Tushare logic: try 'pro' first, then 'ts'
+            fn = None
+            if self.pro:
+                fn = getattr(self.pro, str(api_name), None)
+            
+            if fn is None and self.ts:
+                fn = getattr(self.ts, str(api_name), None)
+
             if fn is None:
-                return f"Error fetching {api_name}: api_not_found"
+                return f"Error fetching {api_name}: api_not_found_in_tushare"
 
             params = self._parse_params(params_json, context)
+            
+            # Special handling for ts_code suffix if needed
+            # (Assuming user scripts or DB entries will handle the suffix, or I might need to add logic here)
+            # For now, pass params as is.
+            
             try:
                 df = fn(**params)
             except Exception as e:
