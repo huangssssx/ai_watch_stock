@@ -11,9 +11,8 @@ class TestDataFetcherPython(unittest.TestCase):
     def setUp(self):
         self.fetcher = DataFetcher()
 
-    @patch('services.data_fetcher.ak')
-    def test_fetch_with_python_code(self, mock_ak):
-        # Mock akshare API
+    def test_fetch_with_python_code(self):
+        mock_pro = MagicMock()
         mock_df = pd.DataFrame({
             'date': ['2023-01-01', '2023-01-02'],
             'open': [100, 102],
@@ -21,7 +20,8 @@ class TestDataFetcherPython(unittest.TestCase):
             'high': [105, 106],
             'low': [99, 101]
         })
-        mock_ak.stock_zh_a_hist.return_value = mock_df
+        mock_pro.dummy_api.return_value = mock_df
+        self.fetcher.pro = mock_pro
 
         # Python code to calculate a simple indicator (e.g., mean of close)
         python_code = """
@@ -31,7 +31,7 @@ df = df[['date', 'mean_close']]
         
         # Call fetch
         result_json = self.fetcher.fetch(
-            api_name='stock_zh_a_hist',
+            api_name='dummy_api',
             params_json='{}',
             context={},
             python_code=python_code
@@ -44,15 +44,16 @@ df = df[['date', 'mean_close']]
         self.assertFalse('open' in result_df.columns) # Should be filtered out
         self.assertEqual(result_df['mean_close'].iloc[0], 103.5)
 
-    @patch('services.data_fetcher.ak')
-    def test_post_process_has_context_dict(self, mock_ak):
+    def test_post_process_has_context_dict(self):
+        mock_pro = MagicMock()
         mock_df = pd.DataFrame(
             {
                 "date": ["2023-01-01", "2023-01-02"],
                 "close": [102, 105],
             }
         )
-        mock_ak.stock_zh_a_hist.return_value = mock_df
+        mock_pro.dummy_api.return_value = mock_df
+        self.fetcher.pro = mock_pro
 
         python_code = """
 symbol = context["symbol"]
@@ -60,7 +61,7 @@ df["symbol"] = symbol
 """
 
         result_json = self.fetcher.fetch(
-            api_name="stock_zh_a_hist",
+            api_name="dummy_api",
             params_json="{}",
             context={"symbol": "600000"},
             python_code=python_code,
@@ -84,16 +85,16 @@ result = {"symbol": symbol, "name": name}
         self.assertEqual(result["symbol"], "600000")
         self.assertEqual(result["name"], "浦发银行")
 
-    @patch('services.data_fetcher.ak')
-    def test_fetch_atr_logic(self, mock_ak):
-        # Mock akshare API for ATR calculation with Chinese columns
+    def test_fetch_atr_logic(self):
+        mock_pro = MagicMock()
         mock_df = pd.DataFrame({
             '日期': ['2023-01-01', '2023-01-02', '2023-01-03', '2023-01-04'],
             '最高': [10.0, 12.0, 13.0, 14.0],
             '最低': [8.0, 10.0, 11.0, 12.0],
             '收盘': [9.0, 11.0, 12.0, 13.0]
         })
-        mock_ak.stock_zh_a_hist.return_value = mock_df
+        mock_pro.dummy_api.return_value = mock_df
+        self.fetcher.pro = mock_pro
 
         # Python code for ATR (Wilder's Smoothing)
         python_code = """
@@ -121,7 +122,7 @@ df["日期"] = pd.to_datetime(df["日期"]).dt.strftime('%Y-%m-%d')
 """
 
         result_json = self.fetcher.fetch(
-            api_name='stock_zh_a_hist',
+            api_name='dummy_api',
             params_json='{}',
             context={},
             python_code=python_code

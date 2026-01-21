@@ -2,12 +2,15 @@
 import tushare as ts
 import pandas as pd
 import datetime
+import os
 
 # Init
-token = '4501928450004005131'
+token = os.getenv("TUSHARE_TOKEN")
+if not token:
+    raise SystemExit("环境变量 TUSHARE_TOKEN 未设置")
 ts.set_token(token)
 pro = ts.pro_api()
-pro._DataApi__http_url = 'http://5k1a.xiximiao.com/dataapi'
+pro._DataApi__http_url = os.getenv("TUSHARE_API_URL", "http://5k1a.xiximiao.com/dataapi")
 
 print("获取行情数据 (Tushare Daily)...")
 

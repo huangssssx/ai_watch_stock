@@ -1176,6 +1176,12 @@ if isinstance(result_meta, dict):
     result_meta["coverage_total"] = len(coverage)
 '''
 
+CODE_FILE_PATH = os.path.join(os.path.dirname(__file__), "comprehensive_indicator_tushare.py")
+if not os.path.exists(CODE_FILE_PATH):
+    raise SystemExit(f"Indicator code file not found: {CODE_FILE_PATH}")
+with open(CODE_FILE_PATH, "r", encoding="utf-8") as f:
+    PYTHON_CODE = f.read()
+
 def upsert_indicator():
     name = "全维综合分析指标"
     

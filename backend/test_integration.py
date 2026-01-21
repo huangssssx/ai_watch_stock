@@ -6,7 +6,6 @@ import json
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from services.data_fetcher import DataFetcher
 from services.ai_service import AIService
 from services.monitor_service import process_stock
 from models import Stock, IndicatorDefinition, AIConfig
@@ -16,7 +15,6 @@ from sqlalchemy.pool import StaticPool
 
 from database import Base
 
-# Mock Akshare
 class TestIntegration(unittest.TestCase):
     def setUp(self):
         self.engine = create_engine(
@@ -46,7 +44,7 @@ class TestIntegration(unittest.TestCase):
         self.db.add(self.stock)
         self.db.commit()
         
-        self.indicator = IndicatorDefinition(name="Spot", akshare_api="stock_zh_a_spot_em", params_json="{}")
+        self.indicator = IndicatorDefinition(name="Spot", akshare_api="get_realtime_quotes", params_json="{}")
         self.db.add(self.indicator)
         self.db.commit()
         self.stock.indicators = [self.indicator]
@@ -59,13 +57,11 @@ class TestIntegration(unittest.TestCase):
         self.db.commit()
         self.db.close()
 
-    @patch('services.data_fetcher.ak')
+    @patch("services.monitor_service.data_fetcher.fetch")
     @patch('services.ai_service.OpenAI')
     @patch('services.alert_service.smtplib')
-    def test_process_loop(self, mock_smtp, mock_openai, mock_ak):
-        # 1. Mock Data Fetch
-        import pandas as pd
-        mock_ak.stock_zh_a_spot_em.return_value = pd.DataFrame([{"symbol": "600000", "price": 10.5}])
+    def test_process_loop(self, mock_smtp, mock_openai, mock_fetch):
+        mock_fetch.return_value = '[{"symbol":"600000","price":10.5}]'
         
         # 2. Mock AI Response
         mock_client = MagicMock()
@@ -85,12 +81,11 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(log.ai_analysis['type'], 'warning')
         print("Integration test passed: Flow executed successfully and alert logged.")
 
-    @patch('services.data_fetcher.ak')
+    @patch("services.monitor_service.data_fetcher.fetch")
     @patch('services.ai_service.OpenAI')
     @patch('services.monitor_service.alert_service.send_email')
-    def test_test_run_can_send_email_when_enabled(self, mock_send_email, mock_openai, mock_ak):
-        import pandas as pd
-        mock_ak.stock_zh_a_spot_em.return_value = pd.DataFrame([{"symbol": "600000", "price": 10.5}])
+    def test_test_run_can_send_email_when_enabled(self, mock_send_email, mock_openai, mock_fetch):
+        mock_fetch.return_value = '[{"symbol":"600000","price":10.5}]'
 
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
@@ -118,11 +113,10 @@ class TestIntegration(unittest.TestCase):
         self.assertTrue(result["alert_attempted"])
         mock_send_email.assert_called_once()
 
-    @patch('services.data_fetcher.ak')
+    @patch("services.monitor_service.data_fetcher.fetch")
     @patch('services.ai_service.OpenAI')
-    def test_bypass_checks_runs_even_if_not_monitoring(self, mock_openai, mock_ak):
-        import pandas as pd
-        mock_ak.stock_zh_a_spot_em.return_value = pd.DataFrame([{"symbol": "600000", "price": 10.5}])
+    def test_bypass_checks_runs_even_if_not_monitoring(self, mock_openai, mock_fetch):
+        mock_fetch.return_value = '[{"symbol":"600000","price":10.5}]'
 
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
@@ -221,11 +215,14 @@ class TestPostProcess(unittest.TestCase):
         out = fetcher._apply_post_process(df, json.dumps(spec))
         self.assertEqual(out["代码"].tolist(), ["510300"])
 
-    @patch('services.data_fetcher.ak')
-    def test_fetch_resolves_placeholders_in_post_process(self, mock_ak):
+    def test_fetch_resolves_placeholders_in_post_process(self):
         import pandas as pd
 
-        mock_ak.stock_zh_a_spot_em.return_value = pd.DataFrame(
+        from services.data_fetcher import DataFetcher
+
+        fetcher = DataFetcher()
+        fetcher.pro = MagicMock()
+        fetcher.pro.dummy_api.return_value = pd.DataFrame(
             {
                 "代码": ["600000", "000001"],
                 "基金简称": ["X", "Y"],
@@ -234,9 +231,8 @@ class TestPostProcess(unittest.TestCase):
             }
         )
 
-        fetcher = DataFetcher()
         out_json = fetcher.fetch(
-            "stock_zh_a_spot_em",
+            "dummy_api",
             params_json='{"symbol":"{symbol}"}',
             context={"symbol": "600000"},
             post_process_json=json.dumps(

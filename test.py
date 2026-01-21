@@ -1,24 +1,22 @@
 import tushare as ts
+import os
 
-pro = ts.pro_api('此处不用改')
-# ⬇️⬇️找到 pro_api 所在行
-pro._DataApi__token 	= '4501928450004005131'
-pro._DataApi__http_url 	= 'http://5k1a.xiximiao.com/dataapi'
-# ⬆️⬆️添加两行代码⬆️⬆️
+token = os.getenv("TUSHARE_TOKEN")
+if not token:
+    raise SystemExit("环境变量 TUSHARE_TOKEN 未设置")
+
+pro = ts.pro_api(token)
+pro._DataApi__http_url = os.getenv("TUSHARE_API_URL", "http://5k1a.xiximiao.com/dataapi")
 
 #【❗💡💡 同理，在你已有代码中，搜索 pro_api 所在行，随后在pro_api添加以上两行】
 
 # ---- daily 日线接口 ----
-# df = pro.daily(trade_date='20180810',limit=20)
-# df = pro.rt_min(ts_code='000001.SH', freq='1MIN')
-# print(df)
+df = pro.daily(trade_date='20180810',limit=20)
+print(df)
 
-df=ts.get_tick_data('300274',date='2018-03-27')
-df.head(10)                     
-
-# # ---  交易日历 --- 
-# df_cal = pro.trade_cal(exchange='', start_date='20250101', end_date='20251231' ,limit=5, offset=0)
-# print(df_cal) 
+# ---  交易日历 --- 
+df_cal = pro.trade_cal(exchange='', start_date='20250101', end_date='20251231' ,limit=5, offset=0)
+print(df_cal) 
 
 # ------  5000积分接口验证 ------ 
 # dfkpl_concept_cons = pro.kpl_concept_cons(trade_date='20241014')
