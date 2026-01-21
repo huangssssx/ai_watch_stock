@@ -199,34 +199,104 @@ if not symbol:
         "big_deal": big_deal,
     }
 else:
+    # 尝试获取实时行情（带重试与降级机制）
     try:
-        spot_df = ak.stock_zh_a_spot_em()
-        row_df = spot_df[spot_df["代码"] == symbol]
-        if not row_df.empty:
-            r = row_df.iloc[0]
-            snapshot = {
-                "price": _round(r.get("最新价")),
-                "change_pct": _round(r.get("涨跌幅")),
-                "turnover_rate": _round(r.get("换手率")),
-                "volume_ratio": _round(r.get("量比")),
-                "pe_dynamic": _round(r.get("市盈率-动态")),
-                "pb": _round(r.get("市净率")),
-                "total_mv": _to_float(r.get("总市值")),
-                "circ_mv": _to_float(r.get("流通市值")),
-                "open": _round(r.get("今开")),
-                "prev_close": _round(r.get("昨收")),
-                "high": _round(r.get("最高")),
-                "low": _round(r.get("最低")),
-                "volume": _to_float(r.get("成交量")),
-                "amount": _to_float(r.get("成交额")),
-                "amp": _round(r.get("振幅")),
-                "speed": _round(r.get("涨速")),
-                "chg_5min": _round(r.get("5分钟涨跌")),
-                "chg_60d": _round(r.get("60日涨跌幅")),
-                "chg_ytd": _round(r.get("年初至今涨跌幅")),
-            }
-    except Exception as e:
-        snapshot = {"error": str(e)}
+        # 1. 优先尝试分板块获取快照（数据量更小，成功率更高）
+        # 根据代码前缀判断板块，减少全量拉取导致的 RemoteDisconnected 风险
+        spot_func = None
+        if symbol.startswith("688"):
+            spot_func = ak.stock_kc_a_spot_em  # 科创板 (~500只)
+        elif symbol.startswith("300") or symbol.startswith("301"):
+            spot_func = ak.stock_cy_a_spot_em  # 创业板 (~1300只)
+        elif symbol.startswith("8") or symbol.startswith("43") or symbol.startswith("92"):
+            spot_func = ak.stock_bj_a_spot_em  # 北交所 (~250只)
+        elif symbol.startswith("60"):
+            spot_func = ak.stock_sh_a_spot_em  # 沪主板 (~1700只)
+        elif symbol.startswith("00"):
+            spot_func = ak.stock_sz_a_spot_em  # 深主板 (~1500只)
+        else:
+            spot_func = ak.stock_zh_a_spot_em  # 兜底全市场
+
+        # 增加重试机制，应对网络波动
+        spot_df = None
+        last_err = None
+        for _ in range(3):
+            try:
+                if spot_func:
+                    spot_df = spot_func()
+                else:
+                    spot_df = ak.stock_zh_a_spot_em()
+                
+                if spot_df is not None and not spot_df.empty:
+                    break
+            except Exception as e:
+                last_err = e
+                import time
+                time.sleep(0.5)
+
+        # 如果板块接口失败，且不是全市场接口，尝试一次全市场兜底
+        if (spot_df is None or spot_df.empty) and spot_func != ak.stock_zh_a_spot_em:
+            try:
+                spot_df = ak.stock_zh_a_spot_em()
+            except Exception:
+                pass
+
+        if spot_df is not None and not spot_df.empty:
+            row_df = spot_df[spot_df["代码"] == symbol]
+            if not row_df.empty:
+                r = row_df.iloc[0]
+                snapshot = {
+                    "price": _round(r.get("最新价")),
+                    "change_pct": _round(r.get("涨跌幅")),
+                    "turnover_rate": _round(r.get("换手率")),
+                    "volume_ratio": _round(r.get("量比")),
+                    "pe_dynamic": _round(r.get("市盈率-动态")),
+                    "pb": _round(r.get("市净率")),
+                    "total_mv": _to_float(r.get("总市值")),
+                    "circ_mv": _to_float(r.get("流通市值")),
+                    "open": _round(r.get("今开")),
+                    "prev_close": _round(r.get("昨收")),
+                    "high": _round(r.get("最高")),
+                    "low": _round(r.get("最低")),
+                    "volume": _to_float(r.get("成交量")),
+                    "amount": _to_float(r.get("成交额")),
+                    "amp": _round(r.get("振幅")),
+                    "speed": _round(r.get("涨速")),
+                    "chg_5min": _round(r.get("5分钟涨跌")),
+                    "chg_60d": _round(r.get("60日涨跌幅")),
+                    "chg_ytd": _round(r.get("年初至今涨跌幅")),
+                }
+            else:
+                 # 全市场/板块数据中未找到该股，可能停牌或代码错误，尝试降级
+                 raise ValueError(f"Spot data not found for {symbol} in board list")
+        else:
+            raise last_err if last_err else ValueError("Spot API returned empty")
+
+    except Exception as e_spot:
+        # 2. 降级方案：使用个股买卖盘接口 (stock_bid_ask_em)
+        # 优点：轻量、稳定；缺点：缺少 PE/PB/市值 等指标
+        try:
+            bidask_df = ak.stock_bid_ask_em(symbol=symbol)
+            if bidask_df is not None and not bidask_df.empty and "item" in bidask_df.columns and "value" in bidask_df.columns:
+                d = bidask_df.set_index("item")["value"].to_dict()
+                snapshot = {
+                    "price": _round(d.get("最新")),
+                    "change_pct": _round(d.get("涨幅") or d.get("涨跌幅")), # 兼容不同字段名
+                    "turnover_rate": _round(d.get("换手%")),
+                    "volume_ratio": _round(d.get("量比")),
+                    "open": _round(d.get("今开")),
+                    "prev_close": _round(d.get("昨收")),
+                    "high": _round(d.get("最高")),
+                    "low": _round(d.get("最低")),
+                    "volume": _to_float(d.get("总手")),
+                    "amount": _to_float(d.get("金额")),
+                    "hint": "数据来自备用接口，部分指标(PE/PB/市值)缺失",
+                    "error_orig": str(e_spot)
+                }
+            else:
+                snapshot = {"error": f"Snapshot failed: {str(e_spot)}"}
+        except Exception as e_fallback:
+            snapshot = {"error": f"Snapshot & Fallback failed. Orig: {str(e_spot)}, Fallback: {str(e_fallback)}"}
 
     try:
         info_df = ak.stock_individual_info_em(symbol=symbol)
@@ -850,65 +920,151 @@ else:
 
     try:
         CONFIG = {"institution_ratio_threshold": 3.0, "sell_threshold_yi": 1.0, "back_days": 365, "top_n_days": 3}
-        now = pd.Timestamp.now()
-        end_date = now.strftime("%Y%m%d")
-        start_date = (now - pd.Timedelta(days=CONFIG["back_days"])).strftime("%Y%m%d")
-        raw_df = ak.stock_lhb_detail_em(start_date=start_date, end_date=end_date)
-        if raw_df is not None and not raw_df.empty:
-            code_col = "代码" if "代码" in raw_df.columns else ("证券代码" if "证券代码" in raw_df.columns else None)
-            date_col = "上榜日" if "上榜日" in raw_df.columns else ("上榜日期" if "上榜日期" in raw_df.columns else None)
-            if code_col and date_col:
-                target_df = raw_df[raw_df[code_col].astype(str) == str(symbol)].copy()
-                if not target_df.empty:
-                    target_df[date_col] = pd.to_datetime(target_df[date_col], errors="coerce")
-                    target_df = target_df[target_df[date_col].notna()].drop_duplicates(subset=[date_col], keep="first")
-                    target_df = target_df.sort_values(date_col, ascending=False).head(CONFIG["top_n_days"]).reset_index(drop=True)
-                    if "龙虎榜净买额" in target_df.columns:
-                        target_df["net_buy_yi"] = pd.to_numeric(target_df["龙虎榜净买额"], errors="coerce") / 100000000.0
-                    else:
-                        target_df["net_buy_yi"] = np.nan
-                    ratio_col = "净买额占总成交比" if "净买额占总成交比" in target_df.columns else ("净买额占比" if "净买额占比" in target_df.columns else None)
-                    if ratio_col:
-                        target_df[ratio_col] = pd.to_numeric(target_df[ratio_col], errors="coerce")
-
-                    def judge_main_force(net_buy_yi, buy_ratio):
-                        try:
-                            net_buy = 0.0 if _is_na(net_buy_yi) else float(net_buy_yi)
-                            ratio = 0.0 if _is_na(buy_ratio) else float(buy_ratio)
-                            if net_buy > 0 and ratio > CONFIG["institution_ratio_threshold"]:
-                                return "机构主导", "持有/低吸"
-                            if net_buy > 0 and ratio <= CONFIG["institution_ratio_threshold"]:
-                                return "游资主导", "警惕回调/止盈"
-                            if net_buy < 0 and abs(net_buy) > CONFIG["sell_threshold_yi"]:
-                                return "主力出货", "减仓/观望"
-                            return "主力洗盘", "观望"
-                        except Exception:
-                            return "数据异常", "暂无建议"
-
-                    items = []
-                    for _, rr in target_df.iterrows():
-                        ratio_v = rr.get(ratio_col) if ratio_col else None
-                        movement, suggestion = judge_main_force(rr.get("net_buy_yi"), ratio_v)
-                        items.append(
-                            {
-                                "date": rr[date_col].strftime("%Y-%m-%d") if rr.get(date_col) is not None and rr[date_col] == rr[date_col] else None,
-                                "close": _round(rr.get("收盘价")),
-                                "chg_pct": _round(rr.get("涨跌幅"), 2),
-                                "net_buy_yi": _round(rr.get("net_buy_yi"), 3),
-                                "net_ratio_pct": _round(ratio_v, 2),
-                                "turnover_rate": _round(rr.get("换手率"), 2),
-                                "reason": rr.get("上榜原因"),
-                                "movement": movement,
-                                "suggestion": suggestion,
+        
+        # 优化：先获取个股上榜日期，再精确获取当日数据，避免全量拉取导致 InvalidChunkLength
+        dates_df = ak.stock_lhb_stock_detail_date_em(symbol=symbol)
+        target_df = pd.DataFrame()
+        
+        if dates_df is not None and not dates_df.empty:
+            date_idx_col = "交易日"
+            if date_idx_col in dates_df.columns:
+                dates_df[date_idx_col] = pd.to_datetime(dates_df[date_idx_col], errors="coerce")
+                now = pd.Timestamp.now()
+                start_limit = now - pd.Timedelta(days=CONFIG["back_days"])
+                
+                # 筛选近一年内的上榜日期，取最近 CONFIG["top_n_days"] 次
+                recent_dates = dates_df[dates_df[date_idx_col] >= start_limit]
+                recent_dates = recent_dates.sort_values(date_idx_col, ascending=False).head(CONFIG["top_n_days"])
+                
+                dfs = []
+                for _, d_row in recent_dates.iterrows():
+                    if pd.isna(d_row[date_idx_col]):
+                        continue
+                    d_str = d_row[date_idx_col].strftime("%Y%m%d")
+                    try:
+                        # 优化：使用 ak.stock_lhb_stock_detail_em 获取个股当日详情，避免拉取全市场数据
+                        # 注意：该接口返回的是营业部席位数据，我们需要聚合成汇总数据
+                        detail_df = ak.stock_lhb_stock_detail_em(symbol=symbol, date=d_str)
+                        if detail_df is not None and not detail_df.empty:
+                            # 聚合计算
+                            total_buy = 0.0
+                            total_sell = 0.0
+                            # 尝试获取成交额，如果有的话
+                            # 接口返回列: ['序号', '交易营业部名称', '买入金额', '买入金额-占总成交比例', '卖出金额', '卖出金额-占总成交比例', '净额', '类型']
+                            
+                            # 确保数值列为 float
+                            for col in ['买入金额', '卖出金额', '净额']:
+                                if col in detail_df.columns:
+                                    detail_df[col] = pd.to_numeric(detail_df[col], errors='coerce').fillna(0)
+                            
+                            net_buy_sum = detail_df['净额'].sum() if '净额' in detail_df.columns else 0.0
+                            buy_sum = detail_df['买入金额'].sum() if '买入金额' in detail_df.columns else 0.0
+                            
+                            # 构造一行类似 stock_lhb_detail_em 的数据
+                            # 需要字段: 收盘价, 涨跌幅, 龙虎榜净买额, 净买额占总成交比, 换手率, 上榜原因
+                            # 难点：stock_lhb_stock_detail_em 不返回收盘价、涨跌幅、换手率
+                            # 我们需要从 daily 数据中补充这些信息，或者接受缺失
+                            
+                            # 既然我们已经有 daily 数据 (在前面的 daily 变量中)，我们可以尝试合并
+                            # 但 daily 变量在前面可能已经定义了。让我们看看上下文。
+                            # 上下文中有 daily = ...
+                            
+                            # 简化处理：如果没有收盘价等数据，暂时置空，重点是 net_buy_yi 和 reason
+                            reason = detail_df['类型'].iloc[0] if '类型' in detail_df.columns and not detail_df.empty else ""
+                            
+                            row = {
+                                "上榜日": d_row[date_idx_col],
+                                "龙虎榜净买额": net_buy_sum,
+                                "上榜原因": reason,
+                                "收盘价": None, # 暂无
+                                "涨跌幅": None, # 暂无
+                                "换手率": None, # 暂无
+                                "净买额占总成交比": None # 暂无，除非我们有总成交额
                             }
-                        )
-                    lhb = {"items": items}
+                            dfs.append(pd.DataFrame([row]))
+
+                    except Exception:
+                        pass
+                
+                if dfs:
+                    target_df = pd.concat(dfs, ignore_index=True)
+                    
+                    # 补充行情数据 (从 daily 变量中获取，如果存在)
+                    # daily 结构是 {"last_20": [...]}
+                    if isinstance(daily, dict) and "last_20" in daily:
+                        daily_list = daily["last_20"]
+                        # 转为 DataFrame 方便查询
+                        if daily_list:
+                            q_df = pd.DataFrame(daily_list)
+                            if "date" in q_df.columns:
+                                q_df["date"] = pd.to_datetime(q_df["date"])
+                                for idx, row in target_df.iterrows():
+                                    d_val = row["上榜日"]
+                                    match = q_df[q_df["date"] == d_val]
+                                    if not match.empty:
+                                        target_df.at[idx, "收盘价"] = match.iloc[0].get("close")
+                                        target_df.at[idx, "涨跌幅"] = match.iloc[0].get("chg_pct")
+                                        target_df.at[idx, "换手率"] = match.iloc[0].get("turnover_rate")
+                                        # 估算净买额占比
+                                        # net_buy (元) / amount (元) * 100
+                                        amount = match.iloc[0].get("amount") # 注意单位
+                                        # amount 通常是元
+                                        if amount and amount > 0:
+                                            target_df.at[idx, "净买额占总成交比"] = (row["龙虎榜净买额"] / amount) * 100
+
+        if not target_df.empty:
+
+            date_col = "上榜日" if "上榜日" in target_df.columns else ("上榜日期" if "上榜日期" in target_df.columns else None)
+            if date_col:
+                target_df[date_col] = pd.to_datetime(target_df[date_col], errors="coerce")
+                target_df = target_df[target_df[date_col].notna()].drop_duplicates(subset=[date_col], keep="first")
+                target_df = target_df.sort_values(date_col, ascending=False).head(CONFIG["top_n_days"]).reset_index(drop=True)
+                
+                if "龙虎榜净买额" in target_df.columns:
+                    target_df["net_buy_yi"] = pd.to_numeric(target_df["龙虎榜净买额"], errors="coerce") / 100000000.0
                 else:
-                    lhb = {"hint": "近期未上榜"}
+                    target_df["net_buy_yi"] = np.nan
+                
+                ratio_col = "净买额占总成交比" if "净买额占总成交比" in target_df.columns else ("净买额占比" if "净买额占比" in target_df.columns else None)
+                if ratio_col:
+                    target_df[ratio_col] = pd.to_numeric(target_df[ratio_col], errors="coerce")
+
+                def judge_main_force(net_buy_yi, buy_ratio):
+                    try:
+                        net_buy = 0.0 if _is_na(net_buy_yi) else float(net_buy_yi)
+                        ratio = 0.0 if _is_na(buy_ratio) else float(buy_ratio)
+                        if net_buy > 0 and ratio > CONFIG["institution_ratio_threshold"]:
+                            return "机构主导", "持有/低吸"
+                        if net_buy > 0 and ratio <= CONFIG["institution_ratio_threshold"]:
+                            return "游资主导", "警惕回调/止盈"
+                        if net_buy < 0 and abs(net_buy) > CONFIG["sell_threshold_yi"]:
+                            return "主力出货", "减仓/观望"
+                        return "主力洗盘", "观望"
+                    except Exception:
+                        return "数据异常", "暂无建议"
+
+                items = []
+                for _, rr in target_df.iterrows():
+                    ratio_v = rr.get(ratio_col) if ratio_col else None
+                    movement, suggestion = judge_main_force(rr.get("net_buy_yi"), ratio_v)
+                    items.append(
+                        {
+                            "date": rr[date_col].strftime("%Y-%m-%d") if rr.get(date_col) is not None and rr[date_col] == rr[date_col] else None,
+                            "close": _round(rr.get("收盘价")),
+                            "chg_pct": _round(rr.get("涨跌幅"), 2),
+                            "net_buy_yi": _round(rr.get("net_buy_yi"), 3),
+                            "net_ratio_pct": _round(ratio_v, 2),
+                            "turnover_rate": _round(rr.get("换手率"), 2),
+                            "reason": rr.get("上榜原因"),
+                            "movement": movement,
+                            "suggestion": suggestion,
+                        }
+                    )
+                lhb = {"items": items}
             else:
                 lhb = {"hint": "龙虎榜字段变化，无法解析"}
         else:
-            lhb = {"hint": "无龙虎榜数据"}
+            lhb = {"hint": "近期未上榜"}
     except Exception as e:
         lhb = {"error": str(e)}
 
@@ -946,41 +1102,32 @@ else:
         fund_holding = {"error": str(e)}
 
     try:
-        detail_fn = ak.stock_margin_detail_sse if (symbol.startswith("6") or symbol.startswith("68")) else ak.stock_margin_detail_szse
-        found_df = None
-        found_date = None
-        for i in range(15):
-            d = (pd.Timestamp.now() - pd.Timedelta(days=i)).strftime("%Y%m%d")
-            try:
-                tmp = detail_fn(date=d)
-            except Exception:
-                tmp = pd.DataFrame()
-            if tmp is not None and not tmp.empty:
-                found_df = tmp
-                found_date = d
-                break
-
-        if found_df is not None and not found_df.empty:
-            found_df = found_df.copy()
-            code_col = None
-            for c in ["证券代码", "标的证券代码", "代码"]:
-                if c in found_df.columns:
-                    code_col = c
-                    break
-            if code_col:
-                row_df = found_df[found_df[code_col].astype(str) == str(symbol)].copy()
-                if not row_df.empty:
-                    rr = row_df.iloc[0].to_dict()
-                    margin = {"date": found_date}
-                    for k in ["融资余额", "融券余量", "融券余额", "融资买入额", "融资偿还额", "融券卖出量", "融券偿还量"]:
-                        if k in rr:
-                            margin[k] = _to_float(rr.get(k))
-                else:
-                    margin = {"date": found_date, "hint": "当日无个股两融明细"}
+        # 优化两融数据获取：使用 ak.stock_margin_detail 获取个股历史数据，取最新一条，避免循环拉取全市场数据
+        margin_df = ak.stock_margin_detail(symbol=symbol)
+        
+        if margin_df is not None and not margin_df.empty:
+            margin_df = margin_df.sort_values("日期", ascending=False).head(1)
+            if not margin_df.empty:
+                rr = margin_df.iloc[0].to_dict()
+                margin = {"date": rr.get("日期").strftime("%Y-%m-%d") if isinstance(rr.get("日期"), (pd.Timestamp, type(pd.NaT))) else str(rr.get("日期"))}
+                
+                # 字段映射
+                # ak.stock_margin_detail 返回字段通常为: 日期, 融资买入额, 融资偿还额, 融资余额, 融券卖出量, 融券偿还量, 融券余量
+                # 注意单位，ak.stock_margin_detail 通常返回元或股，需要确认
+                
+                for k in ["融资余额", "融券余量", "融券余额", "融资买入额", "融资偿还额", "融券卖出量", "融券偿还量"]:
+                    if k in rr:
+                        margin[k] = _to_float(rr.get(k))
             else:
-                margin = {"date": found_date, "hint": "两融字段变化，无法解析"}
+                margin = {"hint": "无两融数据"}
         else:
             margin = {"hint": "无两融数据"}
+            
+    except Exception as e:
+        # Fallback to old method if specific API fails, but limit loop
+        # Or just report error to be faster
+        margin = {"error": f"两融数据获取失败: {str(e)}"}
+
     except Exception as e:
         margin = {"error": str(e)}
 

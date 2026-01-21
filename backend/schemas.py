@@ -11,8 +11,9 @@ except Exception:
 class ORMModel(BaseModel):
     if str(getattr(pydantic, "__version__", "")).startswith("2") and ConfigDict is not None:
         model_config = ConfigDict(from_attributes=True)
-    class Config:
-        orm_mode = True
+    else:
+        class Config:
+            orm_mode = True
 
 # AI Config
 class AIConfigBase(BaseModel):
@@ -190,8 +191,9 @@ class AlertRateLimitConfig(BaseModel):
     bypass_rate_limit_for_strong_signals: bool = True
     if str(getattr(pydantic, "__version__", "")).startswith("2") and ConfigDict is not None:
         model_config = ConfigDict(extra="ignore")
-    class Config:
-        extra = "ignore"
+    else:
+        class Config:
+            extra = "ignore"
 
 class SystemConfigBase(BaseModel):
     key: str
