@@ -40,6 +40,17 @@ const readFirstString = (row: ScreenerRow, keys: string[]) => {
   return undefined;
 };
 
+const readFirstNumber = (row: ScreenerRow, keys: string[]) => {
+  for (const key of keys) {
+    const value = row[key];
+    if (value === null || value === undefined) continue;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const parsed = Number(String(value).trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+};
+
 const readDetailFromErrorData = (data: unknown) => {
   if (typeof data !== 'object' || data === null) return undefined;
   if (!('detail' in data)) return undefined;
@@ -71,6 +82,8 @@ const ScreenerPage: React.FC = () => {
   const [results, setResults] = useState<ScreenerResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
+  const [lastRunLog, setLastRunLog] = useState<string>('');
+  const [lastRunAt, setLastRunAt] = useState<Date | null>(null);
   
   const fetchScreeners = async () => {
     try {
@@ -120,6 +133,8 @@ const ScreenerPage: React.FC = () => {
         setEditingScreener({});
         setResults([]);
     }
+    setLastRunLog('');
+    setLastRunAt(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
@@ -171,6 +186,8 @@ const ScreenerPage: React.FC = () => {
       try {
           const res = await api.post(`/screeners/${selectedId}/run`);
           const data = res.data as { success: boolean; log: string; count: number };
+          setLastRunLog(data.log || '');
+          setLastRunAt(new Date());
           if (data.success) {
               message.success(`Run success, found ${data.count} stocks`);
               fetchResults(selectedId);
@@ -186,6 +203,21 @@ const ScreenerPage: React.FC = () => {
       } finally {
           setRunning(false);
       }
+  };
+
+  const viewLastRunLog = () => {
+      const log = lastRunLog || editingScreener.last_run_log || '';
+      if (!log) return;
+      const title = lastRunAt ? `Run Log (${lastRunAt.toLocaleString()})` : 'Run Log';
+      Modal.info({
+          title,
+          width: 900,
+          content: (
+              <pre style={{ maxHeight: 500, overflow: 'auto' }}>
+                  {log}
+              </pre>
+          )
+      });
   };
 
   const handleDelete = async () => {
@@ -272,6 +304,17 @@ const ScreenerPage: React.FC = () => {
           }))
       ];
 
+      const scoreKeyCandidates = ['评分', 'score', 'Score'];
+      const hasScore = data.some((row) => readFirstNumber(row, scoreKeyCandidates) !== undefined);
+      const thresholdHigh = 8;
+      const thresholdPotential = 5;
+      const highQuality = hasScore ? data.filter((row) => (readFirstNumber(row, scoreKeyCandidates) ?? -Infinity) >= thresholdHigh) : [];
+      const potential = hasScore ? data.filter((row) => {
+          const s = readFirstNumber(row, scoreKeyCandidates);
+          if (s === undefined) return false;
+          return s >= thresholdPotential && s < thresholdHigh;
+      }) : [];
+
       return (
           <div>
               <p>Run at: {new Date(latest.run_at).toLocaleString()} (Count: {latest.count})</p>
@@ -280,14 +323,64 @@ const ScreenerPage: React.FC = () => {
                       Last run failed, showing last successful result above. Use “View Log” for details.
                   </p>
               )}
-              <Table
-                dataSource={data}
-                columns={columns}
-                rowKey={(r, index) => readFirstString(r, ['symbol', '代码', '股票代码']) ?? `${latest.id}-${index}`}
-                size="small"
-                scroll={{ x: true }}
-                pagination={{ pageSize: 20 }}
-              />
+              {hasScore ? (
+                  <Tabs
+                    defaultActiveKey="all"
+                    items={[
+                        {
+                            key: 'high',
+                            label: `严选榜 (${highQuality.length})`,
+                            children: (
+                                <Table
+                                  dataSource={highQuality}
+                                  columns={columns}
+                                  rowKey={(r, index) => readFirstString(r, ['symbol', '代码', '股票代码']) ?? `${latest.id}-high-${index}`}
+                                  size="small"
+                                  scroll={{ x: true }}
+                                  pagination={{ pageSize: 20 }}
+                                />
+                            )
+                        },
+                        {
+                            key: 'pot',
+                            label: `观察池 (${potential.length})`,
+                            children: (
+                                <Table
+                                  dataSource={potential}
+                                  columns={columns}
+                                  rowKey={(r, index) => readFirstString(r, ['symbol', '代码', '股票代码']) ?? `${latest.id}-pot-${index}`}
+                                  size="small"
+                                  scroll={{ x: true }}
+                                  pagination={{ pageSize: 20 }}
+                                />
+                            )
+                        },
+                        {
+                            key: 'all',
+                            label: `全部 (${data.length})`,
+                            children: (
+                                <Table
+                                  dataSource={data}
+                                  columns={columns}
+                                  rowKey={(r, index) => readFirstString(r, ['symbol', '代码', '股票代码']) ?? `${latest.id}-all-${index}`}
+                                  size="small"
+                                  scroll={{ x: true }}
+                                  pagination={{ pageSize: 20 }}
+                                />
+                            )
+                        },
+                    ]}
+                  />
+              ) : (
+                  <Table
+                    dataSource={data}
+                    columns={columns}
+                    rowKey={(r, index) => readFirstString(r, ['symbol', '代码', '股票代码']) ?? `${latest.id}-${index}`}
+                    size="small"
+                    scroll={{ x: true }}
+                    pagination={{ pageSize: 20 }}
+                  />
+              )}
           </div>
       );
   };
@@ -351,21 +444,8 @@ const ScreenerPage: React.FC = () => {
                     {selectedId && (
                         <>
                             <Button type="default" icon={<PlayCircleOutlined />} loading={running} onClick={handleRun}>Run Now</Button>
-                            {editingScreener.last_run_status === 'failed' && editingScreener.last_run_log ? (
-                                <Button
-                                    onClick={() =>
-                                        Modal.error({
-                                            title: "Last Run Log",
-                                            content: (
-                                                <pre style={{ maxHeight: 400, overflow: 'auto' }}>
-                                                    {editingScreener.last_run_log}
-                                                </pre>
-                                            )
-                                        })
-                                    }
-                                >
-                                    View Log
-                                </Button>
+                            {(lastRunLog || editingScreener.last_run_log) ? (
+                                <Button onClick={viewLastRunLog}>View Log</Button>
                             ) : null}
                             <Button danger icon={<DeleteOutlined />} onClick={handleDelete}>Delete</Button>
                         </>
