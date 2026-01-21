@@ -3,7 +3,39 @@ import pandas as pd
 import numpy as np
 import time
 import datetime
+import traceback
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+_errors = []
+
+def _record_error(stage, key, exc):
+    _errors.append(
+        {
+            "stage": str(stage),
+            "key": str(key),
+            "exc": repr(exc),
+            "traceback": traceback.format_exc(),
+        }
+    )
+
+def _summarize_errors(max_traces=3):
+    if not _errors:
+        return ""
+    stage_counter = Counter([e.get("stage") for e in _errors])
+    exc_counter = Counter([e.get("exc") for e in _errors])
+    lines = []
+    lines.append(f"错误统计: total={len(_errors)} stages={dict(stage_counter)} top_excs={dict(exc_counter.most_common(5))}")
+    shown = 0
+    for e in _errors:
+        if shown >= int(max_traces):
+            break
+        lines.append(f"[{shown+1}] stage={e.get('stage')} key={e.get('key')} exc={e.get('exc')}")
+        tb = (e.get("traceback") or "").strip()
+        if tb:
+            lines.append(tb)
+        shown += 1
+    return "\n".join(lines)
 
 # --- Helper Functions ---
 def normalize(series):
@@ -70,7 +102,8 @@ def fetch_stock_data(code, name, sector):
             "ma20": ma20,
             "vol_prev": last_row['成交量']
         }
-    except:
+    except Exception as e:
+        _record_error("hist", code, e)
         return None
 
 # --- Main Logic ---
@@ -91,8 +124,8 @@ try:
     else:
         sector_list = []
 except Exception as e:
-    print(f"❌ 板块获取失败: {e}")
-    sector_list = []
+    _record_error("sectors", "stock_board_industry_name_em", e)
+    raise RuntimeError(f"板块获取失败: {repr(e)}\n{_summarize_errors()}") from e
 
 # 2. 构建候选池 (Candidate Pool)
 candidates = []
@@ -108,10 +141,13 @@ if sector_list:
                         "sector": sector
                     })
             time.sleep(0.2) # Avoid blocking
-        except:
+        except Exception as e:
+            _record_error("sector_cons", sector, e)
             continue
 
 print(f"🔍 初始候选池: {len(candidates)} 只股票")
+if sector_list and not candidates:
+    raise RuntimeError(f"候选池构建失败：板块={len(sector_list)} 但候选=0\n{_summarize_errors()}")
 
 # 3. 并发获取数据 (Concurrent Fetching)
 # 限制最大线程数，防止封IP
@@ -123,13 +159,19 @@ if candidates:
         futures = {executor.submit(fetch_stock_data, c['code'], c['name'], c['sector']): c for c in candidates}
         
         for i, future in enumerate(as_completed(futures)):
-            res = future.result()
+            try:
+                res = future.result()
+            except Exception as e:
+                _record_error("future", "fetch_stock_data", e)
+                res = None
             if res:
                 analyzed_stocks.append(res)
             if i % 50 == 0:
                 print(f"  进度: {i}/{len(candidates)}...")
 
 print(f"\n✅ 数据获取完成，有效股票: {len(analyzed_stocks)}")
+if candidates and not analyzed_stocks:
+    raise RuntimeError(f"日线历史数据拉取全部失败：candidates={len(candidates)} analyzed=0\n{_summarize_errors()}")
 
 # 4. 实时行情校验 (The Filter)
 # 为了获取最新的 Price, Open, VWAP (Amount/Vol)，我们需要拉取一次全市场 Spot
@@ -139,12 +181,13 @@ try:
     if spot_df is not None and not spot_df.empty:
         spot_df['代码'] = spot_df['代码'].astype(str)
     else:
-        spot_df = pd.DataFrame()
-except:
-    print("❌ 实时行情失败")
-    spot_df = pd.DataFrame()
+        raise RuntimeError("实时快照为空")
+except Exception as e:
+    _record_error("spot", "stock_zh_a_spot_em", e)
+    raise RuntimeError(f"实时行情失败: {repr(e)}\n{_summarize_errors()}") from e
 
 final_list = []
+_filter_stats = Counter()
 if not spot_df.empty and analyzed_stocks:
     # 转为字典加速查找
     spot_map = spot_df.set_index('代码').to_dict('index')
@@ -166,40 +209,59 @@ if not spot_df.empty and analyzed_stocks:
             amount = float(real.get('成交额', 0))
             turnover = float(real.get('换手率', 0))
             lb = float(real.get('量比', 0))
-        except:
+        except Exception as e:
+            _record_error("spot_parse", code, e)
+            _filter_stats["spot_parse_error"] += 1
             continue
             
-        if current_price == 0: continue
+        if current_price == 0:
+            _filter_stats["price_zero"] += 1
+            continue
         
         # 1. 相对位置 RPP < 0.4 (低位)
-        if stock['rpp'] >= 0.4: continue
+        if stock['rpp'] >= 0.4:
+            _filter_stats["rpp_high"] += 1
+            continue
         
         # 2. 趋势支撑 (价格 > MA20)
         # if current_price < stock['ma20']: continue 
         
         # 3. 实时强度 (Price > Open) -> 拒绝假阴线
-        if current_price <= open_price: continue
+        if current_price <= open_price:
+            _filter_stats["below_open"] += 1
+            continue
         
         # 4. 资金实锤 (Price > VWAP)
         # 使用自适应 VWAP 计算，防止单位陷阱
+        vwap = current_price
         if volume > 0:
             vwap = _safe_vwap(amount, volume, current_price)
-            if current_price < vwap: continue
+            if current_price < vwap:
+                _filter_stats["below_vwap"] += 1
+                continue
             
             # V2.1 优化：乖离率限制 < 1.5%
             # 防止追高接盘
             vwap_dev = (current_price - vwap) / vwap
-            if vwap_dev > 0.015: continue
+            if vwap_dev > 0.015:
+                _filter_stats["vwap_dev_high"] += 1
+                continue
             
         # 5. 量能确认 (量比 > 1.2 或 换手 > 1%)
-        if lb < 1.2: continue
+        if lb < 1.2:
+            _filter_stats["lb_low"] += 1
+            continue
         
         # 6. 风控：拒绝涨停 (Limit Up)
-        if current_price >= prev_close * 1.095: continue
+        if current_price >= prev_close * 1.095:
+            _filter_stats["limit_up"] += 1
+            continue
         
         # 7. 涨幅区间 (1% < Chg < 6%)
         chg_pct = (current_price - prev_close) / prev_close * 100
-        if chg_pct < 1.0 or chg_pct > 6.0: continue
+        if chg_pct < 1.0 or chg_pct > 6.0:
+            _filter_stats["chg_out_of_range"] += 1
+            continue
         
         # --- 评分系统 ---
         # 低位分 (30) + 资金分 (40) + 强度分 (30)
@@ -226,6 +288,7 @@ if not spot_df.empty and analyzed_stocks:
         stock['点评'] = ",".join(comments)
         
         final_list.append(stock)
+        _filter_stats["selected"] += 1
 
 # 5. 输出结果
 df = pd.DataFrame(final_list)
@@ -238,6 +301,10 @@ if not df.empty:
     
     print("\n🏆 最终精选 (Top 30):")
     # print(df.to_string()) 
+else:
+    print("📊 过滤统计:", dict(_filter_stats))
+if _errors:
+    print(_summarize_errors())
 
 # 必须赋值给 df 变量供系统读取
 df = df if not df.empty else pd.DataFrame(columns=['代码', '名称', '点评'])
