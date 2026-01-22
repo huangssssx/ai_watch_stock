@@ -1102,34 +1102,92 @@ else:
         fund_holding = {"error": str(e)}
 
     try:
-        # 优化两融数据获取：使用 ak.stock_margin_detail 获取个股历史数据，取最新一条，避免循环拉取全市场数据
-        margin_df = ak.stock_margin_detail(symbol=symbol)
-        
-        if margin_df is not None and not margin_df.empty:
-            margin_df = margin_df.sort_values("日期", ascending=False).head(1)
-            if not margin_df.empty:
-                rr = margin_df.iloc[0].to_dict()
-                margin = {"date": rr.get("日期").strftime("%Y-%m-%d") if isinstance(rr.get("日期"), (pd.Timestamp, type(pd.NaT))) else str(rr.get("日期"))}
-                
-                # 字段映射
-                # ak.stock_margin_detail 返回字段通常为: 日期, 融资买入额, 融资偿还额, 融资余额, 融券卖出量, 融券偿还量, 融券余量
-                # 注意单位，ak.stock_margin_detail 通常返回元或股，需要确认
-                
-                for k in ["融资余额", "融券余量", "融券余额", "融资买入额", "融资偿还额", "融券卖出量", "融券偿还量"]:
-                    if k in rr:
-                        margin[k] = _to_float(rr.get(k))
-            else:
-                margin = {"hint": "无两融数据"}
-        else:
-            margin = {"hint": "无两融数据"}
-            
-    except Exception as e:
-        # Fallback to old method if specific API fails, but limit loop
-        # Or just report error to be faster
-        margin = {"error": f"两融数据获取失败: {str(e)}"}
+        sym = symbol
+        if sym.startswith(("sh", "sz", "bj")):
+            sym = sym[2:]
 
+        if not sym:
+            margin = {"hint": "未获取到股票代码"}
+        else:
+            url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+            params = {
+                "reportName": "RPTA_WEB_RZRQ_GGMX",
+                "columns": "ALL",
+                "source": "WEB",
+                "sortColumns": "DATE",
+                "sortTypes": "-1",
+                "pageSize": 500,
+                "pageNumber": 1,
+                "filter": f'(SCODE="{sym}")',
+                "p": 1,
+                "pageNo": 1,
+                "pageNum": 1,
+            }
+            headers = {"User-Agent": "Mozilla/5.0"}
+            res = requests.get(url, params=params, headers=headers, timeout=15)
+            data_json = res.json() if res is not None else {}
+            result_obj = data_json.get("result") if isinstance(data_json, dict) else None
+            data_list = (result_obj.get("data") if isinstance(result_obj, dict) else None) or []
+
+            if not data_list:
+                margin = {"hint": "无两融数据"}
+            else:
+                raw = pd.DataFrame(data_list)
+                cols_map = {
+                    "DATE": "交易日期",
+                    "SPJ": "收盘价",
+                    "RZYE": "融资余额",
+                    "RQYE": "融券余额",
+                    "RZMRE": "融资买入额",
+                    "RCHE": "融资偿还额",
+                    "RQYL": "融券余量",
+                    "RQMCL": "融券卖出量",
+                    "RQCHL": "融券偿还量",
+                }
+                valid_cols = [c for c in cols_map.keys() if c in raw.columns]
+                dfm = raw[valid_cols].rename(columns=cols_map) if valid_cols else raw.copy()
+
+                if "交易日期" in dfm.columns:
+                    dfm["交易日期_dt"] = pd.to_datetime(dfm["交易日期"], errors="coerce")
+                    dfm = dfm.sort_values("交易日期_dt", ascending=False).reset_index(drop=True)
+                else:
+                    dfm["交易日期_dt"] = pd.NaT
+
+                def _fmt_date(v):
+                    ts = pd.to_datetime(v, errors="coerce")
+                    if ts is None or pd.isna(ts):
+                        s = str(v).strip()
+                        if len(s) == 8 and s.isdigit():
+                            return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+                        return s if s else None
+                    return ts.strftime("%Y-%m-%d")
+
+                def _row_to_dict(rr):
+                    out = {"date": _fmt_date(rr.get("交易日期_dt") if "交易日期_dt" in rr else rr.get("交易日期"))}
+                    for k in ["收盘价", "融资余额", "融券余额", "融资买入额", "融资偿还额", "融券余量", "融券卖出量", "融券偿还量"]:
+                        if k in rr:
+                            out[k] = _to_float(rr.get(k))
+                    for k in ["融资余额", "融券余额", "融资买入额", "融资偿还额"]:
+                        v = out.get(k)
+                        if v is not None:
+                            out[f"{k}(亿)"] = _round(v / 1e8, 3)
+                    return out
+
+                rows = []
+                for _, r0 in dfm.head(30).iterrows():
+                    rows.append(_row_to_dict(r0.to_dict()))
+
+                rows = [x for x in rows if x.get("date")]
+                if rows:
+                    latest = rows[0]
+                    margin = {"date": latest.get("date"), "history_last_30": rows}
+                    for k, v in latest.items():
+                        if k != "date" and v is not None:
+                            margin[k] = v
+                else:
+                    margin = {"hint": "无两融数据"}
     except Exception as e:
-        margin = {"error": str(e)}
+        margin = {"error": f"两融数据获取失败: {str(e)}"}
 
     try:
         ticks_df = ak.stock_intraday_em(symbol=symbol)
