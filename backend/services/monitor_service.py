@@ -16,6 +16,7 @@ import sys
 from pymr_compat import ensure_py_mini_racer
 ensure_py_mini_racer()
 import akshare as ak
+from utils.tushare_client import ts, pro
 import pandas as pd
 import numpy as np
 
@@ -262,6 +263,8 @@ def _execute_rule_script(stock, rule_script):
 
         local_scope = {
             "ak": ak,
+            "ts": ts,
+            "pro": pro,
             "pd": pd,
             "np": np,
             "datetime": datetime,

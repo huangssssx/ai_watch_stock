@@ -13,12 +13,14 @@ from database import SessionLocal
 from models import StockScreener, ScreenerResult
 from services.monitor_service import scheduler
 
+from utils.tushare_client import ts, pro
+
 def execute_screener_script(script_content: str):
     """
     Executes the python script.
     The script must define a variable 'df' or return a list of dicts.
     """
-    local_scope = {"ak": ak, "pd": pd, "datetime": datetime, "np": np, "__name__": "__screener__"}
+    local_scope = {"ak": ak, "ts": ts, "pro": pro, "pd": pd, "datetime": datetime, "np": np, "__name__": "__screener__"}
     
     # Helper for simple printing to log
     log_buffer = []

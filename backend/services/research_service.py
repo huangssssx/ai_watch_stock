@@ -1,6 +1,7 @@
 from pymr_compat import ensure_py_mini_racer
 ensure_py_mini_racer()
 import akshare as ak
+from utils.tushare_client import ts, pro
 import pandas as pd
 import json
 import datetime
@@ -14,7 +15,7 @@ def execute_research_script(script_content: str):
     Expects 'df' (DataFrame) or 'result' (List[Dict]) for table data.
     Expects 'chart' (Dict) for chart options.
     """
-    scope = {"ak": ak, "pd": pd, "datetime": datetime}
+    scope = {"ak": ak, "ts": ts, "pro": pro, "pd": pd, "datetime": datetime}
     scope["today"] = datetime.date.today()
     scope["now"] = datetime.datetime.now()
     

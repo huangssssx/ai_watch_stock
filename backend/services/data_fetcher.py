@@ -1,6 +1,7 @@
 from pymr_compat import ensure_py_mini_racer
 ensure_py_mini_racer()
 import akshare as ak
+from utils.tushare_client import ts, pro
 import json
 import datetime
 from typing import Dict, Any, Optional
@@ -22,6 +23,8 @@ class DataFetcher:
             
             local_scope = {
                 "ak": ak,
+                "ts": ts,
+                "pro": pro,
                 "pd": pd,
                 "np": np,
                 "requests": requests,
