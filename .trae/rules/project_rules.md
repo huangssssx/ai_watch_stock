@@ -1,5 +1,6 @@
 # 项目规则（ai_watch_stock）
-
+## 最重要的规则 
+- 必须使用中文和我对话
 ## DB 安全
 
 - 默认只使用已有的 `backend/stock_watch.db`，禁止隐式新建任何 `.db` 文件
