@@ -98,6 +98,25 @@ def _clean_obj(obj):
         return obj.strftime("%Y-%m-%d %H:%M:%S")
     return obj
 
+def _safe_getattr(obj, name: str):
+    if obj is None:
+        return None
+    try:
+        return getattr(obj, name, None)
+    except Exception:
+        return None
+
+def _to_ak_symbol(sym: str):
+    s = _to_str(sym)
+    if not s:
+        return None
+    if "." in s:
+        s = s.split(".")[0]
+    s = s.strip().lower()
+    if s.startswith(("sh", "sz", "bj")) and len(s) > 2:
+        s = s[2:]
+    return s if s.isdigit() else None
+
 def _to_ts_code(sym: str):
     s = _to_str(sym)
     if not s:
@@ -797,7 +816,7 @@ else:
     try:
         if pro is None or ts_code is None:
             raise RuntimeError("tushare_pro_not_ready")
-        rt_min_fn = getattr(pro, "rt_min", None)
+        rt_min_fn = _safe_getattr(pro, "rt_min")
         df_min = rt_min_fn(ts_code=ts_code, freq="1MIN") if callable(rt_min_fn) else pd.DataFrame()
         if df_min is not None and not df_min.empty:
             df_min = df_min.copy()
@@ -841,18 +860,26 @@ else:
                 "total_amount_raw": _round(total_amount, 3),
             }
     except Exception as e:
+        err = str(e)
         if isinstance(intraday, dict):
-            intraday["min_1m_error"] = str(e)
+            intraday["min_1m_error"] = err
+            if intraday.get("vwap") is None or intraday.get("vwap_bias_pct") is None:
+                if ("tushare_pro_not_ready" in err) or ("没有该接口访问权限" in err) or ("权限" in err):
+                    intraday["hint"] = "分时数据接口不可用"
+                    intraday["reason"] = err
         else:
-            intraday = {"error": str(e)}
+            if ("tushare_pro_not_ready" in err) or ("没有该接口访问权限" in err) or ("权限" in err):
+                intraday = {"hint": "分时数据接口不可用", "reason": err}
+            else:
+                intraday = {"error": err}
 
     try:
         if pro is None or ts_code is None:
             raise RuntimeError("tushare_pro_not_ready")
-        rt_min_fn = getattr(pro, "rt_min", None)
+        rt_min_fn = _safe_getattr(pro, "rt_min")
         df_5m = rt_min_fn(ts_code=ts_code, freq="5MIN") if callable(rt_min_fn) else pd.DataFrame()
         if (df_5m is None or df_5m.empty) and ts is not None:
-            pro_bar_fn = getattr(ts, "pro_bar", None)
+            pro_bar_fn = _safe_getattr(ts, "pro_bar")
             if callable(pro_bar_fn) and last_trade_date is not None:
                 try:
                     df_5m = pro_bar_fn(ts_code=ts_code, start_date=last_trade_date, end_date=last_trade_date, freq="5min", asset="E")
@@ -864,7 +891,7 @@ else:
                 except Exception:
                     df_5m = pd.DataFrame()
         if (df_5m is None or df_5m.empty) and ts is not None:
-            k_fn = getattr(ts, "get_k_data", None)
+            k_fn = _safe_getattr(ts, "get_k_data")
             if callable(k_fn):
                 try:
                     start_k = (now_dt - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
@@ -888,7 +915,7 @@ else:
         if (df_5m is None or df_5m.empty) and ts is not None and last_trade_date is not None and len(str(last_trade_date)) == 8:
             date_for_tick = f"{str(last_trade_date)[:4]}-{str(last_trade_date)[4:6]}-{str(last_trade_date)[6:]}"
             ticks_df = pd.DataFrame()
-            ticks_fn = getattr(ts, "get_tick_data", None)
+            ticks_fn = _safe_getattr(ts, "get_tick_data")
             if callable(ticks_fn):
                 try:
                     ticks_df = ticks_fn(symbol, date=date_for_tick)
@@ -963,9 +990,19 @@ else:
             if not isinstance(intraday, dict):
                 intraday = {}
             intraday["bars_5m_last_48"] = rows
+        else:
+            if not isinstance(intraday, dict):
+                intraday = {}
+            if intraday.get("bars_5m_last_48") is None and intraday.get("bars_5m_error") is None:
+                intraday["bars_5m_hint"] = "无 5 分钟数据"
     except Exception as e:
-        if isinstance(intraday, dict):
-            intraday["bars_5m_error"] = str(e)
+        err = str(e)
+        if not isinstance(intraday, dict):
+            intraday = {}
+        intraday["bars_5m_error"] = err
+        if ("tushare_pro_not_ready" in err) or ("没有该接口访问权限" in err) or ("权限" in err):
+            intraday["bars_5m_hint"] = "5 分钟数据接口不可用"
+            intraday["bars_5m_reason"] = err
 
     try:
         if pro is None or ts_code is None:
@@ -1084,7 +1121,7 @@ else:
         now = pd.Timestamp.now()
         end_date = now.strftime("%Y%m%d")
         start_date = (now - pd.Timedelta(days=CONFIG["back_days"])).strftime("%Y%m%d")
-        top_fn = getattr(pro, "top_list", None)
+        top_fn = _safe_getattr(pro, "top_list")
         raw_df = pd.DataFrame()
         need_fallback_by_trade_date = False
         if callable(top_fn):
@@ -1138,19 +1175,35 @@ else:
             if "trade_date" in raw_df.columns:
                 raw_df["trade_date"] = raw_df["trade_date"].astype(str)
                 raw_df = raw_df.sort_values("trade_date", ascending=False)
-            days = []
             if "trade_date" in raw_df.columns:
+                days = []
                 for d0 in raw_df["trade_date"].tolist():
                     if d0 not in days:
                         days.append(d0)
                     if len(days) >= CONFIG["top_n_days"]:
                         break
-            df_use = raw_df[raw_df["trade_date"].isin(days)].copy() if days else raw_df.head(10).copy()
+                df_use = raw_df[raw_df["trade_date"].isin(days)].copy() if days else raw_df.head(10).copy()
+            else:
+                code_col = "代码" if "代码" in raw_df.columns else ("证券代码" if "证券代码" in raw_df.columns else None)
+                date_col = "上榜日" if "上榜日" in raw_df.columns else ("上榜日期" if "上榜日期" in raw_df.columns else None)
+                if code_col and date_col:
+                    df_use = raw_df[raw_df[code_col].astype(str) == str(_to_ak_symbol(symbol) or "")].copy()
+                    df_use[date_col] = pd.to_datetime(df_use[date_col], errors="coerce")
+                    df_use = df_use[df_use[date_col].notna()].drop_duplicates(subset=[date_col], keep="first")
+                    df_use = df_use.sort_values(date_col, ascending=False).head(CONFIG["top_n_days"]).reset_index(drop=True)
+                    df_use["trade_date"] = df_use[date_col].dt.strftime("%Y%m%d")
+                else:
+                    df_use = raw_df.head(10).copy()
             if "net_buy" in df_use.columns:
                 df_use["net_buy_yi"] = pd.to_numeric(df_use["net_buy"], errors="coerce") / 10000.0
             else:
-                df_use["net_buy_yi"] = np.nan
+                if "龙虎榜净买额" in df_use.columns:
+                    df_use["net_buy_yi"] = pd.to_numeric(df_use["龙虎榜净买额"], errors="coerce") / 100000000.0
+                else:
+                    df_use["net_buy_yi"] = np.nan
             ratio_col = "net_rate" if "net_rate" in df_use.columns else None
+            if ratio_col is None:
+                ratio_col = "净买额占总成交比" if "净买额占总成交比" in df_use.columns else ("净买额占比" if "净买额占比" in df_use.columns else None)
 
             def judge_main_force(net_buy_yi, buy_ratio):
                 try:
@@ -1173,12 +1226,12 @@ else:
                 items.append(
                     {
                         "date": rr.get("trade_date"),
-                        "close": _round(rr.get("close"), 3),
-                        "chg_pct": _round(rr.get("pct_chg"), 2),
+                        "close": _round(rr.get("close") if "close" in rr else rr.get("收盘价")),
+                        "chg_pct": _round(rr.get("pct_chg") if "pct_chg" in rr else rr.get("涨跌幅"), 2),
                         "net_buy_yi": _round(rr.get("net_buy_yi"), 3),
                         "net_ratio_pct": _round(ratio_v, 2),
-                        "turnover_rate": _round(rr.get("turnover_rate"), 2),
-                        "reason": rr.get("reason") or rr.get("explain") or rr.get("name"),
+                        "turnover_rate": _round(rr.get("turnover_rate") if "turnover_rate" in rr else rr.get("换手率"), 2),
+                        "reason": rr.get("reason") or rr.get("explain") or rr.get("name") or rr.get("上榜原因"),
                         "movement": movement,
                         "suggestion": suggestion,
                     }
@@ -1188,7 +1241,7 @@ else:
             lhb = {"hint": "无龙虎榜数据"}
     except Exception as e:
         err = str(e)
-        if ("没有该接口访问权限" in err) or ("权限" in err) or ("接口名" in err):
+        if ("tushare_pro_not_ready" in err) or ("没有该接口访问权限" in err) or ("权限" in err) or ("接口名" in err):
             lhb = {"hint": "龙虎榜接口权限不足", "reason": err}
         else:
             lhb = {"error": err}
@@ -1197,7 +1250,7 @@ else:
         if pro is None or ts_code is None:
             raise RuntimeError("tushare_pro_not_ready")
         fh_df = pd.DataFrame()
-        fh_fn = getattr(pro, "fund_holdings", None)
+        fh_fn = _safe_getattr(pro, "fund_holdings")
         if callable(fh_fn):
             try:
                 fh_df = fh_fn(ts_code=ts_code)
@@ -1217,7 +1270,7 @@ else:
                 return f"{y}0930"
 
             period = _latest_quarter_end(now_dt)
-            alt_fn = getattr(pro, "top10_floatholders", None)
+            alt_fn = _safe_getattr(pro, "top10_floatholders")
             if callable(alt_fn):
                 try:
                     fh_df = alt_fn(ts_code=ts_code, period=period)
@@ -1239,6 +1292,11 @@ else:
                 if c in fh_df.columns:
                     ratio_col = c
                     break
+            if ratio_col is None:
+                for c in ["占流通股比例", "持股比例", "持股比例(%)", "占流通股比", "占比"]:
+                    if c in fh_df.columns:
+                        ratio_col = c
+                        break
             if ratio_col:
                 fh_df[ratio_col] = pd.to_numeric(fh_df[ratio_col], errors="coerce").fillna(0)
                 fh_df = fh_df.sort_values(ratio_col, ascending=False).reset_index(drop=True)
@@ -1260,7 +1318,7 @@ else:
                     "total_ratio_pct": _round(total_ratio, 2) if total_ratio is not None else None,
                     "fund_count": fund_count,
                     "concentration": concentration,
-                    "source": "top10_floatholders",
+                    "source": "fund_holdings" if callable(fh_fn) else ("top10_floatholders" if callable(alt_fn) else "unknown"),
                 },
                 "top30": show.to_dict("records"),
             }
@@ -1268,7 +1326,7 @@ else:
             fund_holding = {"hint": "无基金/机构持仓数据"}
     except Exception as e:
         err = str(e)
-        if ("没有该接口访问权限" in err) or ("权限" in err) or ("接口名" in err):
+        if ("tushare_pro_not_ready" in err) or ("没有该接口访问权限" in err) or ("权限" in err) or ("接口名" in err):
             fund_holding = {"hint": "基金/机构持仓接口权限不足", "reason": err}
         else:
             fund_holding = {"error": err}
@@ -1364,7 +1422,7 @@ else:
 
     try:
         news_df = pd.DataFrame()
-        news_fn = getattr(pro, "news", None) if pro is not None else None
+        news_fn = _safe_getattr(pro, "news") if pro is not None else None
         if callable(news_fn) and ts_code is not None:
             end_str = now_dt.strftime("%Y%m%d")
             start_str = (now_dt - pd.Timedelta(days=30)).strftime("%Y%m%d")
@@ -1378,7 +1436,7 @@ else:
                     raise
 
         if (news_df is None or news_df.empty) and pro is not None:
-            cctv_fn = getattr(pro, "cctv_news", None)
+            cctv_fn = _safe_getattr(pro, "cctv_news")
             if callable(cctv_fn):
                 try:
                     news_df = cctv_fn(date=now_dt.strftime("%Y%m%d"))
@@ -1386,7 +1444,7 @@ else:
                     news_df = pd.DataFrame()
 
         if (news_df is None or news_df.empty) and ts is not None:
-            latest_news_fn = getattr(ts, "get_latest_news", None)
+            latest_news_fn = _safe_getattr(ts, "get_latest_news")
             if callable(latest_news_fn):
                 try:
                     news_df = latest_news_fn(top=50, show_content=False)
@@ -1397,12 +1455,13 @@ else:
                         news_df = pd.DataFrame()
                 except Exception:
                     news_df = pd.DataFrame()
-
         if news_df is not None and not news_df.empty and meta.get("name"):
             original_news_df = news_df
             key = str(meta.get("name"))
             if "title" in news_df.columns:
                 mask = news_df["title"].astype(str).str.contains(key, na=False)
+            elif "新闻标题" in news_df.columns:
+                mask = news_df["新闻标题"].astype(str).str.contains(key, na=False)
             elif "content" in news_df.columns:
                 mask = news_df["content"].astype(str).str.contains(key, na=False)
             else:
@@ -1413,7 +1472,7 @@ else:
                 news_df = original_news_df
         if news_df is not None and not news_df.empty:
             news_df = news_df.copy()
-            dt_col = "datetime" if "datetime" in news_df.columns else ("pub_time" if "pub_time" in news_df.columns else None)
+            dt_col = "datetime" if "datetime" in news_df.columns else ("pub_time" if "pub_time" in news_df.columns else ("发布时间" if "发布时间" in news_df.columns else None))
             if dt_col is None and "time" in news_df.columns:
                 dt_col = "time"
             if dt_col:
@@ -1425,10 +1484,10 @@ else:
                 items.append(
                     _clip_record(
                         {
-                            "发布时间": rr.get(dt_col),
-                            "新闻标题": rr.get("title") or rr.get("content") or rr.get("name"),
-                            "文章来源": rr.get("src") or rr.get("source"),
-                            "url": rr.get("url"),
+                            "发布时间": rr.get(dt_col).strftime("%Y-%m-%d %H:%M:%S") if dt_col and rr.get(dt_col) == rr.get(dt_col) else _to_str(rr.get("time") or rr.get("发布时间")),
+                            "新闻标题": rr.get("title") or rr.get("content") or rr.get("name") or rr.get("新闻标题"),
+                            "文章来源": rr.get("src") or rr.get("source") or rr.get("文章来源"),
+                            "url": rr.get("url") or rr.get("URL") or rr.get("link"),
                         },
                         max_len=800,
                     )
@@ -1505,14 +1564,26 @@ _add_cov("交易规则约束 (涨跌停/T+1)", _pick(result, "trading_rules.limi
 _add_cov("基本面概览 (行业/股本/财务指标)", _non_empty(_pick(result, "share_structure.raw")) or _non_empty(_pick(result, "fundamental.financial_analysis_last_4")))
 _add_cov("公司画像与题材 (主营/概念/互动)", _non_empty(_pick(result, "company.profile")) or _non_empty(_pick(result, "company.concepts")) or _non_empty(_pick(result, "disclosure.announcements_top10")))
 _add_cov("资金流向（个股近 100 个交易日内）", _non_empty(_pick(result, "money_flow.history_last_100")), {"rows": len(_pick(result, "money_flow.history_last_100") or [])})
-_add_cov("5 分钟数据（分时历史）", _non_empty(_pick(result, "intraday.bars_5m_last_48")), {"rows": len(_pick(result, "intraday.bars_5m_last_48") or [])})
+_add_cov(
+    "5 分钟数据（分时历史）",
+    _non_empty(_pick(result, "intraday.bars_5m_last_48")) or _pick(result, "intraday.bars_5m_hint") is not None,
+    {"rows": len(_pick(result, "intraday.bars_5m_last_48") or []), "hint": _pick(result, "intraday.bars_5m_hint")},
+)
 _add_cov("近 10 天换手率", _non_empty(_pick(result, "daily.turnover_last_10")), {"rows": len(_pick(result, "daily.turnover_last_10") or [])})
 _add_cov("实时估值 (PE/PB/量比)", _pick(result, "snapshot.pe_dynamic") is not None or _pick(result, "snapshot.pb") is not None or _pick(result, "snapshot.volume_ratio") is not None)
 _add_cov("ATR （平均真实波幅）", _pick(result, "technicals.latest.atr_14") is not None)
 _add_cov("盘口五档/涨停跌停/外内盘", _non_empty(_pick(result, "order_book.buy")) and _non_empty(_pick(result, "order_book.sell")))
 _add_cov("实时快照（单股过滤版）", _non_empty(_pick(result, "snapshot")))
-_add_cov("今日分时 VWAP/日内强弱", _pick(result, "intraday.vwap") is not None and _pick(result, "intraday.vwap_bias_pct") is not None)
-_add_cov("新闻获取", _non_empty(_pick(result, "meta.news_top5")), {"rows": len(_pick(result, "meta.news_top5") or [])})
+_add_cov(
+    "今日分时 VWAP/日内强弱",
+    (_pick(result, "intraday.vwap") is not None and _pick(result, "intraday.vwap_bias_pct") is not None) or _pick(result, "intraday.hint") is not None,
+    {"hint": _pick(result, "intraday.hint"), "error": _pick(result, "intraday.error"), "reason": _pick(result, "intraday.reason")},
+)
+_add_cov(
+    "新闻获取",
+    _non_empty(_pick(result, "meta.news_top5")) or _pick(result, "meta.news_hint") is not None,
+    {"rows": len(_pick(result, "meta.news_top5") or []), "hint": _pick(result, "meta.news_hint"), "error": _pick(result, "meta.news_error")},
+)
 _add_cov("筹码集中度", _non_empty(_pick(result, "chip.latest")))
 _add_cov("最近 3 次上榜龙虎榜主力动向分析（年度回溯）", _non_empty(_pick(result, "lhb.items")) or _pick(result, "lhb.hint") is not None)
 _add_cov("融资融券", _pick(result, "margin.date") is not None or _pick(result, "margin.hint") is not None)

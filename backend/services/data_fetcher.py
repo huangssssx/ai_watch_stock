@@ -20,11 +20,16 @@ class DataFetcher:
             import requests
             import json
             import time
+            try:
+                import akshare as ak
+            except Exception:
+                ak = None
             
             # Inject Tushare clients instead of AkShare
             local_scope = {
                 "ts": self.ts,
                 "pro": self.pro,
+                "ak": ak,
                 "pd": pd,
                 "np": np,
                 "requests": requests,
