@@ -1,4 +1,5 @@
 import akshare as ak
+import efinance as ef
 import pandas as pd
 import numpy as np
 import time
@@ -50,19 +51,117 @@ def _safe_vwap(amount, volume, current_price):
     # 但为了保险，还是返回修正后的
     return raw_vwap / 100.0 if raw_vwap > current_price * 50 else raw_vwap
 
-def fetch_stock_data(code, name, sector):
+def _chunked(items, size: int):
+    if not items:
+        return
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+def _fetch_latest_quotes_once(codes):
+    df = ef.stock.get_latest_quote(codes)
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.copy()
+    df["代码"] = df["代码"].astype(str).str.zfill(6)
+    for col in ["最新价", "今开", "昨日收盘", "最高", "最低", "涨跌幅", "换手率", "量比", "成交量", "成交额"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+def _fetch_latest_quotes(codes):
+    if not codes:
+        return pd.DataFrame()
+    out = []
+    stack = [codes]
+    while stack:
+        chunk = stack.pop()
+        try:
+            out.append(_fetch_latest_quotes_once(chunk))
+            time.sleep(0.05)
+        except Exception as e:
+            if len(chunk) <= 10:
+                _log_error(f"ef.stock.get_latest_quote({len(chunk)})", e)
+                continue
+            mid = len(chunk) // 2
+            stack.append(chunk[:mid])
+            stack.append(chunk[mid:])
+            time.sleep(0.2)
+    if not out:
+        return pd.DataFrame()
+    df = pd.concat(out, ignore_index=True)
+    df = df.dropna(subset=["代码"]).drop_duplicates(subset=["代码"], keep="last")
+    return df
+
+def _fetch_base_info_once(codes):
+    df = ef.stock.get_base_info(codes)
+    if df is None or (hasattr(df, "empty") and df.empty):
+        return pd.DataFrame()
+    if isinstance(df, pd.Series):
+        df = df.to_frame().T
+    df = df.copy()
+    if "股票代码" in df.columns:
+        df["股票代码"] = df["股票代码"].astype(str).str.zfill(6)
+    return df
+
+def _fetch_base_info(codes):
+    if not codes:
+        return pd.DataFrame()
+    out = []
+    for chunk in _chunked(codes, 80):
+        try:
+            out.append(_fetch_base_info_once(chunk))
+            time.sleep(0.05)
+        except Exception as e:
+            _log_error(f"ef.stock.get_base_info({len(chunk)})", e)
+            time.sleep(0.2)
+            continue
+    if not out:
+        return pd.DataFrame()
+    df = pd.concat(out, ignore_index=True)
+    if "股票代码" in df.columns:
+        df = df.dropna(subset=["股票代码"]).drop_duplicates(subset=["股票代码"], keep="last")
+    return df
+
+def _fetch_quote_history_once(codes):
+    hist_dict = ef.stock.get_quote_history(codes)
+    if not hist_dict:
+        return {}
+    return hist_dict
+
+def _fetch_quote_history(codes):
+    if not codes:
+        return {}
+    out = {}
+    for chunk in _chunked(codes, 30):
+        try:
+            part = _fetch_quote_history_once(chunk)
+            out.update(part)
+            time.sleep(0.05)
+        except Exception as e:
+            _log_error(f"ef.stock.get_quote_history({len(chunk)})", e)
+            time.sleep(0.2)
+            continue
+    return out
+
+def fetch_stock_data(code, name, sector, hist: pd.DataFrame = None):
     """
     Worker function to fetch data for a single stock.
     Returns dict or None.
     """
     try:
         # 1. Get Daily Data (for Trend & RPP)
-        # We need historical data to calculate RPP (Relative Position)
-        hist = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
+        if hist is None:
+            hist_dict = ef.stock.get_quote_history([code])
+            if not hist_dict or code not in hist_dict:
+                return None
+            hist = hist_dict[code]
+
         if hist is None or hist.empty or len(hist) < 60: return None
         
+        # efinance columns: 股票名称, 股票代码, 日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额...
+        # Map to expected columns
         last_row = hist.iloc[-1]
-        close = last_row['收盘']
+        close = float(last_row['收盘'])
         
         # RPP Calculation
         window_60 = hist.tail(60)
@@ -80,7 +179,7 @@ def fetch_stock_data(code, name, sector):
             "close": close,
             "rpp": rpp,
             "ma20": ma20,
-            "vol_prev": last_row['成交量']
+            "vol_prev": float(last_row['成交量'])
         }
     except Exception as e:
         _log_error(f"fetch_stock_data({code})", e)
@@ -88,42 +187,88 @@ def fetch_stock_data(code, name, sector):
 
 # --- Main Logic ---
 
-print("🔥 启动 V2.0 板块资金选股引擎 (单线程安全版)...")
+print("🔥 启动 V2.0 板块资金选股引擎 (单线程安全版 - efinance加强)...")
 start_time = time.time()
 
-# 1. 获取热门板块 (Real-time)
+spot_df = pd.DataFrame()
 try:
-    sectors = ak.stock_board_industry_name_em()
-    if sectors is not None and not sectors.empty:
-        # 过滤掉 ST 板块
-        sectors = sectors[~sectors['板块名称'].str.contains("ST")]
-        # 按涨幅排序
-        top_sectors = sectors.sort_values(by="涨跌幅", ascending=False).head(8)
-        sector_list = top_sectors['板块名称'].tolist()
-        print(f"🎯 锁定热门板块: {sector_list}")
+    universe = ak.stock_info_a_code_name()
+    if universe is not None and not universe.empty:
+        universe = universe.rename(columns={"code": "代码", "name": "名称"})
+        universe["代码"] = universe["代码"].astype(str).str.zfill(6)
+        universe = universe[~universe["名称"].astype(str).str.contains("ST|退", na=False)]
+        universe_codes = universe["代码"].tolist()
     else:
-        sector_list = []
+        universe_codes = []
 except Exception as e:
-    print(f"❌ 板块获取失败: {e}")
-    sector_list = []
+    _log_error("ak.stock_info_a_code_name()", e)
+    universe_codes = []
 
-# 2. 构建候选池 (Candidate Pool)
+if universe_codes:
+    print(f"📡 拉取全市场实时快照 (via efinance.get_latest_quote, 分批)...")
+    try:
+        for chunk in _chunked(universe_codes, 150):
+            try:
+                part = _fetch_latest_quotes_once(chunk)
+                if not part.empty:
+                    spot_df = pd.concat([spot_df, part], ignore_index=True)
+                time.sleep(0.05)
+            except Exception as e:
+                _log_error(f"ef.stock.get_latest_quote({len(chunk)})", e)
+                time.sleep(0.2)
+                continue
+        if not spot_df.empty:
+            spot_df = spot_df.dropna(subset=["代码"]).drop_duplicates(subset=["代码"], keep="last")
+    except Exception as e:
+        _log_error("build_spot_df()", e)
+        spot_df = pd.DataFrame()
+
+if spot_df.empty:
+    df = pd.DataFrame([{"代码": "-", "名称": "-", "点评": "实时行情获取失败，通常是数据源连接被中断"}])
+    print(f"耗时: {time.time() - start_time:.2f}s")
+    if _ERROR_COUNT > 0:
+        print(f"❗ 本次运行捕获异常次数: {_ERROR_COUNT}")
+    raise SystemExit(0)
+
+scan_pool = spot_df.copy()
+if "成交额" in scan_pool.columns:
+    scan_pool = scan_pool[scan_pool["成交额"].fillna(0) > 0]
+scan_pool = scan_pool.sort_values(by="成交额", ascending=False).head(800)
+
+base_info = _fetch_base_info(scan_pool["代码"].astype(str).tolist())
+if not base_info.empty and "股票代码" in base_info.columns:
+    base_info = base_info.rename(columns={"股票代码": "代码", "股票名称": "名称", "所处行业": "板块"})
+    scan_pool = scan_pool.merge(base_info[["代码", "板块"]], on="代码", how="left")
+else:
+    scan_pool["板块"] = ""
+
+sector_list = (
+    scan_pool.dropna(subset=["板块"])
+    .groupby("板块")["成交额"]
+    .sum()
+    .sort_values(ascending=False)
+    .head(8)
+    .index.tolist()
+)
+sector_list = [s for s in sector_list if isinstance(s, str) and s.strip()]
+print(f"🎯 锁定热门板块: {sector_list}")
+
 candidates = []
 if sector_list:
-    for sector in sector_list:
-        try:
-            cons = ak.stock_board_industry_cons_em(symbol=sector)
-            if cons is not None and not cons.empty:
-                for _, row in cons.iterrows():
-                    candidates.append({
-                        "code": str(row['代码']).zfill(6), 
-                        "name": row['名称'], 
-                        "sector": sector
-                    })
-            time.sleep(0.5) # Avoid blocking
-        except Exception as e:
-            _log_error(f"stock_board_industry_cons_em({sector})", e)
-            continue
+    cand_df = scan_pool[scan_pool["板块"].isin(sector_list)].copy()
+else:
+    cand_df = scan_pool.copy()
+    cand_df["板块"] = "全市场"
+
+cand_df = cand_df.sort_values(by="成交额", ascending=False).head(300)
+for _, row in cand_df.iterrows():
+    candidates.append(
+        {
+            "code": str(row["代码"]).zfill(6),
+            "name": row.get("名称", ""),
+            "sector": row.get("板块", "") or "全市场",
+        }
+    )
 
 print(f"🔍 初始候选池: {len(candidates)} 只股票")
 
@@ -132,33 +277,21 @@ print(f"🔍 初始候选池: {len(candidates)} 只股票")
 analyzed_stocks = []
 
 if candidates:
+    codes = [c["code"] for c in candidates]
+    hist_map = _fetch_quote_history(codes)
     total_tasks = len(candidates)
     for i, c in enumerate(candidates):
-        res = fetch_stock_data(c['code'], c['name'], c['sector'])
+        hist = hist_map.get(c["code"])
+        res = fetch_stock_data(c["code"], c["name"], c["sector"], hist=hist)
         if res:
             analyzed_stocks.append(res)
-        
         if i % 10 == 0:
             print(f"  进度: {i}/{total_tasks}...", end="\r")
-        
-        # 关键修改：增加延时，保护账号
-        time.sleep(0.3)
+        time.sleep(0.02)
 
 print(f"\n✅ 数据获取完成，有效股票: {len(analyzed_stocks)}")
 
 # 4. 实时行情校验 (The Filter)
-# 为了获取最新的 Price, Open, VWAP (Amount/Vol)，我们需要拉取一次全市场 Spot
-print("📡 拉取全市场实时快照...")
-try:
-    spot_df = ak.stock_zh_a_spot_em()
-    if spot_df is not None and not spot_df.empty:
-        spot_df['代码'] = spot_df['代码'].astype(str).str.zfill(6)
-    else:
-        spot_df = pd.DataFrame()
-except Exception as e:
-    _log_error("stock_zh_a_spot_em()", e)
-    spot_df = pd.DataFrame()
-
 final_list = []
 if not spot_df.empty and analyzed_stocks:
     # 转为字典加速查找
@@ -173,14 +306,14 @@ if not spot_df.empty and analyzed_stocks:
         # --- 核心过滤逻辑 V2.0 ---
         
         try:
-            current_price = float(real.get('最新价', 0))
-            open_price = float(real.get('今开', 0))
-            prev_close = float(real.get('昨收', 0))
-            high_price = float(real.get('最高', 0))
-            volume = float(real.get('成交量', 0))
-            amount = float(real.get('成交额', 0))
-            turnover = float(real.get('换手率', 0))
-            lb = float(real.get('量比', 0))
+            current_price = float(real.get('最新价', 0) or 0)
+            open_price = float(real.get('今开', 0) or 0)
+            prev_close = float(real.get('昨日收盘', 0) or real.get('昨收', 0) or 0)
+            high_price = float(real.get('最高', 0) or 0)
+            volume = float(real.get('成交量', 0) or 0)
+            amount = float(real.get('成交额', 0) or 0)
+            turnover = float(real.get('换手率', 0) or 0)
+            lb = float(real.get('量比', 0) or 0)
         except Exception as e:
             _log_error(f"parse_spot_row({code})", e)
             continue

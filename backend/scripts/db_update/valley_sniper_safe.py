@@ -3,6 +3,7 @@
 # 优化：增加限流延时，防止账号被封
 
 import akshare as ak
+import efinance as ef
 import pandas as pd
 import numpy as np
 import datetime
@@ -191,14 +192,33 @@ def dynamic_volume_score(volume, mkt_cap):
     return 0, vol_rank
 
 # --- 主程序 ---
-print("🎯 【山谷狙击选股策略 v8.6 (Bug修复版 + 安全限流)】启动")
+print("🎯 【山谷狙击选股策略 v8.6 (Bug修复版 + 安全限流 + efinance)】启动")
 print("🛠️ 修复内容：VWAP 单位数量级自动修正 + 单线程安全延时")
-print("📡 正在获取市场数据...")
+print("📡 正在获取市场数据(via efinance)...")
 
 try:
-    df_market = ak.stock_zh_a_spot_em()
+    df_market = ef.stock.get_realtime_quotes()
+    if df_market is not None and not df_market.empty:
+        df_market = df_market.rename(columns={
+            '股票代码': '代码',
+            '股票名称': '名称',
+            '最新价': '最新价',
+            '涨跌幅': '涨跌幅',
+            '成交量': '成交量',
+            '成交额': '成交额',
+            '换手率': '换手率',
+            '量比': '量比',
+            '流通市值': '流通市值' # efinance has this
+        })
+        # Clean numeric
+        for col in ['最新价', '涨跌幅', '成交量', '量比', '流通市值']:
+            if col in df_market.columns:
+                    df_market[col] = pd.to_numeric(df_market[col], errors='coerce')
+    else:
+        df_market = pd.DataFrame()
+
 except Exception as e:
-    _log_error("stock_zh_a_spot_em()", e)
+    _log_error("ef.stock.get_realtime_quotes()", e)
     df_market = pd.DataFrame()
 
 if not df_market.empty:
@@ -225,7 +245,7 @@ if not df_market.empty:
             for _, r in fund_flow_df.iterrows():
                 sector_fund_flow_map[str(r["名称"])] = float(r["5日主力净流入-净占比"])
     except Exception as e:
-        _log_error("stock_sector_fund_flow_rank()", e)
+         _log_error("stock_sector_fund_flow_rank()", e)
     
     sector_change_map = {} 
     hot_rank_map = {}
@@ -328,11 +348,27 @@ if not df_market.empty:
             print(f"⚡ 扫描中... 已熔断 {skipped_sector} 只杂毛，豁免 {rescued_dragon} 只龙头")
 
         # 关键修改：增加延时，保护账号
-        time.sleep(0.3)
+        time.sleep(0.1)
 
         try:
-            df_hist = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date_str, end_date=end_date_str, adjust="qfq")
+            # Using efinance
+            hist_dict = ef.stock.get_quote_history([symbol])
+            if not hist_dict or symbol not in hist_dict: continue
+            
+            df_hist = hist_dict[symbol]
             if df_hist is None or len(df_hist) < 300: continue
+            
+            # efinance columns map
+            df_hist = df_hist.rename(columns={
+                "收盘": "收盘",
+                "开盘": "开盘",
+                "最高": "最高",
+                "最低": "最低",
+                "成交量": "成交量",
+                "成交额": "成交额",
+                "换手率": "换手率",
+                "涨跌幅": "涨跌幅"
+            })
             
             close = pd.to_numeric(df_hist["收盘"], errors="coerce")
             open_ = pd.to_numeric(df_hist["开盘"], errors="coerce")

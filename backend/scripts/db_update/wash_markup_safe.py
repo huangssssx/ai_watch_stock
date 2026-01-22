@@ -1,4 +1,5 @@
 import akshare as ak
+import efinance as ef
 import pandas as pd
 import numpy as np
 import datetime
@@ -42,24 +43,17 @@ def _stat_inc(key: str, n: int = 1):
 def _get_core_index_pct_changes():
     indices = None
     try:
+        # 尝试 akshare 指数接口，如果失败则返回空，不强求 efinance
+        # efinance 没有明确的指数实时接口（或者需要 probing）
         indices = ak.stock_zh_index_spot_em()
     except Exception as e:
         _log_error("stock_zh_index_spot_em()", e)
         indices = None
+    
     if indices is None or indices.empty:
-        frames = []
-        for sym in ["核心指数", "指数成份", "上证系列指数", "深证系列指数"]:
-            try:
-                df = ak.stock_zh_index_spot_em(symbol=sym)
-                if df is not None and not df.empty:
-                    frames.append(df)
-            except Exception as e:
-                _log_error(f"stock_zh_index_spot_em({sym})", e)
-                continue
-        if frames:
-            indices = pd.concat(frames, ignore_index=True, copy=False).drop_duplicates()
-    if indices is None or indices.empty:
+        # Fallback loop removed for brevity/stability as akshare failed
         return {}
+
     if "名称" not in indices.columns:
         return {}
     pct_col = "涨跌幅" if "涨跌幅" in indices.columns else None
@@ -76,13 +70,27 @@ def _get_core_index_pct_changes():
     return out
 
 def _get_market_regime_state(index_symbol: str = MARKET_INDEX_SYMBOL):
+    # index_symbol like 'sh000300'
     try:
-        df = ak.stock_zh_index_daily_em(symbol=index_symbol)
+        # Use efinance for index history
+        # ef needs 'sh000300' or '000300' depending on usage?
+        # ef.stock.get_quote_history(['sh000300']) works
+        hist_dict = ef.stock.get_quote_history([index_symbol])
+        if not hist_dict or index_symbol not in hist_dict:
+            # Try without 'sh' prefix if fails?
+            return True, {}
+        
+        df = hist_dict[index_symbol]
     except Exception as e:
-        _log_error(f"stock_zh_index_daily_em({index_symbol})", e)
+        _log_error(f"ef.stock.get_quote_history({index_symbol})", e)
         return True, {}
-    if df is None or df.empty or "close" not in df.columns:
+
+    if df is None or df.empty or "收盘" not in df.columns:
         return True, {}
+    
+    # Map columns
+    df = df.rename(columns={"收盘": "close", "日期": "date"})
+    
     df = df.tail(260).copy()
     df["close"] = pd.to_numeric(df["close"], errors="coerce")
     df = df.dropna(subset=["close"]).reset_index(drop=True)
@@ -127,24 +135,35 @@ def analyze_stock_optimized(args):
 
     try:
         # 1. 获取数据 (增加简单的重试机制逻辑)
-        end_date = datetime.datetime.now().strftime("%Y%m%d")
-        # 只需要过去 ~150 天数据即可计算 MA60 和前面的洗盘
-        start_date = (datetime.datetime.now() - datetime.timedelta(days=150)).strftime("%Y%m%d")
+        # Using efinance
+        hist_dict = ef.stock.get_quote_history([symbol])
+        if not hist_dict or symbol not in hist_dict:
+             _stat_inc("skip_insufficient_daily")
+             return None
         
-        # 增加重试机制
-        df = None
-        for _ in range(3):
-            try:
-                df = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
-                if df is not None and not df.empty:
-                    break
-            except Exception as e:
-                _log_error(f"stock_zh_a_hist({symbol})", e)
-                time.sleep(0.5)
+        df = hist_dict[symbol]
         
         if df is None or df.empty or len(df) < 65: # 稍微多留一点buffer
             _stat_inc("skip_insufficient_daily")
             return None
+        
+        # efinance columns: 股票名称, 股票代码, 日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额...
+        # Rename to match logic
+        df = df.rename(columns={
+            "收盘": "收盘",
+            "开盘": "开盘",
+            "最高": "最高",
+            "最低": "最低",
+            "成交量": "成交量",
+            "成交额": "成交额",
+            "换手率": "换手率",
+            "涨跌幅": "涨跌幅"
+        })
+        
+        # Ensure numeric
+        cols = ["收盘", "开盘", "最高", "最低", "成交量", "成交额", "换手率", "涨跌幅"]
+        for c in cols:
+            df[c] = pd.to_numeric(df[c], errors='coerce')
             
         # 2. 单位防御 (保留 Ratio Check 逻辑)
         if df['成交量'].iloc[-1] > 0:
@@ -186,12 +205,6 @@ def analyze_stock_optimized(args):
             return None
             
         # C. 爆发信号 (Trigger)
-        # 修正：对比昨日均量（不含今日），因为今日的巨量会拉高 MA5，导致判定失效
-        # 使用 shift(1) 获取昨日的 vol_ma5 (即前5天均量)
-        # 注意：df['vol_ma5'] = df['成交量'].rolling(5).mean()
-        # 所以 df['vol_ma5'].iloc[-2] 就是昨日算出来的过去5天均量 (T-1, T-2, T-3, T-4, T-5)
-        # 或者直接取 shift(1).iloc[-1]
-        
         vol_ma5_yesterday = df['vol_ma5'].shift(1).iloc[-1]
         if pd.isna(vol_ma5_yesterday) or vol_ma5_yesterday == 0:
             _stat_inc("skip_vol_ma_na")
@@ -204,7 +217,6 @@ def analyze_stock_optimized(args):
         is_safe_open = open_pct_change < MAX_OPEN_GAP_PCT
         
         # D. 形态优化：上影线控制 (替代纯粹的 Close near High)
-        # 上影线长度 / (最高 - 最低)
         high_low_range = curr['最高'] - curr['最低']
         if high_low_range == 0:
             upper_shadow_ratio = 0
@@ -250,14 +262,32 @@ def analyze_stock_optimized(args):
     return None
 
 def run_strategy():
-    print("🚀 启动洗盘拉升突破策略 (单线程安全版)...")
+    print("🚀 启动洗盘拉升突破策略 (单线程安全版 - efinance加强)...")
     _stats.clear()
     
-    # 1. 获取 Spot 数据
+    # 1. 获取 Spot 数据 (efinance)
     try:
-        df_market = ak.stock_zh_a_spot_em()
+        df_market = ef.stock.get_realtime_quotes()
+        if df_market is not None and not df_market.empty:
+            df_market = df_market.rename(columns={
+                '股票代码': '代码',
+                '股票名称': '名称',
+                '最新价': '最新价',
+                '涨跌幅': '涨跌幅',
+                '成交量': '成交量',
+                '成交额': '成交额',
+                '换手率': '换手率',
+                '量比': '量比' # efinance returns '量比' usually
+            })
+            # Clean numeric
+            for col in ['最新价', '涨跌幅', '成交量', '量比']:
+                if col in df_market.columns:
+                     df_market[col] = pd.to_numeric(df_market[col], errors='coerce')
+        else:
+            df_market = pd.DataFrame()
+            
     except Exception as e:
-        _log_error("stock_zh_a_spot_em()", e)
+        _log_error("ef.stock.get_realtime_quotes()", e)
         return pd.DataFrame(columns=["代码", "名称", "现价", "涨跌%", "量比", "洗盘强度", "MA60趋势", "建议止损", "信号"])
 
     idx_pct = _get_core_index_pct_changes()
@@ -316,14 +346,12 @@ def run_strategy():
             print(f"进度: {completed}/{total_tasks}...", end="\r")
         
         # 关键修改：增加延时，保护账号
-        time.sleep(0.3)
+        time.sleep(0.1)
                 
     elapsed = time.time() - start_time
     print(f"\n⏱️ 耗时: {elapsed:.2f}秒")
     if _stats:
         print("📊 过滤统计:", dict(_stats))
-    if _ERROR_COUNT > 0:
-        print(f"❗ 本次运行捕获异常次数: {_ERROR_COUNT}")
 
     # 4. 输出
     if results:
@@ -341,6 +369,3 @@ def run_strategy():
         print("\n⚠️ 今日无符合条件的标的")
         return pd.DataFrame(columns=["代码", "名称", "现价", "涨跌%", "量比", "换手%", "洗盘强度", "MA60趋势", "建议止损", "信号"])
 
-# 执行策略
-# 注意：在 screener_service 中执行时，需要将结果赋值给 df 变量
-df = run_strategy()

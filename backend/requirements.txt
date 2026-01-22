@@ -3,7 +3,7 @@ uvicorn
 sqlalchemy
 pydantic
 apscheduler
-akshare==1.17.96
+akshare
 mini-racer
 openai
 python-dotenv
