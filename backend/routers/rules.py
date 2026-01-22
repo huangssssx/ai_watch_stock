@@ -75,6 +75,8 @@ def test_rule(rule_id: int, payload: schemas.RuleTestPayload, db: Session = Depe
         import io
         import sys
         
+        from utils.tushare_client import ts, pro
+        
         # Capture stdout
         old_stdout = sys.stdout
         new_stdout = io.StringIO()
@@ -83,6 +85,8 @@ def test_rule(rule_id: int, payload: schemas.RuleTestPayload, db: Session = Depe
         # Sandbox
         local_scope = {
             "ak": ak,
+            "ts": ts,
+            "pro": pro,
             "pd": pd,
             "np": np,
             "datetime": datetime,
