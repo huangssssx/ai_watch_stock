@@ -26,5 +26,19 @@
 - **禁止假设**：永远不要假设 API 返回的单位是固定的，必须在代码中实现自适应防御逻辑。
 - 常用接口对照表：`docs/akshare_units.md`
 
+## tushare client 使用方式
+- backend/utils/tushare_client.py 中包含 tushare client 的初始化代码，以及常用的接口调用示例
+- 目前的 tushare 是 5000 积分权限
+- 所有 tushare 接口调用均需在代码中显式使用 `ts` 对象，禁止直接调用 `tushare` 模块
+- 所有 tushare 接口调用均需在代码中显式使用 `pro` 对象，禁止直接调用 `tushare` 模块
+
+
+## 选股脚本编写规范
+- 编写选股脚本时请参考：docs/选股脚本编写规则.md
+
+## 指标脚本编写规范
+- 编写指标脚本时请参考：docs/指标脚本编写规则.md
+- 验证通过的 Tushare 脚本同步到数据库的 indicator_definitions 表中
+
 # 项目引导
 - 可以参考/ClAUDE.md文件 中的项目引导部分理解项目的设计与实现
