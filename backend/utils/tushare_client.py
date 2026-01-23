@@ -3,6 +3,7 @@ import os
 
 try:
     # Initialize with a dummy token initially if needed, but we override it below
+    ts.set_token('4501928450004005131')
     pro = ts.pro_api('此处不用改')
     
     # Configure with the specific token and URL provided by the user
