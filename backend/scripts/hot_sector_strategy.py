@@ -123,12 +123,11 @@ def get_filtered_stocks_v2(stock_list, trade_date_str):
                 for _ in range(3):
                     try:
                         time.sleep(0.15)
-                        print(f"请求股票 {stock} 日线数据, 日期范围: {start_date} 到 {end_date}")
                         return ts_pro.daily(
                             ts_code=stock,
                             start_date=start_date,
                             end_date=end_date,
-                            fields="ts_code,trade_date,close,pre_close,pct_chg,vol"
+                            fields="ts_code,trade_date,open,close,pre_close,pct_chg,vol"
                         )
                     except Exception as e:
                         last_error = e
@@ -145,39 +144,76 @@ def get_filtered_stocks_v2(stock_list, trade_date_str):
 
             try:
                 df_stock = _safe_daily()
-                print(f"获取到股票 {stock} 日线数据: {df_stock}")
-
                 if df_stock is None or df_stock.empty:
                     debug_logs.append(f"{stock} 日线数据为空")
                     continue
-                if 'trade_date' not in df_stock.columns or 'close' not in df_stock.columns:
+                if 'trade_date' not in df_stock.columns or 'open' not in df_stock.columns or 'close' not in df_stock.columns:
                     debug_logs.append(f"{stock} 日线缺少必要列")
                     continue
                 df_stock = df_stock.sort_values(by='trade_date')
 
-                if len(df_stock) < 3:
+                df_3d = df_stock[df_stock['trade_date'].isin(list(dates))].copy()
+                df_3d = df_3d.sort_values(by='trade_date')
+                if len(df_3d) < 3:
+                    debug_logs.append(f"{stock} 近3交易日数据不全: trade_date={df_3d['trade_date'].tolist() if 'trade_date' in df_3d.columns else []}")
                     continue
 
-                closes = df_stock['close'].values
-                dates_stock = df_stock['trade_date'].values
+                def _to_num(v):
+                    try:
+                        x = pd.to_numeric(v, errors='coerce')
+                        if pd.isna(x):
+                            return None
+                        return float(x)
+                    except Exception:
+                        return None
 
-                p_t2 = closes[-3]
-                p_t1 = closes[-2]
-                p_t = closes[-1]
+                r_t1 = df_3d.iloc[-2]
+                r_t = df_3d.iloc[-1]
 
-                if p_t1 < p_t2 and p_t > p_t1:
-                    pct_change = df_stock.iloc[-1]['pct_chg'] if 'pct_chg' in df_stock.columns else ((df_stock.iloc[-1]['close'] / (df_stock.iloc[-1]['pre_close'] if 'pre_close' in df_stock.columns else df_stock.iloc[-2]['close'])) - 1) * 100
-                    vol_t = df_stock.iloc[-1]['vol'] if 'vol' in df_stock.columns else 0
-                    vol_t1 = df_stock.iloc[-2]['vol'] if 'vol' in df_stock.columns else 0
+                o_t1 = _to_num(r_t1.get('open'))
+                c_t1 = _to_num(r_t1.get('close'))
+                o_t = _to_num(r_t.get('open'))
+                c_t = _to_num(r_t.get('close'))
+                if o_t1 is None or c_t1 is None or o_t is None or c_t is None:
+                    debug_logs.append(f"{stock} 开收盘价无法解析")
+                    continue
+
+                prev_pct_chg = _to_num(r_t1.get('pct_chg')) if 'pct_chg' in df_3d.columns else None
+                pct_change = _to_num(r_t.get('pct_chg')) if 'pct_chg' in df_3d.columns else None
+                if prev_pct_chg is None:
+                    pre_close_t1 = _to_num(r_t1.get('pre_close')) if 'pre_close' in df_3d.columns else None
+                    if pre_close_t1:
+                        prev_pct_chg = (c_t1 / pre_close_t1 - 1) * 100
+                if pct_change is None:
+                    pre_close_t = _to_num(r_t.get('pre_close')) if 'pre_close' in df_3d.columns else None
+                    if pre_close_t:
+                        pct_change = (c_t / pre_close_t - 1) * 100
+
+                if prev_pct_chg is None or pct_change is None:
+                    debug_logs.append(f"{stock} 涨跌幅无法计算: prev={prev_pct_chg} curr={pct_change}")
+                    continue
+
+                prev_is_green = c_t1 < o_t1
+                curr_is_red = c_t > o_t
+                if prev_is_green and curr_is_red:
+                    vol_t = _to_num(r_t.get('vol')) if 'vol' in df_3d.columns else 0
+                    vol_t1 = _to_num(r_t1.get('vol')) if 'vol' in df_3d.columns else 0
+                    if vol_t is None: vol_t = 0
+                    if vol_t1 is None: vol_t1 = 0
                     vol_change = vol_t / (vol_t1 + 1)
 
+                    d_t1 = str(r_t1.get('trade_date'))
+                    d_t = str(r_t.get('trade_date'))
+                    debug_logs.append(
+                        f"{stock} 命中: {d_t1} 开{o_t1:.2f}收{c_t1:.2f}({prev_pct_chg:.2f}%) -> {d_t} 开{o_t:.2f}收{c_t:.2f}({pct_change:.2f}%)"
+                    )
                     results.append({
                         'ts_code': stock,
-                        'close': p_t,
+                        'close': c_t,
                         'pct_chg': pct_change,
-                        'prev_pct_chg': df_stock.iloc[-2]['pct_chg'] if 'pct_chg' in df_stock.columns else None,
+                        'prev_pct_chg': prev_pct_chg,
                         'vol_ratio': vol_change,
-                        'latest_date': dates_stock[-1]
+                        'latest_date': str(r_t.get('trade_date'))
                     })
             except Exception as e:
                 debug_logs.append(f"{stock} 处理异常: {e}")
@@ -302,7 +338,7 @@ if run_btn or 'hot_sectors' in st.session_state:
                 
                 st.divider()
                 st.subheader(f"🔍 {sector_name} - 潜力反弹个股")
-                st.markdown("筛选条件：**前两天收盘价先跌后涨** (V型反弹)")
+                st.markdown("筛选条件：**前一日绿K（收 < 开），基准日红K（收 > 开）**")
                 
                 with st.spinner(f"正在分析 {sector_name} 的成分股..."):
                     # Get stocks
