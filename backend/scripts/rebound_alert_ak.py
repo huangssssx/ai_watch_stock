@@ -4,6 +4,7 @@
 import akshare as ak
 import pandas as pd
 import datetime
+from utils.ak_fallback import get_a_minute_data
 
 triggered = False
 signal = "WAIT"
@@ -18,7 +19,7 @@ try:
     end_date = datetime.datetime.now().strftime("%Y%m%d")
     
     df_daily = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
-    df_min = ak.stock_zh_a_hist_min_em(symbol=code, period="1", adjust="qfq")
+    df_min = get_a_minute_data(symbol=code, period="1", adjust="qfq")
     
     if df_daily is None or df_daily.empty:
         message = "Akshare: 未获取到日线数据"

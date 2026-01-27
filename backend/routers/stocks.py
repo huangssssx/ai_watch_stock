@@ -8,6 +8,7 @@ import json
 import datetime
 from services.monitor_service import process_stock, update_stock_job, analyze_stock_manual, fetch_stock_indicators_data
 import akshare as ak
+from utils.ak_fallback import get_a_minute_data
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -230,7 +231,7 @@ def get_stock_daily_data(symbol: str):
         # adjust='qfq' is usually good, but for intraday pure price might be better? 
         # Actually for intraday comparison, qfq is fine or no adjust.
         # stock_zh_a_hist_min_em returns recent data.
-        df = ak.stock_zh_a_hist_min_em(symbol=clean_symbol, period='1', adjust='qfq')
+        df = get_a_minute_data(symbol=clean_symbol, period='1', adjust='qfq')
         
         if df is None or df.empty:
             return {"ok": False, "error": "No data found"}

@@ -4,6 +4,7 @@
 import akshare as ak
 import pandas as pd
 import datetime
+from utils.ak_fallback import get_a_minute_data
 
 triggered = False
 signal = "WAIT"
@@ -23,7 +24,7 @@ try:
     
     # 2.2 获取实时/分钟数据 (用于构建今日最新 K 线)
     # stock_zh_a_hist_min_em 返回最近的分钟数据，包含今日的最新走势
-    df_min = ak.stock_zh_a_hist_min_em(symbol=code, period="1", adjust="qfq")
+    df_min = get_a_minute_data(symbol=code, period="1", adjust="qfq")
     
     if df_daily is None or df_daily.empty:
         message = "Akshare: 未获取到日线数据"

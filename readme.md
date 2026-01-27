@@ -53,3 +53,6 @@ SENDER_EMAIL=your_email@gmail.com
 SENDER_PASSWORD=your_password
 RECEIVER_EMAIL=your_email@gmail.com
 ```
+
+# 选股脚本
+cd /Users/huangchuanjian/workspace/my_projects/ai_watch_stock && python3 -m streamlit run backend/scripts/hot_money_stage2_picker.py -- --streamlit
