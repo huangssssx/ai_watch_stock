@@ -28,6 +28,7 @@
 
 ## tushare client 使用方式
 - backend/utils/tushare_client.py 中包含 tushare client 的初始化代码，以及常用的接口调用示例
+- 接口的作用和参数请参考 docs/tushare 文档
 - 目前的 tushare 是 5000 积分权限
 - 所有 tushare 接口调用均需在代码中显式使用 `ts` 对象，禁止直接调用 `tushare` 模块
 - 所有 tushare 接口调用均需在代码中显式使用 `pro` 对象，禁止直接调用 `tushare` 模块
