@@ -24,6 +24,10 @@ export interface StockPricePoint {
   amount?: number;
   date?: string;
   time?: string;
+  boll_upper?: number;
+  boll_mid?: number;
+  boll_lower?: number;
+  bias20?: number;
   [key: string]: unknown;
 }
 

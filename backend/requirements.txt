@@ -16,3 +16,4 @@ watchdog
 tenacity
 TA-Lib
 tushare
+pytdx

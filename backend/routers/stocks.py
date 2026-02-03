@@ -8,7 +8,7 @@ import json
 import datetime
 from services.monitor_service import process_stock, update_stock_job, analyze_stock_manual, fetch_stock_indicators_data
 import akshare as ak
-from utils.ak_fallback import get_a_minute_data
+from utils.ak_fallback import get_a_minute_data_with_error
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -223,6 +223,7 @@ def get_stock_daily_data(symbol: str):
     Get intraday minute-level data for a stock symbol (latest trading day).
     Note: Endpoint name kept as 'daily' to avoid frontend refactor, but returns intraday data.
     """
+    meta = {}
     try:
         # Clean symbol (remove sh/sz prefix if exists)
         clean_symbol = symbol.lower().replace("sh", "").replace("sz", "")
@@ -231,10 +232,17 @@ def get_stock_daily_data(symbol: str):
         # adjust='qfq' is usually good, but for intraday pure price might be better? 
         # Actually for intraday comparison, qfq is fine or no adjust.
         # stock_zh_a_hist_min_em returns recent data.
-        df = get_a_minute_data(symbol=clean_symbol, period='1', adjust='qfq')
+        df, meta = get_a_minute_data_with_error(symbol=clean_symbol, period="1", adjust="qfq")
         
         if df is None or df.empty:
-            return {"ok": False, "error": "No data found"}
+            return {"ok": False, "error": "No data found", "meta": {"symbol": symbol, "clean_symbol": clean_symbol, **(meta or {})}}
+
+        if "时间" not in df.columns:
+            return {
+                "ok": False,
+                "error": "Missing 时间 column",
+                "meta": {"symbol": symbol, "clean_symbol": clean_symbol, "columns": list(df.columns), **(meta or {})},
+            }
             
         # Filter for the latest date
         # '时间' column format: '2025-01-15 09:30:00'
@@ -271,7 +279,7 @@ def get_stock_daily_data(symbol: str):
         }
         
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "meta": {"symbol": symbol, **(meta or {})}}
 
 @router.get("/{symbol}/history")
 def get_stock_history_data(symbol: str, period: str = "daily"):
