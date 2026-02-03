@@ -145,28 +145,28 @@
     - `code`：代码
     - `active1` / `active2`：状态位（库未给出解释）
   - 价格：
-    - `price`：现价
-    - `last_close`：昨收
-    - `open`：今开
-    - `high`：最高
-    - `low`：最低
+    - `price`：现价（快照时刻的最新价）
+    - `last_close`：昨收（上一交易日收盘价，日内固定）
+    - `open`：今开（当日开盘价，日内固定）
+    - `high`：日内最高（开盘至快照时刻的最高价）
+    - `low`：日内最低（开盘至快照时刻的最低价）
   - 时间：
-    - `servertime`：服务器时间（由 `reversed_bytes0` 格式化得来）
+    - `servertime`：服务器时间（快照时间；由 `reversed_bytes0` 格式化得来）
     - `reversed_bytes0`：原始时间戳/字段（未明确）
   - 成交：
-    - `vol`：总成交量
-    - `cur_vol`：现量/当前成交量（未完全明确）
-    - `amount`：成交额/成交金额（由 `get_volume` 解码）
-    - `s_vol`：卖盘成交量（未完全明确）
-    - `b_vol`：买盘成交量（未完全明确）
+    - `vol`：总成交量（开盘至快照时刻的累计成交量；单位需要结合 `amount/vol` 的量级校验）
+    - `amount`：成交额/成交金额（开盘至快照时刻的累计成交额；由 `get_volume` 解码）
+    - `cur_vol`：现量（快照时刻对应的“最近一笔/最近一次撮合”的成交量，常用于判断最新成交活跃度）
+    - `b_vol`：外盘/主动买入成交量（开盘至快照时刻累计；通常满足 `b_vol + s_vol == vol`）
+    - `s_vol`：内盘/主动卖出成交量（开盘至快照时刻累计；通常满足 `b_vol + s_vol == vol`）
   - 五档（价格与数量）：
     - `bid1..bid5`：买一到买五价
     - `ask1..ask5`：卖一到卖五价
-    - `bid_vol1..bid_vol5`：买一到买五量
-    - `ask_vol1..ask_vol5`：卖一到卖五量
+    - `bid_vol1..bid_vol5`：买一到买五量（快照时刻盘口挂单量，非日内累计）
+    - `ask_vol1..ask_vol5`：卖一到卖五量（快照时刻盘口挂单量，非日内累计）
   - 其他：
     - `reversed_bytes1/2/3/4/5/6/7/8`：保留字段（未明确）
-    - `reversed_bytes9`：涨速（源码注释：`# 涨速`，单位为百分之一）
+    - `reversed_bytes9`：涨速（快照时刻的指标；源码注释：`# 涨速`，单位为百分之一）
 
 #### `get_security_count(self, market)`
 
