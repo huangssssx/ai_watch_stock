@@ -46,10 +46,13 @@
 import os
 import sys
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import pandas as pd
 from datetime import datetime
+from pytdx.hq import TdxHq_API
 
 # 让脚本可以从 backend/scripts 直接运行并 import backend/utils 下的工具
 
@@ -57,7 +60,7 @@ backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
-from utils.pytdx_client import tdx
+from utils.pytdx_client import tdx, connected_endpoint, DEFAULT_IP, DEFAULT_PORT
 
 # 动量 Alpha（更接近“涨幅占当日振幅的比例”）
 # Alpha = (close - open) / ((high - low) + 0.001)
@@ -77,9 +80,49 @@ TAIL_ATTACK_THRESHOLD_MIN = 0.01
 # 委比（买卖盘不平衡）筛选阈值
 BID_ASK_IMBALANCE_THRESHOLD_MIN = -0.3
 
+MAX_WORKERS = int(os.getenv("PYTDX_STOCK_WORKERS", "6"))
+
 
 # 黑名单：剔除不参与计算/回测的标的（例如新股/异常标的等）
 blacklist = ["603284", "688712", "688816", "688818"]
+
+_worker_local = threading.local()
+_worker_apis: list[TdxHq_API] = []
+_worker_apis_lock = threading.Lock()
+
+
+def _get_worker_api() -> TdxHq_API:
+    api = getattr(_worker_local, "api", None)
+    if api is not None:
+        return api
+    api = TdxHq_API()
+    ep = connected_endpoint()
+    if ep is None:
+        ip, port = DEFAULT_IP, DEFAULT_PORT
+    else:
+        ip, port = ep
+    ok = False
+    try:
+        ok = bool(api.connect(ip, port))
+    except Exception:
+        ok = False
+    if not ok:
+        raise RuntimeError(f"TdxHq_API 连接失败: {ip}:{port}")
+    with _worker_apis_lock:
+        _worker_apis.append(api)
+    _worker_local.api = api
+    return api
+
+
+def _disconnect_worker_apis() -> None:
+    with _worker_apis_lock:
+        apis = list(_worker_apis)
+        _worker_apis.clear()
+    for api in apis:
+        try:
+            api.disconnect()
+        except Exception:
+            pass
 
 
 def is_a_share_stock(market: int, code: str) -> bool:
