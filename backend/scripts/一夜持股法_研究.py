@@ -413,15 +413,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
-    # # 测试单只股票直接调用
-    # print("=== 单只股票测试 ===")
-    # df_one = tdx.to_df(tdx.get_security_quotes(1, "600000"))
-    # print(f"Direct call result: {calc_bid_ask_imbalance(df_one)}")
-    
-    # # 测试 lambda 嵌入
-    # print("\n=== Lambda 嵌入测试 ===")
-    # # 模拟一个 DataFrame
-    # df_test = pd.concat([df_one, df_one], ignore_index=True)
-    # df_test["bid_ask_imbalance"] = df_test.apply(lambda row: calc_bid_ask_imbalance(row), axis=1)
-    # print(df_test[["code", "bid_ask_imbalance"]])
