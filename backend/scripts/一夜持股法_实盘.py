@@ -51,7 +51,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import pandas as pd
-from datetime import datetime
 from pytdx.hq import TdxHq_API
 
 # 让脚本可以从 backend/scripts 直接运行并 import backend/utils 下的工具
@@ -230,12 +229,50 @@ def fetch_quotes(stock_codes: list[tuple[int, str]], batch_size: int = 80) -> pd
     - 批大小过大可能导致网络/服务端不稳定；这里用 batch_size 控制分片
     """
 
-    frames: list[pd.DataFrame] = []
+    if not stock_codes:
+        return pd.DataFrame()
+
+    batches: list[list[tuple[int, str]]] = []
     for start in range(0, len(stock_codes), batch_size):
-        batch = stock_codes[start : start + batch_size]
-        quotes = tdx.get_security_quotes(batch)
-        if quotes:
-            frames.append(tdx.to_df(quotes))
+        batches.append(stock_codes[start : start + batch_size])
+
+    if MAX_WORKERS <= 1 or len(batches) <= 1:
+        frames: list[pd.DataFrame] = []
+        for batch in batches:
+            quotes = tdx.get_security_quotes(batch)
+            if quotes:
+                frames.append(tdx.to_df(quotes))
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, axis=0, ignore_index=True)
+
+    def _worker(batch: list[tuple[int, str]]) -> pd.DataFrame:
+        cleaned_batch = [(int(m), str(c).zfill(6)) for m, c in batch]
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                api = _get_worker_api()
+                quotes = api.get_security_quotes(cleaned_batch)
+                if not quotes:
+                    return pd.DataFrame()
+                return api.to_df(quotes)
+            except Exception as e:
+                last_error = e
+                time.sleep(0.12 * (attempt + 1))
+        if last_error is not None:
+            return pd.DataFrame()
+        return pd.DataFrame()
+
+    frames: list[pd.DataFrame] = []
+    with ThreadPoolExecutor(max_workers=max(1, MAX_WORKERS)) as pool:
+        futures = [pool.submit(_worker, batch) for batch in batches]
+        for fut in as_completed(futures):
+            try:
+                df_part = fut.result()
+            except Exception:
+                df_part = pd.DataFrame()
+            if df_part is not None and not df_part.empty:
+                frames.append(df_part)
 
     if not frames:
         return pd.DataFrame()
@@ -285,17 +322,53 @@ def mean_volume_last_n_days(df, n_days=5, exclude_today=True):
     - volume_ratio：当日快照累计成交量 / 近 n 日平均成交量
     """
 
-    df["mean_vol_last_n_days"] = df.apply(
-        lambda row: calc_mean_vol(row["market"], row["code"], n_days, exclude_today),
-        axis=1,
-    )
+    if MAX_WORKERS <= 1 or len(df) <= 1:
+        df["mean_vol_last_n_days"] = df.apply(
+            lambda row: calc_mean_vol(row["market"], row["code"], n_days, exclude_today),
+            axis=1,
+        )
+    else:
+        start_date = 1 if exclude_today else 0
+
+        def _worker(market: int, code: str) -> Optional[float]:
+            last_error: Optional[Exception] = None
+            for attempt in range(3):
+                try:
+                    api = _get_worker_api()
+                    data = api.get_security_bars(9, int(market), str(code).zfill(6), start_date, n_days)
+                    if not data:
+                        return None
+                    df_local = api.to_df(data)
+                    if df_local is None or df_local.empty:
+                        return None
+                    return float(df_local["vol"].mean())
+                except Exception as e:
+                    last_error = e
+                    time.sleep(0.15 * (attempt + 1))
+            if last_error is not None:
+                return None
+            return None
+
+        results: dict[int, Optional[float]] = {}
+        with ThreadPoolExecutor(max_workers=max(1, MAX_WORKERS)) as pool:
+            fut_map = {
+                pool.submit(_worker, market, code): idx
+                for idx, market, code in df[["market", "code"]].itertuples(index=True, name=None)
+            }
+            for fut in as_completed(fut_map):
+                idx = fut_map[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception:
+                    results[idx] = None
+        df["mean_vol_last_n_days"] = pd.Series(results, index=df.index)
     df["volume_ratio"] = df["vol"].astype(float) / df["mean_vol_last_n_days"].astype(float)
     df["volume_ratio"] = df["volume_ratio"].fillna(0)
     return df
 
 
 # 计算尾部攻击都系数
-def calc_tail_attack_coefficient_operator (market, code,df_quotes: pd.DataFrame):
+def calc_tail_attack_coefficient_operator(market, code, _df_quotes: pd.DataFrame):
     """计算当前瞬时尾部攻击都系数（Pearson）。
     - 说明：当前（下午 2:50）的瞬时 price 与 30 分钟前的 open 之差除以 30 分钟前的 open。也就是涨幅
     - 取值范围：[-1, 1]，越接近 1 表示尾部攻击都越强。
@@ -323,10 +396,51 @@ def calc_tail_attack_coefficient_operator (market, code,df_quotes: pd.DataFrame)
 
 def calc_tail_attack_coefficient(df):
     """计算当前瞬时尾部攻击都系数（Pearson）。"""
-    df["tail_attack_coefficient"] = df.apply(
-        lambda row: calc_tail_attack_coefficient_operator(row["market"], row["code"], row),
-        axis=1,
-    )
+    if MAX_WORKERS <= 1 or len(df) <= 1:
+        df["tail_attack_coefficient"] = df.apply(
+            lambda row: calc_tail_attack_coefficient_operator(row["market"], row["code"], row),
+            axis=1,
+        )
+        return
+
+    def _worker(market: int, code: str) -> Optional[float]:
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                api = _get_worker_api()
+                data = api.get_security_bars(8, int(market), str(code).zfill(6), 0, 30)
+                df_local = api.to_df(data) if data else pd.DataFrame()
+                if df_local.empty:
+                    return None
+                last_date = str(df_local.iloc[-1]["datetime"])[:10]
+                df_local = df_local[df_local["datetime"].astype(str).str.startswith(last_date)]
+                if df_local.empty:
+                    return None
+                curr_price = float(df_local.iloc[-1]["close"])
+                open_price = float(df_local.iloc[0]["open"])
+                if open_price == 0:
+                    return None
+                return (curr_price - open_price) / open_price
+            except Exception as e:
+                last_error = e
+                time.sleep(0.15 * (attempt + 1))
+        if last_error is not None:
+            return None
+        return None
+
+    results: dict[int, Optional[float]] = {}
+    with ThreadPoolExecutor(max_workers=max(1, MAX_WORKERS)) as pool:
+        fut_map = {
+            pool.submit(_worker, market, code): idx
+            for idx, market, code in df[["market", "code"]].itertuples(index=True, name=None)
+        }
+        for fut in as_completed(fut_map):
+            idx = fut_map[fut]
+            try:
+                results[idx] = fut.result()
+            except Exception:
+                results[idx] = None
+    df["tail_attack_coefficient"] = pd.Series(results, index=df.index)
 
 def main():
     """脚本入口：股票池 -> 实时行情 -> 逐层筛选 -> 输出候选。"""
@@ -368,6 +482,7 @@ def main():
     if df_candidates.empty:
         print("   无满足 Alpha 条件的股票，结束。")
         print(f"\n=== 总耗时: {time.perf_counter() - t_total_start:.2f}s ===")
+        _disconnect_worker_apis()
         return
 
     # 5) 补充量能并进行第二层筛选：量比
@@ -385,6 +500,7 @@ def main():
     if df_candidates.empty:
         print("   无满足量比条件的股票，结束。")
         print(f"\n=== 总耗时: {time.perf_counter() - t_total_start:.2f}s ===")
+        _disconnect_worker_apis()
         return
 
     # 6) 补充尾部攻击系数并进行第三层筛选
@@ -403,6 +519,7 @@ def main():
     if df_candidates.empty:
         print("   无满足尾部攻击条件的股票，结束。")
         print(f"\n=== 总耗时: {time.perf_counter() - t_total_start:.2f}s ===")
+        _disconnect_worker_apis()
         return
 
     # 7) 最后一道安全阀：委比过滤
@@ -452,6 +569,7 @@ def main():
             ]]
         )
     print(f"\n=== 总耗时: {time.perf_counter() - t_total_start:.2f}s ===")
+    _disconnect_worker_apis()
 
 
 if __name__ == "__main__":
