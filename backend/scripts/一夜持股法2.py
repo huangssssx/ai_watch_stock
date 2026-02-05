@@ -34,6 +34,12 @@ ALPHA_EFFECTIVENESS_THRESHOLD_max = 0.98
 # 量价相关性计算窗口（天）
 CORRELATION_DAYS = 5
 
+# 量比筛选阈值
+VOLUME_RATIO_THRESHOLD_MIN = 1.0
+
+# 尾部攻击系数筛选阈值（最近30分钟涨幅）
+TAIL_ATTACK_THRESHOLD_MIN = 0.01
+
 
 # 黑名单：剔除不参与计算/回测的标的（例如新股/异常标的等）
 blacklist = ["603284", "688712", "688816", "688818"]
@@ -120,8 +126,8 @@ def calculate_Alpha_effectiveness(sum_quotes: pd.DataFrame) -> pd.DataFrame:
     注意：这里 close 使用的是快照字段 `price`（最新价），并非严格意义的“收盘价”。
     """
 
-    # 调试用途：确认快照字段是否齐全（price/open/high/low 等）
-    print(sum_quotes.columns)
+    # # 调试用途：确认快照字段是否齐全（price/open/high/low 等）
+    # print(sum_quotes.columns)
 
     sum_quotes["Alpha_effectiveness"] = (
         (sum_quotes["price"] - sum_quotes["open"])
@@ -171,80 +177,166 @@ def mean_volume_last_n_days(df, n_days=5, exclude_today=True):
     df["volume_ratio"] = df["volume_ratio"].fillna(0)
     return df
 
-def calc_volume_price_correlation_Operator(market, code, curr_price=None,curr_vol=None, n_days=20, exclude_today=True):
-    """计算单只股票最近 n 天量价相关系数（Pearson）。"""
+# def calc_volume_price_correlation_Operator(market, code, curr_price=None,curr_vol=None, n_days=20, exclude_today=True):
+#     """计算单只股票最近 n 天量价相关系数（Pearson）。"""
 
-    start_date = 1 if exclude_today else 0
-    data = tdx.get_security_bars(9, market, code, start_date, n_days)
-    ## 使用今日
-    df = tdx.to_df(data) if data else pd.DataFrame()
-    ## 先对齐日期datetime(YYYY-mm-dd)方便后续corr计算
-    df.sort_values(by="datetime", inplace=True)
+#     # 如果提供了当前快照数据(curr_price)，强制排除今日历史数据，防止重复
+#     if curr_price is not None:
+#         exclude_today = True
 
-    # 先计算价格变化
-    df_tmp = pd.DataFrame(df[["datetime","close","vol"]])
-    if curr_price is not None:
-        new_row = pd.DataFrame([{
-            "datetime": datetime.today().strftime("%Y-%m-%d %H:%M"),
-            "close": float(curr_price),
-            "vol": float(curr_vol),
-        }])
-        df_tmp = pd.concat([df_tmp, new_row], ignore_index=True)
-    df_tmp["price_change"] = df_tmp["close"].astype(float).pct_change()
-    df_tmp["vol_change"] = df_tmp["vol"].astype(float).pct_change()
-    df_tmp.dropna(inplace=True)
-    corr_value = df_tmp["price_change"].corr(df_tmp["vol_change"])
-    return corr_value
+#     start_date = 1 if exclude_today else 0
+#     data = tdx.get_security_bars(9, market, code, start_date, n_days)
+#     ## 使用今日
+#     df = tdx.to_df(data) if data else pd.DataFrame()
+#     ## 先对齐日期datetime(YYYY-mm-dd)方便后续corr计算
+#     df.sort_values(by="datetime", inplace=True)
+
+#     # 先计算价格变化
+#     df_tmp = pd.DataFrame(df[["datetime","close","vol"]])
+#     if curr_price is not None:
+#         new_row = pd.DataFrame([{
+#             "datetime": datetime.today().strftime("%Y-%m-%d %H:%M"),
+#             "close": float(curr_price),
+#             "vol": float(curr_vol),
+#         }])
+#         df_tmp = pd.concat([df_tmp, new_row], ignore_index=True)
+#     df_tmp["price_change"] = df_tmp["close"].astype(float).pct_change()
+#     df_tmp["vol_change"] = df_tmp["vol"].astype(float).pct_change()
+#     df_tmp.dropna(inplace=True)
+#     corr_value = df_tmp["price_change"].corr(df_tmp["vol_change"])
+#     return corr_value
 
 
-def calc_volume_price_correlation(df, n_day=CORRELATION_DAYS, exclude_today=True):
-    """为候选集补充量价相关性列 `price_correlation`。
+# def calc_volume_price_correlation(df, n_day=CORRELATION_DAYS, exclude_today=True):
+#     """为候选集补充量价相关性列 `price_correlation`。
 
-    说明：该函数直接在 df 上新增列，不额外返回。
+#     说明：该函数直接在 df 上新增列，不额外返回。
+#     """
+
+#     df["price_correlation"] = df.apply(
+#         lambda row: calc_volume_price_correlation_Operator(row["market"], row["code"], row["price"], row["vol"], n_day, exclude_today),
+#         axis=1,
+#     )
+
+# 计算尾部攻击都系数
+def calc_tail_attack_coefficient_operator (market, code,df_quotes: pd.DataFrame):
+    """计算当前瞬时尾部攻击都系数（Pearson）。
+    - 说明：当前（下午 2:50）的瞬时 price 与 30 分钟前的 open 之差除以 30 分钟前的 open。也就是涨幅
+    - 取值范围：[-1, 1]，越接近 1 表示尾部攻击都越强。
     """
+    # 获取最近 30 分钟的 K 线数据
+    data = tdx.get_security_bars(8, market, code, 0, 30)
+    df = tdx.to_df(data) if data else pd.DataFrame()
+    
+    if df.empty:
+        return None
+    
+    # 筛选出与最新一根 K 线同一天的数据（防止跨日）
+    last_date = str(df.iloc[-1]["datetime"])[:10]  # 取 "YYYY-MM-DD"
+    df = df[df["datetime"].astype(str).str.startswith(last_date)]
 
-    df["price_correlation"] = df.apply(
-        lambda row: calc_volume_price_correlation_Operator(row["market"], row["code"], row["price"], row["vol"], n_day, exclude_today),
+    if df.empty:
+        return None
+
+    # 计算当前瞬时尾部攻击都系数
+    curr_price = df.iloc[-1]["close"]
+    open_price = df.iloc[0]["open"]
+    tail_attack_coefficient = (curr_price - open_price) / open_price
+    # print(tail_attack_coefficient)
+    return tail_attack_coefficient
+
+def calc_tail_attack_coefficient(df):
+    """计算当前瞬时尾部攻击都系数（Pearson）。"""
+    df["tail_attack_coefficient"] = df.apply(
+        lambda row: calc_tail_attack_coefficient_operator(row["market"], row["code"], row),
         axis=1,
     )
 
-
 def main():
-    """脚本入口：股票池 -> 实时行情 -> 指标计算 -> 输出候选。"""
+    """脚本入口：股票池 -> 实时行情 -> 逐层筛选 -> 输出候选。"""
+
+    print("=== 开始执行选股脚本 ===")
 
     # 1) 股票池（按天缓存，避免每天重复拉取全部证券列表）
     cache_file = stock_code_cache_name()
     df_stock_codes = normalize_stock_codes(load_stock_codes(cache_file))
     stock_codes = list(df_stock_codes[["market", "code"]].itertuples(index=False, name=None))
+    print(f"1. 全市场 A 股数量: {len(stock_codes)}")
 
     # 2) 实时快照（包含 price/open/high/low/vol 等字段）
+    print("2. 正在拉取实时快照...")
     sum_quotes = fetch_quotes(stock_codes, batch_size=80)
+    print(f"   快照拉取完成，有效数据: {len(sum_quotes)} 条")
 
-    # 3) 动量 Alpha 并按强度排序
+    # 3) 动量 Alpha 计算
+    print("3. 计算动量 Alpha...")
     sum_quotes = calculate_Alpha_effectiveness(sum_quotes).sort_values(
         by="Alpha_effectiveness", ascending=False
     )
 
-    # 4) 用 Alpha 区间筛出候选
-    df_volume_stocks = filter_Alpha_effectiveness_stocks(sum_quotes)
+    # 4) 第一层筛选：Alpha 区间
+    count_before = len(sum_quotes)
+    df_candidates = filter_Alpha_effectiveness_stocks(sum_quotes).copy()
+    count_after = len(df_candidates)
+    print(f"4. Alpha 筛选 [{ALPHA_EFFECTIVENESS_THRESHOLD_min}, {ALPHA_EFFECTIVENESS_THRESHOLD_max}]: {count_before} -> {count_after}")
 
-    # 5) 补充量能：近 N 日均量 + 量比
-    df_volume_stocks = mean_volume_last_n_days(df_volume_stocks)
+    if df_candidates.empty:
+        print("   无满足 Alpha 条件的股票，结束。")
+        return
 
-    # 6) 补充量价相关性（在 df 上新增一列）
-    calc_volume_price_correlation(df_volume_stocks)
+    # 5) 补充量能并进行第二层筛选：量比
+    print("5. 计算量能指标并筛选...")
+    df_candidates = mean_volume_last_n_days(df_candidates)
 
-    print(
-        df_volume_stocks[[
-            "code",
-            "Alpha_effectiveness",
-            "mean_vol_last_n_days",
-            "volume_ratio",
-            "price_correlation",
-        ]]
-    )
+    count_before = len(df_candidates)
+    # 筛选量比大于阈值
+    df_candidates = df_candidates[df_candidates["volume_ratio"] >= VOLUME_RATIO_THRESHOLD_MIN]
+    count_after = len(df_candidates)
+    print(f"   量比筛选 (>= {VOLUME_RATIO_THRESHOLD_MIN}): {count_before} -> {count_after}")
+
+    if df_candidates.empty:
+        print("   无满足量比条件的股票，结束。")
+        return
+
+    # 6) 补充尾部攻击系数并进行第三层筛选
+    print("6. 计算尾部攻击系数并筛选...")
+    # 注意：calc_tail_attack_coefficient 是原地修改
+    calc_tail_attack_coefficient(df_candidates)
+
+    count_before = len(df_candidates)
+    # 筛选尾部攻击系数大于阈值
+    df_candidates = df_candidates[df_candidates["tail_attack_coefficient"] >= TAIL_ATTACK_THRESHOLD_MIN]
+    count_after = len(df_candidates)
+    print(f"   尾部攻击筛选 (>= {TAIL_ATTACK_THRESHOLD_MIN}): {count_before} -> {count_after}")
+
+    # 7) 最终结果输出
+    print("\n=== 最终候选股 ===")
+    if df_candidates.empty:
+        print("无候选股。")
+    else:
+        # 按 Alpha 降序排列
+        df_candidates = df_candidates.sort_values(by="Alpha_effectiveness", ascending=False)
+        print(
+            df_candidates[[
+                "code",
+                "Alpha_effectiveness",
+                "mean_vol_last_n_days",
+                "volume_ratio",
+                # "price_correlation",
+                "tail_attack_coefficient",
+            ]]
+        )
 
 
 if __name__ == "__main__":
-    # main()
-    print(calc_volume_price_correlation_Operator(1, "600000",100.01,1000000))
+    main()
+    # print(calc_volume_price_correlation_Operator(1, "600000",100.01,1000000))
+    # 构建一个calc_tail_attack_coefficient的测试数据
+    # df_test = pd.DataFrame([{
+    #     "market": 1,
+    #     "code": "600000",
+    #     "price": 100.01,
+    #     "vol": 1000000,
+    # }])
+    # calc_tail_attack_coefficient(df_test)
+    # print(df_test)
