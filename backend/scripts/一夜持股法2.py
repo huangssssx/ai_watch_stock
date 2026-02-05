@@ -1,13 +1,46 @@
-"""一夜持股法：基础数据准备脚本（pytdx 版）
+"""一夜持股法：实时漏斗选股脚本（pytdx 版）
 
-整体流程：
-- 获取全市场 A 股列表（深/沪）并按天缓存
-- 批量拉取实时快照（quotes）
-- 计算动量 Alpha、筛选候选
-- 补充量能（近 N 日均量、量比）与量价相关性
+脚本目标：
+- 从全市场 A 股中，用“动量 + 量能 + 尾盘强度 + 委比安全阀”的思路筛出候选股
+- 输出一个便于人工复核/下单前二次过滤的候选列表
 
-注意：脚本当前使用快照字段 `price/open/high/low/vol` 做计算，
-如果你希望“收盘后选股”的严格口径，建议改用日 K 的 `close/open/high/low`。
+数据来源（pytdx）：
+- 全市场证券列表：get_security_count / get_security_list（按天缓存）
+- 实时快照：get_security_quotes（用于 price/open/high/low/vol 以及买卖盘档位量）
+- 历史 K 线：
+  - 日线：get_security_bars(9, ...) 用于近 N 日均量
+  - 30 分钟线：get_security_bars(8, ...) 用于尾部攻击系数（近 30 分钟涨幅）
+
+逐层筛选（漏斗）：
+1) 股票池：拉取全市场 A 股，排除黑名单，按天缓存
+2) 快照：批量拉取实时行情快照，合并为 DataFrame
+3) 动量 Alpha：Alpha = (price - open) / ((high - low) + 0.001)
+   - 作用：衡量“上涨是否有效”，即涨幅在当日振幅中的占比；越接近 1 越像“收在高位/强势主导”
+   - 阈值：0.85 ~ 0.98
+     - 0.85：要求涨幅在振幅中占比很高，过滤“冲高回落/虚拉不封”一类弱势结构
+     - 0.98：避免极端值（几乎等于 1）常见于超小振幅/数据噪声/异常快照导致的误入
+4) 量能：mean_vol_last_n_days（近 N 日均量），volume_ratio = vol / mean_vol_last_n_days（量比）
+   - 作用：要求上涨有成交量配合，过滤“没量硬拉/虚涨”的票；量比越高代表当日放量越明显
+   - 阈值：volume_ratio >= 1.0
+     - 1.0：至少不缩量；把“强势但成交量跟不上”的票先过滤掉
+5) 尾部攻击：tail_attack_coefficient（近 30 分钟涨幅）
+   - 作用：捕捉尾盘资金主动性，过滤“尾盘走弱/回落”的票；偏好强尾盘以提高次日延续概率
+   - 阈值：tail_attack_coefficient >= 0.01
+     - 0.01：要求近 30 分钟至少上涨约 1%，体现尾盘资金继续加速/托底的意愿
+6) 委比安全阀：bid_ask_imbalance = (委买总量 - 委卖总量) / (委买总量 + 委卖总量)
+   - 作用：从盘口抛压角度做最后风控；不要求为正，但当委比显著为负通常意味着压单/抛压过重
+   - 阈值：bid_ask_imbalance > -0.3
+     - -0.3：允许“强拉但委比略负”的情况保留；但当委比更差（如 -0.8）多见于卖盘压制/上方抛压过重，拉升失败概率大
+
+可调参数：
+- ALPHA_EFFECTIVENESS_THRESHOLD_min/max：默认 0.85/0.98
+- VOLUME_RATIO_THRESHOLD_MIN：默认 1.0
+- TAIL_ATTACK_THRESHOLD_MIN：默认 0.01
+- BID_ASK_IMBALANCE_THRESHOLD_MIN：默认 -0.3（代码里用的是 “> -0.3”）
+
+注意：
+- 本脚本使用快照字段 price/open/high/low/vol 做计算，属于盘中口径；若要“收盘后选股”的严格口径，
+  建议改用日 K 的 close/open/high/low 重新计算 Alpha 与相关指标。
 """
 
 import os
@@ -39,6 +72,9 @@ VOLUME_RATIO_THRESHOLD_MIN = 1.0
 
 # 尾部攻击系数筛选阈值（最近30分钟涨幅）
 TAIL_ATTACK_THRESHOLD_MIN = 0.01
+
+# 委比（买卖盘不平衡）筛选阈值
+BID_ASK_IMBALANCE_THRESHOLD_MIN = -0.3
 
 
 # 黑名单：剔除不参与计算/回测的标的（例如新股/异常标的等）
@@ -97,6 +133,49 @@ def normalize_stock_codes(df_stock_codes: pd.DataFrame) -> pd.DataFrame:
     df_stock_codes["market"] = df_stock_codes["market"].astype(int)
     df_stock_codes["code"] = df_stock_codes["code"].astype(str).str.zfill(6)
     return df_stock_codes
+
+
+def calc_bid_ask_imbalance(stock_def: pd.DataFrame) -> float:
+    """计算委比（Bid-Ask Imbalance）。
+    
+    公式：(委买总量 - 委卖总量) / (委买总量 + 委卖总量)
+    范围：[-1, 1]
+    """
+    if isinstance(stock_def, pd.Series):
+        bid_vol = (
+            float(stock_def.get("bid_vol1", 0))
+            + float(stock_def.get("bid_vol2", 0))
+            + float(stock_def.get("bid_vol3", 0))
+            + float(stock_def.get("bid_vol4", 0))
+            + float(stock_def.get("bid_vol5", 0))
+        )
+        ask_vol = (
+            float(stock_def.get("ask_vol1", 0))
+            + float(stock_def.get("ask_vol2", 0))
+            + float(stock_def.get("ask_vol3", 0))
+            + float(stock_def.get("ask_vol4", 0))
+            + float(stock_def.get("ask_vol5", 0))
+        )
+        imbalance = (bid_vol - ask_vol) / (bid_vol + ask_vol + 0.0001)
+        return round(float(imbalance), 2)
+
+    bid_vol = (
+        stock_def["bid_vol1"]
+        + stock_def["bid_vol2"]
+        + stock_def["bid_vol3"]
+        + stock_def["bid_vol4"]
+        + stock_def["bid_vol5"]
+    )
+    ask_vol = (
+        stock_def["ask_vol1"]
+        + stock_def["ask_vol2"]
+        + stock_def["ask_vol3"]
+        + stock_def["ask_vol4"]
+        + stock_def["ask_vol5"]
+    )
+
+    imbalance = (bid_vol - ask_vol) / (bid_vol + ask_vol + 0.0001)
+    return imbalance.round(2)
 
 
 def fetch_quotes(stock_codes: list[tuple[int, str]], batch_size: int = 80) -> pd.DataFrame:
@@ -309,6 +388,36 @@ def main():
     count_after = len(df_candidates)
     print(f"   尾部攻击筛选 (>= {TAIL_ATTACK_THRESHOLD_MIN}): {count_before} -> {count_after}")
 
+    if df_candidates.empty:
+        print("   无满足尾部攻击条件的股票，结束。")
+        return
+
+    # 7) 最后一道安全阀：委比过滤
+    print("7. 计算委比并筛选...")
+    required_cols = [
+        "bid_vol1",
+        "bid_vol2",
+        "bid_vol3",
+        "bid_vol4",
+        "bid_vol5",
+        "ask_vol1",
+        "ask_vol2",
+        "ask_vol3",
+        "ask_vol4",
+        "ask_vol5",
+    ]
+    missing_cols = [c for c in required_cols if c not in df_candidates.columns]
+    if missing_cols:
+        print(f"   快照缺少委比字段，跳过委比筛选: {missing_cols}")
+    else:
+        df_candidates["bid_ask_imbalance"] = calc_bid_ask_imbalance(df_candidates)
+        count_before = len(df_candidates)
+        df_candidates = df_candidates[df_candidates["bid_ask_imbalance"] > BID_ASK_IMBALANCE_THRESHOLD_MIN]
+        count_after = len(df_candidates)
+        print(
+            f"   委比筛选 (> {BID_ASK_IMBALANCE_THRESHOLD_MIN}): {count_before} -> {count_after}"
+        )
+
     # 7) 最终结果输出
     print("\n=== 最终候选股 ===")
     if df_candidates.empty:
@@ -322,6 +431,7 @@ def main():
                 "Alpha_effectiveness",
                 "mean_vol_last_n_days",
                 "volume_ratio",
+                "bid_ask_imbalance",
                 # "price_correlation",
                 "tail_attack_coefficient",
             ]]
@@ -330,13 +440,15 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # print(calc_volume_price_correlation_Operator(1, "600000",100.01,1000000))
-    # 构建一个calc_tail_attack_coefficient的测试数据
-    # df_test = pd.DataFrame([{
-    #     "market": 1,
-    #     "code": "600000",
-    #     "price": 100.01,
-    #     "vol": 1000000,
-    # }])
-    # calc_tail_attack_coefficient(df_test)
-    # print(df_test)
+    
+    # # 测试单只股票直接调用
+    # print("=== 单只股票测试 ===")
+    # df_one = tdx.to_df(tdx.get_security_quotes(1, "600000"))
+    # print(f"Direct call result: {calc_bid_ask_imbalance(df_one)}")
+    
+    # # 测试 lambda 嵌入
+    # print("\n=== Lambda 嵌入测试 ===")
+    # # 模拟一个 DataFrame
+    # df_test = pd.concat([df_one, df_one], ignore_index=True)
+    # df_test["bid_ask_imbalance"] = df_test.apply(lambda row: calc_bid_ask_imbalance(row), axis=1)
+    # print(df_test[["code", "bid_ask_imbalance"]])
