@@ -33,10 +33,6 @@
      - -0.3：允许“强拉但委比略负”的情况保留；但当委比更差（如 -0.8）多见于卖盘压制/上方抛压过重，拉升失败概率大
 
 可调参数：
-- ALPHA_EFFECTIVENESS_THRESHOLD_min/max：默认 0.85/0.98
-- VOLUME_RATIO_THRESHOLD_MIN：默认 1.0
-- TAIL_ATTACK_THRESHOLD_MIN：默认 0.01
-- BID_ASK_IMBALANCE_THRESHOLD_MIN：默认 -0.3（代码里用的是 “> -0.3”）
 
 注意：
 - 本脚本使用快照字段 price/open/high/low/vol 做计算，属于盘中口径；若要“收盘后选股”的严格口径，
@@ -49,7 +45,6 @@ import time
 from typing import Optional
 
 import pandas as pd
-from datetime import datetime
 
 # 让脚本可以从 backend/scripts 直接运行并 import backend/utils 下的工具
 
@@ -59,23 +54,29 @@ if backend_dir not in sys.path:
 
 from utils.pytdx_client import tdx
 
-# 动量 Alpha（更接近“涨幅占当日振幅的比例”）
-# Alpha = (close - open) / ((high - low) + 0.001)
-# 这里 close 口径在脚本里实际使用的是 quotes 的 `price`（快照最新价）。
-ALPHA_EFFECTIVENESS_THRESHOLD_min = 0.85
-ALPHA_EFFECTIVENESS_THRESHOLD_max = 0.98
-
-# 量价相关性计算窗口（天）
-CORRELATION_DAYS = 5
-
-# 量比筛选阈值
-VOLUME_RATIO_THRESHOLD_MIN = 1.0
-
-# 尾部攻击系数筛选阈值（最近30分钟涨幅）
-TAIL_ATTACK_THRESHOLD_MIN = 0.01
-
-# 委比（买卖盘不平衡）筛选阈值
-BID_ASK_IMBALANCE_THRESHOLD_MIN = -0.3
+STRATEGY_PROFILES: dict[str, dict[str, float]] = {
+    "1": {
+        "alpha_min": 0.92,
+        "alpha_max": 0.98,
+        "volume_ratio_min": 1.5,
+        "tail_attack_min": 0.02,
+        "bid_ask_min": 0.1,
+    },
+    "2": {
+        "alpha_min": 0.90,
+        "alpha_max": 0.98,
+        "volume_ratio_min": 1.2,
+        "tail_attack_min": 0.015,
+        "bid_ask_min": 0.0,
+    },
+    "3": {
+        "alpha_min": 0.88,
+        "alpha_max": 0.95,
+        "volume_ratio_min": 1.0,
+        "tail_attack_min": 0.012,
+        "bid_ask_min": 0.2,
+    },
+}
 
 
 # 黑名单：剔除不参与计算/回测的标的（例如新股/异常标的等）
@@ -134,6 +135,13 @@ def normalize_stock_codes(df_stock_codes: pd.DataFrame) -> pd.DataFrame:
     df_stock_codes["market"] = df_stock_codes["market"].astype(int)
     df_stock_codes["code"] = df_stock_codes["code"].astype(str).str.zfill(6)
     return df_stock_codes
+
+
+def load_strategy_profile(profile_key: str = "2") -> tuple[str, dict[str, float]]:
+    key = str(profile_key).strip()
+    if key not in STRATEGY_PROFILES:
+        key = "2"
+    return key, STRATEGY_PROFILES[key]
 
 
 def calc_bid_ask_imbalance(stock_def: pd.DataFrame) -> float:
@@ -218,7 +226,7 @@ def calculate_Alpha_effectiveness(sum_quotes: pd.DataFrame) -> pd.DataFrame:
 
 
 # 筛选动量股票
-def filter_Alpha_effectiveness_stocks(df_quotes: pd.DataFrame, alpha_effectiveness_threshold_min: float = ALPHA_EFFECTIVENESS_THRESHOLD_min, alpha_effectiveness_threshold_max: float = ALPHA_EFFECTIVENESS_THRESHOLD_max) -> pd.DataFrame:
+def filter_Alpha_effectiveness_stocks(df_quotes: pd.DataFrame, alpha_effectiveness_threshold_min: float, alpha_effectiveness_threshold_max: float) -> pd.DataFrame:
     """筛选出量能股票（成交量 >= min_volume）。"""
     return df_quotes[(df_quotes["Alpha_effectiveness"] >= alpha_effectiveness_threshold_min) & (df_quotes["Alpha_effectiveness"] <= alpha_effectiveness_threshold_max)]
 
@@ -252,7 +260,7 @@ def mean_volume_last_n_days(df, n_days=5, exclude_today=True):
 
 
 # 计算尾部攻击都系数
-def calc_tail_attack_coefficient_operator (market, code,df_quotes: pd.DataFrame):
+def calc_tail_attack_coefficient_operator (market, code, _df_quotes: pd.DataFrame):
     """计算当前瞬时尾部攻击都系数（Pearson）。
     - 说明：当前（下午 2:50）的瞬时 price 与 30 分钟前的 open 之差除以 30 分钟前的 open。也就是涨幅
     - 取值范围：[-1, 1]，越接近 1 表示尾部攻击都越强。
@@ -285,10 +293,20 @@ def calc_tail_attack_coefficient(df):
         axis=1,
     )
 
-def main():
+def main(profile_key: str = "2"):
     """脚本入口：股票池 -> 实时行情 -> 逐层筛选 -> 输出候选。"""
 
     print("=== 开始执行选股脚本 ===")
+    profile_name, cfg = load_strategy_profile(profile_key)
+    alpha_min = float(cfg["alpha_min"])
+    alpha_max = float(cfg["alpha_max"])
+    volume_ratio_min = float(cfg["volume_ratio_min"])
+    tail_attack_min = float(cfg["tail_attack_min"])
+    bid_ask_min = float(cfg["bid_ask_min"])
+    print(
+        f"策略配置: {profile_name} | Alpha[{alpha_min}, {alpha_max}] "
+        f"| 量比>={volume_ratio_min} | 尾盘>={tail_attack_min} | 委比>{bid_ask_min}"
+    )
     t_total_start = time.perf_counter()
 
     # 1) 股票池（按天缓存，避免每天重复拉取全部证券列表）
@@ -317,9 +335,11 @@ def main():
     # 4) 第一层筛选：Alpha 区间
     t0 = time.perf_counter()
     count_before = len(sum_quotes)
-    df_candidates = filter_Alpha_effectiveness_stocks(sum_quotes).copy()
+    df_candidates = filter_Alpha_effectiveness_stocks(
+        sum_quotes, alpha_min, alpha_max
+    ).copy()
     count_after = len(df_candidates)
-    print(f"4. Alpha 筛选 [{ALPHA_EFFECTIVENESS_THRESHOLD_min}, {ALPHA_EFFECTIVENESS_THRESHOLD_max}]: {count_before} -> {count_after}")
+    print(f"4. Alpha 筛选 [{alpha_min}, {alpha_max}]: {count_before} -> {count_after}")
     print(f"   用时: {time.perf_counter() - t0:.2f}s")
 
     if df_candidates.empty:
@@ -334,9 +354,9 @@ def main():
 
     count_before = len(df_candidates)
     # 筛选量比大于阈值
-    df_candidates = df_candidates[df_candidates["volume_ratio"] >= VOLUME_RATIO_THRESHOLD_MIN]
+    df_candidates = df_candidates[df_candidates["volume_ratio"] >= volume_ratio_min]
     count_after = len(df_candidates)
-    print(f"   量比筛选 (>= {VOLUME_RATIO_THRESHOLD_MIN}): {count_before} -> {count_after}")
+    print(f"   量比筛选 (>= {volume_ratio_min}): {count_before} -> {count_after}")
     print(f"   用时: {time.perf_counter() - t0:.2f}s")
 
     if df_candidates.empty:
@@ -352,9 +372,9 @@ def main():
 
     count_before = len(df_candidates)
     # 筛选尾部攻击系数大于阈值
-    df_candidates = df_candidates[df_candidates["tail_attack_coefficient"] >= TAIL_ATTACK_THRESHOLD_MIN]
+    df_candidates = df_candidates[df_candidates["tail_attack_coefficient"] >= tail_attack_min]
     count_after = len(df_candidates)
-    print(f"   尾部攻击筛选 (>= {TAIL_ATTACK_THRESHOLD_MIN}): {count_before} -> {count_after}")
+    print(f"   尾部攻击筛选 (>= {tail_attack_min}): {count_before} -> {count_after}")
     print(f"   用时: {time.perf_counter() - t0:.2f}s")
 
     if df_candidates.empty:
@@ -383,10 +403,10 @@ def main():
     else:
         df_candidates["bid_ask_imbalance"] = calc_bid_ask_imbalance(df_candidates)
         count_before = len(df_candidates)
-        df_candidates = df_candidates[df_candidates["bid_ask_imbalance"] > BID_ASK_IMBALANCE_THRESHOLD_MIN]
+        df_candidates = df_candidates[df_candidates["bid_ask_imbalance"] > bid_ask_min]
         count_after = len(df_candidates)
         print(
-            f"   委比筛选 (> {BID_ASK_IMBALANCE_THRESHOLD_MIN}): {count_before} -> {count_after}"
+            f"   委比筛选 (> {bid_ask_min}): {count_before} -> {count_after}"
         )
     print(f"   用时: {time.perf_counter() - t0:.2f}s")
 
@@ -412,4 +432,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(profile_key="2")
