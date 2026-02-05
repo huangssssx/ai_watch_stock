@@ -31,7 +31,19 @@
    - 作用：从盘口抛压角度做最后风控；不要求为正，但当委比显著为负通常意味着压单/抛压过重
    - 阈值：bid_ask_imbalance > -0.3
      - -0.3：允许“强拉但委比略负”的情况保留；但当委比更差（如 -0.8）多见于卖盘压制/上方抛压过重，拉升失败概率大
-
+   - 委比判定参考（便于人工复核盘口质量）：
+     - 情况 1：正值（bid_ask_imbalance > 0）
+       - 判定结果：符合风控要求（可保留）
+       - 盘口状态：委买总量 > 委卖总量，买盘力量占优，盘口无抛压，是拉升的优质盘口基础。
+     - 情况 2：零值（bid_ask_imbalance = 0）
+       - 判定结果：符合风控要求（可保留）
+       - 盘口状态：委买总量 = 委卖总量，多空力量完全均衡，无明显抛压，不影响拉升操作。
+     - 情况 3：小幅负值（-0.3 < bid_ask_imbalance < 0）
+       - 判定结果：符合风控要求（可保留）
+       - 盘口状态：委卖总量 > 委买总量，但卖盘优势微弱（如 -0.1、-0.2 等），属于“强拉但委比略负”的允许情形，抛压可控，拉升成功概率较高。
+     - 情况 4：显著负值（bid_ask_imbalance <= -0.3）
+       - 判定结果：不符合风控要求（需剔除）
+       - 盘口状态：委卖总量远大于委买总量，卖盘压制极强（如 -0.3、-0.5、-0.8、-1.0 等），上方抛压过重，拉升失败概率大幅升高，是核心风控规避场景。
 可调参数：
 - 通过 main(profile_key=...) 选择 STRATEGY_PROFILES 中的阈值组合
 
@@ -61,6 +73,8 @@ from utils.pytdx_client import tdx, connected_endpoint, DEFAULT_IP, DEFAULT_PORT
 MAX_WORKERS = int(os.getenv("PYTDX_STOCK_WORKERS", "35"))
 
 STRATEGY_PROFILES: dict[str, dict[str, float]] = {
+    # 策略 1：极致溢价（强势龙头/强攻型）
+    # 目标：只保留“动量很强 + 明显放量 + 尾盘继续加速 + 盘口偏强”的少量标的，追求更高赔率。
     "1": {
         "alpha_min": 0.92,
         "alpha_max": 0.98,
@@ -68,6 +82,8 @@ STRATEGY_PROFILES: dict[str, dict[str, float]] = {
         "tail_attack_min": 0.02,
         "bid_ask_min": 0.1,
     },
+    # 策略 2：高胜率稳健（平衡型）
+    # 目标：在覆盖面与信号质量之间取平衡，适合大多数盘面环境作为默认策略。
     "2": {
         "alpha_min": 0.90,
         "alpha_max": 0.98,
@@ -75,6 +91,8 @@ STRATEGY_PROFILES: dict[str, dict[str, float]] = {
         "tail_attack_min": 0.015,
         "bid_ask_min": 0.0,
     },
+    # 策略 3：风险控制（谨慎型）
+    # 目标：降低动量与放量要求以扩大候选，但通过更严格的委比过滤来规避抛压/压单风险，偏防守。
     "3": {
         "alpha_min": 0.88,
         "alpha_max": 0.95,
@@ -480,6 +498,10 @@ def main(profile_key: str = "2"):
     print("2. 正在拉取实时快照...")
     t0 = time.perf_counter()
     sum_quotes = fetch_quotes(stock_codes, batch_size=80)
+    if sum_quotes is not None and not sum_quotes.empty and "code" in sum_quotes.columns:
+        sum_quotes["code"] = sum_quotes["code"].astype(str).str.zfill(6)
+        name_map = df_stock_codes.set_index("code")["name"].to_dict()
+        sum_quotes["name"] = sum_quotes["code"].map(name_map)
     print(f"   快照拉取完成，有效数据: {len(sum_quotes)} 条")
     print(f"   用时: {time.perf_counter() - t0:.2f}s")
 
@@ -568,22 +590,31 @@ def main(profile_key: str = "2"):
     if df_candidates.empty:
         print("无候选股。")
     else:
-        # 按 Alpha 降序排列
         df_candidates = df_candidates.sort_values(by="Alpha_effectiveness", ascending=False)
+        display_columns = [
+            "code",
+            "name",
+            "Alpha_effectiveness",
+            # "mean_vol_last_n_days",
+            "volume_ratio",
+            "bid_ask_imbalance",
+            "tail_attack_coefficient",
+        ]
+        display_rename = {
+            "code": "代码",
+            "name": "名称",
+            "Alpha_effectiveness": "动量Alpha",
+            # "mean_vol_last_n_days": "近N日均量",
+            "volume_ratio": "量比",
+            "bid_ask_imbalance": "委比",
+            "tail_attack_coefficient": "尾部攻击系数",
+        }
         print(
-            df_candidates[[
-                "code",
-                "Alpha_effectiveness",
-                "mean_vol_last_n_days",
-                "volume_ratio",
-                "bid_ask_imbalance",
-                # "price_correlation",
-                "tail_attack_coefficient",
-            ]]
+            df_candidates[display_columns].rename(columns=display_rename)
         )
     print(f"\n=== 总耗时: {time.perf_counter() - t_total_start:.2f}s ===")
     _disconnect_worker_apis()
 
 
 if __name__ == "__main__":
-    main(profile_key="2")
+    main(profile_key="3")

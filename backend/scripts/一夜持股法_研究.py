@@ -31,6 +31,19 @@
    - 作用：从盘口抛压角度做最后风控；不要求为正，但当委比显著为负通常意味着压单/抛压过重
    - 阈值：bid_ask_imbalance > -0.3
      - -0.3：允许“强拉但委比略负”的情况保留；但当委比更差（如 -0.8）多见于卖盘压制/上方抛压过重，拉升失败概率大
+   - 委比判定参考（便于人工复核盘口质量）：
+     - 情况 1：正值（bid_ask_imbalance > 0）
+       - 判定结果：符合风控要求（可保留）
+       - 盘口状态：委买总量 > 委卖总量，买盘力量占优，盘口无抛压，是拉升的优质盘口基础。
+     - 情况 2：零值（bid_ask_imbalance = 0）
+       - 判定结果：符合风控要求（可保留）
+       - 盘口状态：委买总量 = 委卖总量，多空力量完全均衡，无明显抛压，不影响拉升操作。
+     - 情况 3：小幅负值（-0.3 < bid_ask_imbalance < 0）
+       - 判定结果：符合风控要求（可保留）
+       - 盘口状态：委卖总量 > 委买总量，但卖盘优势微弱（如 -0.1、-0.2 等），属于“强拉但委比略负”的允许情形，抛压可控，拉升成功概率较高。
+     - 情况 4：显著负值（bid_ask_imbalance <= -0.3）
+       - 判定结果：不符合风控要求（需剔除）
+       - 盘口状态：委卖总量远大于委买总量，卖盘压制极强（如 -0.3、-0.5、-0.8、-1.0 等），上方抛压过重，拉升失败概率大幅升高，是核心风控规避场景。
 
 可调参数：
 
@@ -321,6 +334,10 @@ def main(profile_key: str = "2"):
     print("2. 正在拉取实时快照...")
     t0 = time.perf_counter()
     sum_quotes = fetch_quotes(stock_codes, batch_size=80)
+    if sum_quotes is not None and not sum_quotes.empty and "code" in sum_quotes.columns:
+        sum_quotes["code"] = sum_quotes["code"].astype(str).str.zfill(6)
+        name_map = df_stock_codes.set_index("code")["name"].to_dict()
+        sum_quotes["name"] = sum_quotes["code"].map(name_map)
     print(f"   快照拉取完成，有效数据: {len(sum_quotes)} 条")
     print(f"   用时: {time.perf_counter() - t0:.2f}s")
 
@@ -420,11 +437,10 @@ def main(profile_key: str = "2"):
         print(
             df_candidates[[
                 "code",
+                "name",
                 "Alpha_effectiveness",
-                "mean_vol_last_n_days",
                 "volume_ratio",
                 "bid_ask_imbalance",
-                # "price_correlation",
                 "tail_attack_coefficient",
             ]]
         )
