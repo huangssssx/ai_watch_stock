@@ -33,6 +33,66 @@ def ensure_py_mini_racer():
     except Exception:
         return
 
+    def _try_use_modern_backend():
+        try:
+            from py_mini_racer import _mini_racer
+        except Exception:
+            return
+
+        modern_cls = getattr(_mini_racer, "MiniRacer", None)
+        if modern_cls is None:
+            return
+
+        current_cls = getattr(py_mini_racer, "MiniRacer", None)
+        if current_cls is modern_cls:
+            return
+
+        should_replace = False
+        if current_cls is None:
+            should_replace = True
+        else:
+            mod = getattr(current_cls, "__module__", "") or ""
+            if mod.endswith("py_mini_racer.py_mini_racer"):
+                should_replace = True
+            else:
+                try:
+                    inst = current_cls()
+                    try:
+                        getattr(inst, "close", lambda: None)()
+                    except Exception:
+                        pass
+                except Exception:
+                    should_replace = True
+
+        if not should_replace:
+            return
+
+        try:
+            inst = modern_cls()
+            inst.eval("1+1")
+            try:
+                inst.close()
+            except Exception:
+                pass
+        except Exception:
+            return
+
+        try:
+            py_mini_racer.MiniRacer = modern_cls
+            py_mini_racer.StrictMiniRacer = getattr(
+                _mini_racer, "StrictMiniRacer", modern_cls
+            )
+            py_mini_racer.WrongReturnTypeException = getattr(
+                _mini_racer, "WrongReturnTypeException", Exception
+            )
+            py_mini_racer.__all__ = [
+                "MiniRacer",
+                "StrictMiniRacer",
+                "WrongReturnTypeException",
+            ]
+        except Exception:
+            pass
+
     if getattr(py_mini_racer, "__file__", None) is None:
         try:
             spec = getattr(py_mini_racer, "__spec__", None)
@@ -71,4 +131,5 @@ def ensure_py_mini_racer():
                 except Exception:
                     pass
 
+    _try_use_modern_backend()
     _patch_miniracer_del(py_mini_racer)

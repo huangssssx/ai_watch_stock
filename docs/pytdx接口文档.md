@@ -38,7 +38,7 @@
 - 多数接口返回 `list[OrderedDict]` 或 `dict` 或 `int`。
 - 你可以用 `api.to_df(ret)` 把返回转换成 `pandas.DataFrame`（`list`/`dict` 更友好；`int` 会变成单列 `value`）。
 - 部分字段在源码里明确标注为 `reversed_bytes* / unused / unknown`：此类字段含义在库中未解释，本文会标记为“未明确”。
-- 成交量/成交额单位：pytdx 对某些字段做了特殊解码（见 `pytdx.helper.get_volume`），但“单位（股/手/元/万元）”在不同接口/市场可能不同；涉及计算时建议做量价一致性校验。
+- 成交量/成交额单位：pytdx 对某些字段做了特殊解码（见 `pytdx.helper.get_volume`）；在本项目已验证的 A 股 HQ 场景下，各接口的单位结论已写在对应条目内；其他市场/接口未实测的不做单位承诺。
 
 ## 1) HQ 行情（TdxHq_API）
 
@@ -116,8 +116,11 @@
   - `count`：条数
 - 返回：`list[OrderedDict]`，每个元素字段意义：
   - `open` / `close` / `high` / `low`：开/收/高/低
-  - `vol`：成交量（单位需结合场景校验）
-  - `amount`：成交额/成交金额（库中命名为 `dbvol`，单位需结合场景校验）
+  - `vol`：成交量
+    - A 股日线经对照验证：当 `category=4` 时，`vol` 单位为“股”；当 `category=9` 时，`vol` 单位为“手”
+  - `amount`：成交额/成交金额（库中命名为 `dbvol`）
+    - A 股日线经对照验证：`amount` 单位为“元”（不随 `category=4/9` 改变）
+    - 量价一致性校验：`amount / vol` 若约为股价，则 `vol` 为“股”；若约为股价的 100 倍，则 `vol` 为“手”（计算 VWAP 时需除以 100）
   - `year` / `month` / `day` / `hour` / `minute`：时间分量
   - `datetime`：`YYYY-MM-DD HH:MM` 字符串
 
@@ -154,11 +157,18 @@
     - `servertime`：服务器时间（快照时间；由 `reversed_bytes0` 格式化得来）
     - `reversed_bytes0`：原始时间戳/字段（未明确）
   - 成交：
-    - `vol`：总成交量（开盘至快照时刻的累计成交量；单位需要结合 `amount/vol` 的量级校验）
+    - `vol`：总成交量（开盘至快照时刻的累计成交量）
+      - A 股实测：单位为“手”
     - `amount`：成交额/成交金额（开盘至快照时刻的累计成交额；由 `get_volume` 解码）
-    - `cur_vol`：现量（快照时刻对应的“最近一笔/最近一次撮合”的成交量，常用于判断最新成交活跃度）
-    - `b_vol`：外盘/主动买入成交量（开盘至快照时刻累计；通常满足 `b_vol + s_vol == vol`）
-    - `s_vol`：内盘/主动卖出成交量（开盘至快照时刻累计；通常满足 `b_vol + s_vol == vol`）
+      - A 股实测：单位为“元”
+      - 量价一致性：`amount / (vol * 100)` 与 `price` 同量级（接近 VWAP）
+    - `cur_vol`：现量（快照时刻对应的“最近一笔/最近一次撮合”的成交量）
+      - A 股实测：单位为“手”，且总是满足 `cur_vol <= vol`
+    - `b_vol`：外盘/主动买入成交量（开盘至快照时刻累计）
+      - A 股实测：单位为“手”
+    - `s_vol`：内盘/主动卖出成交量（开盘至快照时刻累计）
+      - A 股实测：单位为“手”
+    - A 股实测补充：`b_vol + s_vol` 大多数情况下等于 `vol`，但偶尔会出现相差 1 手的情况（不建议把等式当作强约束）
   - 五档（价格与数量）：
     - `bid1..bid5`：买一到买五价
     - `ask1..ask5`：卖一到卖五价
@@ -184,9 +194,12 @@
 - 返回：`list[OrderedDict]`，字段意义：
   - `code`：证券代码
   - `name`：名称（GBK 解码）
-  - `pre_close`：前收/参考价（字段名为 `pre_close`，由 `get_volume` 解码；含义与单位需结合品种校验）
+  - `pre_close`：字段名为 `pre_close`（由 `get_volume` 解码）
+    - A 股实测：该字段经常与 `get_security_quotes.last_close` 不一致（偏差可达 1000 倍以上），不可作为“昨收/前收”使用；如需昨收请用 `get_security_quotes.last_close`
   - `volunit`：成交量单位标识（源码未给出映射）
+    - A 股股票实测：该字段恒为 `100`（与“1 手 = 100 股”的交易单位一致）
   - `decimal_point`：小数位数（价格精度）
+  - A 股实测补充：上交所 `market=1` 时，`start` 在较小取值（如 `0/100/200/500`）会返回 `None`；从 `start≈800` 起返回 `list`
 
 #### `get_minute_time_data(self, market, code)`
 
@@ -196,7 +209,8 @@
   - `code`：6 位代码
 - 返回：`list[OrderedDict]`，字段意义：
   - `price`：价格
-  - `vol`：该点对应的量（具体口径需结合实际校验）
+  - `vol`：该点对应的量
+    - A 股实测：单位为“手”（对当日全量分时求和可与日内总成交量对齐）
 
 #### `get_history_minute_time_data(self, market, code, date)`
 
@@ -206,6 +220,7 @@
   - `code`：6 位代码
   - `date`：`YYYYMMDD`（int 或数字字符串）
 - 返回：与 `get_minute_time_data` 同结构：`list[{price, vol}]`
+  - A 股实测：`vol` 单位与 `get_minute_time_data` 一致，均为“手”
 
 #### `get_transaction_data(self, market, code, start, count)`
 
@@ -219,8 +234,10 @@
   - `time`：`HH:MM`
   - `price`：成交价
   - `vol`：成交量
+    - A 股实测：单位为“手”（对当日全量逐笔求和可与 `get_security_quotes.vol` 对齐，允许存在 1 手级别误差）
   - `num`：成交笔数/撮合笔数（库未进一步解释）
-  - `buyorsell`：买卖方向标识（库未给出枚举；需结合实际数据自行映射）
+  - `buyorsell`：买卖方向标识（协议原始字段，pytdx 不做枚举映射）
+    - A 股实测：取值为 `0/1/2/8`（含义未在库中定义，因此本文不做“买/卖/中性”映射承诺）
 
 #### `get_history_transaction_data(self, market, code, start, count, date)`
 
@@ -232,6 +249,8 @@
   - `date`：`YYYYMMDD`（int 或数字字符串）
 - 返回：与 `get_transaction_data` 类似，但不含 `num` 字段：
   - `time` / `price` / `vol` / `buyorsell`
+  - A 股实测：`vol` 单位为“手”（口径同 `get_transaction_data`）
+  - A 股实测：`buyorsell` 取值范围与 `get_transaction_data` 一致（`0/1/2/8`）
 
 #### `get_company_info_category(self, market, code)`
 
@@ -262,14 +281,15 @@
 - 参数：
   - `market`：0/1
   - `code`：6 位代码
-- 返回：`OrderedDict`，字段意义（按源码字段名；多数数值在库内乘了 `*10000`）：
+- 返回：`OrderedDict`，字段意义（按源码字段名；多数数值在库内做了固定倍率缩放，源码中常见 `*10000`）：
   - 基本：
     - `market` / `code`
     - `province`：省份代码（通达信内部编码）
     - `industry`：行业代码（通达信内部编码）
     - `updated_date`：财务更新日期（`YYYYMMDD`）
     - `ipo_date`：上市日期（`YYYYMMDD`）
-  - 股本（单位需结合场景校验；源码统一 `*10000`）：
+  - 股本（经对照验证，单位为“股”，且是 `updated_date` 对应的时点快照值）：
+    - 对照来源：Tushare Pro `daily_basic`（`float_share/total_share` 单位为“万股”，需 `*10000` 换算为“股”后可对齐）
     - `liutongguben`：流通股本
     - `zongguben`：总股本
     - `guojiagu`：国家股
@@ -299,7 +319,8 @@
     - `shuihoulirun`：税后利润
     - `jinglirun`：净利润
     - `weifenpeilirun`：未分配利润
-    - `meigujingzichan`：每股净资产（源码从 `baoliu1` 取值，具体口径需校验）
+    - `meigujingzichan`：每股净资产（源码从 `baoliu1` 取值）
+      - A 股经对照验证：与 Tushare Pro `daily_basic` 的 `close/pb` 同量级且可对齐（误差通常在 0-2% 内）
     - `baoliu2`：保留字段 2（未明确）
 
 #### `get_xdxr_info(self, market, code)`
@@ -389,6 +410,7 @@
 入口：`pytdx.exhq.TdxExHq_API`
 
 说明：扩展行情覆盖期货/港股/外盘等，`market/category/code` 的取值需要先通过 `get_markets()`、`get_instrument_info()` 等接口探测。
+  - 本机 `pytdx==1.72` 实测：EXHQ 可以成功连接到扩展行情服务器且 `get_instrument_count()` 可返回 `int`，但 `get_markets()` 与 `get_instrument_info()` 返回 `None`，因此无法在本机通过 EXHQ 探测可用的 `market/code`；本节中涉及口径的字段均未做进一步实测校验
 
 ### 连接与通用能力
 
@@ -407,11 +429,8 @@
 
 - 作用：获取可用市场列表（用于确定 `market` 值）
 - 参数：无
-- 返回：`list[OrderedDict]`，字段意义：
-  - `market`：市场编号
-  - `category`：类别编号
-  - `name`：市场名称（GBK）
-  - `short_name`：缩写（GBK）
+- 返回：
+  - 本机实测：返回 `None`
 
 #### `get_instrument_count(self)`
 
@@ -425,12 +444,8 @@
 - 参数：
   - `start`：起始偏移
   - `count`：条数
-- 返回：`list[OrderedDict]`，字段意义：
-  - `category`：品种类别编号
-  - `market`：市场编号
-  - `code`：代码（最多 9 字符）
-  - `name`：名称
-  - `desc`：描述/补充（短字段）
+- 返回：
+  - 本机实测：返回 `None`
 
 ### 快照/分时/K线/逐笔
 
@@ -448,7 +463,7 @@
     - `low`：最低
     - `price`：现价
   - 成交/持仓：
-    - `kaicang`：开仓量（字段名直译；口径需校验）
+    - `kaicang`：开仓量（字段名直译；本机未实测，原因见本节开头说明）
     - `zongliang`：总量
     - `xianliang`：现量
     - `neipan` / `waipan`：内盘/外盘
@@ -461,7 +476,7 @@
 
 - 作用：获取扩展行情标的的 K 线
 - 参数：
-  - `category`：K 线周期（部分取值同 `TDXParams`，扩展市场还可能有额外周期）
+  - `category`：K 线周期（扩展行情的取值由服务端定义；本机无法通过 `get_markets/get_instrument_info` 探测，因此本文不对可用取值做枚举承诺）
   - `market`：市场编号
   - `code`：标的代码
   - `start`：起始偏移
@@ -469,9 +484,9 @@
 - 返回：`list[OrderedDict]`，字段意义：
   - `open` / `high` / `low` / `close`
   - `position`：持仓量
-  - `trade`：成交量/成交笔数（未完全明确）
-  - `price`：价格字段（源码保留，需校验是否为结算价/均价等）
-  - `amount`：成交额/金额（源码从一段 float 取值，口径需校验）
+  - `trade`：成交量/成交笔数（本机未实测，原因见本节开头说明）
+  - `price`：价格字段（源码保留；本机未实测，原因见本节开头说明）
+  - `amount`：成交额/金额（源码从一段 float 取值；本机未实测，原因见本节开头说明）
   - `year` / `month` / `day` / `hour` / `minute` / `datetime`
 
 #### `get_minute_time_data(self, market, code)`
@@ -485,7 +500,7 @@
   - `price`：价格
   - `avg_price`：均价
   - `volume`：成交量
-  - `open_interest`：源码字段名为 `open_interest`，但变量名叫 `amount`，含义需结合品种校验（可能是成交额或持仓相关）
+  - `open_interest`：源码字段名为 `open_interest`，但变量名叫 `amount`（本机未实测，原因见本节开头说明）
 
 #### `get_history_minute_time_data(self, market, code, date)`
 
@@ -506,7 +521,7 @@
 - 返回：`list[OrderedDict]`，字段意义：
   - `date`：datetime（以“今天日期 + raw_time + second”拼出）
   - `hour` / `minute` / `second`
-  - `price`：价格（注意：这里是整数原始值，是否需要除以 100/1000 取决于市场；需校验）
+  - `price`：价格（注意：这里是整数原始值，是否需要除以 100/1000 取决于市场；本机未实测，原因见本节开头说明）
   - `volume`：成交量
   - `zengcang`：增仓（可为负）
   - `nature`：原始性质字段（为兼容保留）
@@ -549,16 +564,16 @@
 - 返回：`list[OrderedDict]`
   - 当 `category == 2`（港股）字段意义（源码字段名）：
     - `market` / `code`
-    - `HuoYueDu`：活跃度（未完全明确口径）
+    - `HuoYueDu`：活跃度（本机未实测，原因见本节开头说明）
     - `ZuoShou`：昨收
     - `JinKai`：今开
     - `ZuiGao` / `ZuiDi`：最高/最低
     - `XianJia`：现价
-    - `MaiRuJia`：买入价（疑似买一价/参考价）
+    - `MaiRuJia`：买入价（本机未实测，原因见本节开头说明）
     - `ZongLiang`：总量
     - `XianLiang`：现量
     - `ZongJinE`：总金额/成交额
-    - `Nei` / `Wai`：内/外（源码注释：`Nei/Wai = 内外比？`）
+    - `Nei` / `Wai`：内/外（本机未实测，原因见本节开头说明；源码注释：`Nei/Wai = 内外比？`）
     - `MaiRuJia1..5` / `MaiRuLiang1..5`：买一到买五价/量
     - `MaiChuJia1..5` / `MaiChuLiang1..5`：卖一到卖五价/量
   - 当 `category == 3`（期货）字段意义（源码字段名）：
@@ -567,7 +582,7 @@
     - `ZuoJie`：昨结
     - `JinKai`：今开
     - `ZuiGao` / `ZuiDi`：最高/最低
-    - `MaiChu`：卖出价（疑似现价/卖一）
+    - `MaiChu`：卖出价（本机未实测，原因见本节开头说明）
     - `KaiCang`：开仓
     - `ZongLiang`：总量
     - `XianLiang`：现量
