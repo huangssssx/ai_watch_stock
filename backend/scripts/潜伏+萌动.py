@@ -16,6 +16,14 @@ if backend_dir not in sys.path:
 from utils.stock_codes import get_all_a_share_codes
 from utils.pytdx_client import tdx
 
+def _infer_liutongguben_factor(price: pd.Series, liutongguben: pd.Series) -> pd.Series:
+    p = pd.to_numeric(price, errors="coerce")
+    s = pd.to_numeric(liutongguben, errors="coerce")
+    cap_raw = p * s
+    cap_scaled = cap_raw * 10000
+    need_scale = (p > 0) & (s > 0) & (cap_raw < 1e8) & (cap_scaled >= 1e8)
+    return pd.Series(need_scale).map(lambda x: 10000 if bool(x) else 1).astype(int)
+
 def get_security_quotes(df_stock_codes:pd.DataFrame):
     """
      获取指定股票的实时行情
@@ -71,7 +79,9 @@ def calcalte_circulating_stock(df_quote_snapshots: pd.DataFrame,df_finance_info:
 
     df = pd.merge(df_left, df_right, on=["market", "code"], how="inner")
     df["price"] = pd.to_numeric(df.get("price", 0), errors="coerce")
-    df["liutongguben"] = pd.to_numeric(df.get("liutongguben", 0), errors="coerce")
+    df["liutongguben_raw"] = pd.to_numeric(df.get("liutongguben", 0), errors="coerce")
+    df["liutongguben_factor"] = _infer_liutongguben_factor(df["price"], df["liutongguben_raw"])
+    df["liutongguben"] = df["liutongguben_raw"] * df["liutongguben_factor"]
 
     df["流通盘"] = df["price"] * df["liutongguben"]
     df["circulating"] = df["流通盘"]
@@ -82,7 +92,8 @@ def filter_circulating_stock(df: pd.DataFrame) -> pd.DataFrame:
     """
     过滤出流通盘股票（流通盘大于0）
     """
-    return df[df['circulating'] < 5000000000]
+    s = pd.to_numeric(df.get("circulating", pd.NA), errors="coerce")
+    return df[(s > 0) & (s < 5_000_000_000)]
 
 def calculate_daily_turnover_operator(row:pd.Series,N:int=20):
     """
@@ -99,17 +110,20 @@ def calculate_daily_turnover_operator(row:pd.Series,N:int=20):
     df["vol"] = pd.to_numeric(df.get("vol", 0), errors="coerce")
     df["amount"] = pd.to_numeric(df.get("amount", 0), errors="coerce")
     df["close"] = pd.to_numeric(df.get("close", 0), errors="coerce")
-    df["liutongguben"] = pd.to_numeric(row.get("liutongguben", 0), errors="coerce")
+    liutongguben = pd.to_numeric(row.get("liutongguben", 0), errors="coerce")
+    if pd.isna(liutongguben) or float(liutongguben) <= 0:
+        return None
 
-    raw_vwap = df["amount"] / df["vol"]
-    vwap_ratio = raw_vwap / df["close"]
-    ratio_median = pd.to_numeric(vwap_ratio, errors="coerce").replace([pd.NA, pd.NaT], pd.NA).dropna().median()
+    safe = (df["vol"] > 0) & (df["close"] > 0)
+    raw_vwap = (df.loc[safe, "amount"] / df.loc[safe, "vol"]).astype(float)
+    vwap_ratio = raw_vwap / df.loc[safe, "close"].astype(float)
+    ratio_median = pd.to_numeric(vwap_ratio, errors="coerce").replace([float("inf"), float("-inf")], pd.NA).dropna().median()
 
     vol_shares = df["vol"]
     if pd.notna(ratio_median) and 80 <= float(ratio_median) <= 120:
         vol_shares = df["vol"] * 100
 
-    df["turnover"] = vol_shares / df["liutongguben"]
+    df["turnover"] = vol_shares / liutongguben
     s = pd.to_numeric(df["turnover"], errors="coerce").dropna()
     if s.empty:
         return None
