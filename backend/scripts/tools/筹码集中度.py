@@ -1,6 +1,9 @@
 import akshare as ak
-
-stock_cyq_em_df = ak.stock_cyq_em(symbol="000779", adjust="qfq")
-# stock_cyq_em_df.to_json("000779_筹码集中度.json", index=False)
-stock_cyq_em_df.to_csv("000779_筹码集中度.csv", index=False)
-print(stock_cyq_em_df)
+import time
+# 批量延时获取筹码集中度
+for symbol in ["002226"]:
+    stock_cyq_em_df = ak.stock_cyq_em(symbol=symbol, adjust="qfq")
+    # stock_cyq_em_df.to_json(f"{symbol}_筹码集中度.json", index=False)
+    stock_cyq_em_df.to_csv(f"{symbol}_筹码集中度.csv", index=False)
+    time.sleep(1)
+    print(stock_cyq_em_df)
