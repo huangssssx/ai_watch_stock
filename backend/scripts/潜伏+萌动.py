@@ -213,8 +213,9 @@ def filter_ma20_oscillation_operator(row:pd.Series,N:int=40)->bool:
     if "datetime" in df.columns:
         df = df.sort_values("datetime")
     df["close"] = pd.to_numeric(df.get("close", 0), errors="coerce")
-    close_s = pd.to_numeric(df["close"], errors="coerce").dropna()
-    close_s = close_s.iloc[-20:]
+    df["high"] = pd.to_numeric(df.get("high", 0), errors="coerce")
+    df["low"] = pd.to_numeric(df.get("low", 0), errors="coerce")
+    close_s = pd.to_numeric(df["close"], errors="coerce").dropna().iloc[-20:]
     if len(close_s) < 20:
         return False
     base_close = float(close_s.iloc[0])
@@ -223,13 +224,19 @@ def filter_ma20_oscillation_operator(row:pd.Series,N:int=40)->bool:
         return False
 
     chg20 = last_close / base_close - 1.0
+    ret_s = close_s.pct_change().dropna()
+    max_daily_up = float(ret_s.max()) if not ret_s.empty else 0.0
 
-    min_close = close_s[close_s > 0].min()
-    if pd.isna(min_close) or float(min_close) <= 0:
+    high_s = pd.to_numeric(df["high"], errors="coerce").dropna().iloc[-20:]
+    low_s = pd.to_numeric(df["low"], errors="coerce").dropna().iloc[-20:]
+    if len(high_s) < 20 or len(low_s) < 20:
         return False
-    range_amp = close_s.max() / float(min_close) - 1.0
+    min_low = low_s[low_s > 0].min()
+    if pd.isna(min_low) or float(min_low) <= 0:
+        return False
+    range_amp = float(high_s.max()) / float(min_low) - 1.0
 
-    return bool((-0.12 <= chg20 <= 0.15) and (range_amp <= 0.30))
+    return bool((-0.12 <= chg20 <= 0.15) and (range_amp <= 0.18) and (max_daily_up <= 0.08))
 
 
 # 近20日整体震荡：涨跌幅 -12%~+15% 且区间振幅<=30%
@@ -252,10 +259,58 @@ def filter_ma20_oscillation(df:pd.DataFrame)->pd.DataFrame:
     print(df)
     return df[df["ma20_oscillation_ok"]]
 
-    # df["ma20"] = df["last_close"].rolling(window=20).mean()
-    # df["ma20_oscillation"] = (df["last_close"] - df["ma20"]) / df["ma20"]
-    # df["ma20_oscillation_ok"] = (df["ma20_oscillation"] >= -0.12) & (df["ma20_oscillation"] <= 0.15)
-    # return df[df["ma20_oscillation_ok"]]
+# 脉冲放量：近10天最大成交量相对均值比≥3.0 的算子 
+def filter_pulse_volume_operator(row:pd.Series,N:int=10)->bool:
+    market = row["market"]
+    code_num = int(row["code"])
+    code = str(code_num).zfill(6)
+    bars = tdx.get_security_bars(9,market, code, 0, N)
+    if bars is None or len(bars) == 0:
+        return False
+    df = pd.DataFrame(bars)
+    if "datetime" in df.columns:
+        df = df.sort_values("datetime")
+    if "vol" in df.columns:
+        vol_raw = df["vol"]
+    elif "volume" in df.columns:
+        vol_raw = df["volume"]
+    else:
+        vol_raw = pd.Series([0] * int(len(df)))
+    vol_s = pd.to_numeric(vol_raw, errors="coerce").dropna()
+    vol_s = vol_s[vol_s > 0]
+    if int(len(vol_s)) < N:
+        return False
+    avg_vol_10d = float(vol_s.mean())
+    if avg_vol_10d <= 0:
+        return False
+    max_vol_ratio = float(vol_s.max()) / avg_vol_10d
+    if max_vol_ratio < 2.5:
+        return False
+    max_idx = int(vol_s.values.argmax())
+    pulse_age = (int(len(vol_s)) - 1) - max_idx
+    return bool(pulse_age <= 3)
+
+
+
+# 脉冲放量：近10天最大成交量相对均值比≥2.5的算子
+def filter_pulse_volume(df:pd.DataFrame)->pd.DataFrame:
+    """
+    脉冲放量：近10天最大成交量相对均值比≥2.5 的算子     
+    """
+    if df is None or df.empty:
+        return df
+    t0 = time.time()
+    oks = []
+    total = int(len(df))
+    for idx, row in df.iterrows():
+        oks.append(filter_pulse_volume_operator(row))
+        done = len(oks)
+        if done % 200 == 0 or done == total:
+            dt = time.time() - t0
+            print(f"[脉冲放量] progress {done}/{total} elapsed={dt:.1f}s")
+    df["pulse_volume_ok"] = oks
+    print(df)
+    return df[df["pulse_volume_ok"]]
 
 def main():
     t0 = time.time()
@@ -267,7 +322,7 @@ def main():
             print(f"[{dt:8.1f}s] {stage}: rows=0")
             return
         cols = []
-        for c in ["market", "code", "price", "circulating", "turnover_low_ratio", "ma20_support_ok", "ma20_oscillation_ok"]:
+        for c in ["market", "code", "price", "circulating", "turnover_low_ratio", "ma20_support_ok", "ma20_oscillation_ok", "pulse_volume_ok"]:
             if c in df.columns:
                 cols.append(c)
         head_preview = df[cols].head(3) if cols else df.head(3)
@@ -302,8 +357,12 @@ def main():
 
     df_quote_snapshots = filter_ma20_oscillation(df_quote_snapshots)
     _log("过滤20日整体震荡", df_quote_snapshots)
+    
+    df_quote_snapshots.to_csv("ma20_oscillation.csv",index=False)
+    df_quote_snapshots = filter_pulse_volume(df_quote_snapshots)
+    _log("过滤脉冲放量", df_quote_snapshots)
 
-    df_quote_snapshots.to_csv("ma20_oscillation.csv", index=False)
+    df_quote_snapshots.to_csv("ma20_pulse_volume.csv", index=False)
     print("完成，最终数量：", len(df_quote_snapshots))
 
 if __name__ == "__main__":
