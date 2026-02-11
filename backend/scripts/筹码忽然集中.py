@@ -1,360 +1,365 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+筹码忽然集中选股脚本
+使用tushare的筹码接口，在全市场中找出筹码忽然集中的疑似要涨的股票
+"""
+
 import os
 import sys
-import time
-import traceback
-from typing import Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import numpy as np
 import pandas as pd
+from datetime import datetime, timedelta
 
-backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if backend_dir not in sys.path:
-    sys.path.insert(0, backend_dir)
+# 添加项目根目录到路径，以便导入模块
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
-from utils.stock_codes import get_all_a_share_codes
-from utils.chips import ChipProxyParams, get_chip_concentration_proxy
-from utils.pytdx_client import tdx
-
-# 可通过环境变量调整脚本行为（直接在命令前写 VAR=VALUE 即可）：
-# - MAX_WORKERS：并发线程数（默认 8）。越大通常越快，但更容易触发数据源异常/网络抖动。
-#   示例：MAX_WORKERS=1 python3 scripts/筹码忽然集中.py  -> 单线程更稳但更慢
-#         MAX_WORKERS=12 python3 scripts/筹码忽然集中.py -> 更快但更可能出现 “BAD RESPONSE ...”
-# - MAX_STOCKS：只跑前 N 只股票（默认 0=全市场）。用于快速调参/验证。
-#   示例：MAX_STOCKS=200 python3 scripts/筹码忽然集中.py -> 只筛前 200 只，分钟级验证
-# - MAX_RESULTS：最多保留多少条入选结果（默认 300），避免结果过大影响前端展示/存储。
-# - CHIP_WINDOW：筹码代理指标的回看窗口（默认 60 个交易日）。越大越“看长期”，拐点更少更稳。
-# - CHIP_SMOOTH：集中度序列的平滑窗口（默认 5）。越大越平滑，越不容易被 1 天噪声触发。
-# - HIST_N：用于计算“自适应阈值”的历史样本长度（默认 120）。越大阈值越稳，但更慢且对新股不友好。
-# - LOOKBACK_DAYS：单股拉取日线覆盖的自然日天数（默认 220），需要覆盖 window+hist_n 的计算。
-# - DELTA_FLOOR：集中度“突然下降”的保底阈值（默认 -0.12，表示较昨日下降 12% 以上才算突然，按未平滑值计算）。
-# - DELTA_SMOOTH_FLOOR：平滑集中度“突然下降”的保底阈值（默认 -0.05）。用于过滤“未平滑在跌但平滑没怎么动”的伪拐点。
-# - ABS_DROP_FLOOR：集中度“绝对值下降”保底阈值（默认 0=不启用）。例如 0.003 表示今日比昨日至少下降 0.003。
-# - Z_THR：鲁棒 z-score 阈值（默认 -2.0）。越接近 0 越宽松，越小越严格。
-# - Z_THR_RAW：未平滑集中度的鲁棒 z-score 阈值（默认等于 Z_THR）。用于要求“原始值”也处于显著低位。
-# - FETCH_RETRIES：单股拉取失败时重试次数（默认 2）。提高成功率但会增加耗时。
+# 导入tushare client
+from backend.utils.tushare_client import pro
 
 
-def _to_date_ymd(d: pd.Timestamp) -> str:
-    return pd.Timestamp(d).strftime("%Y-%m-%d")
-
-
-def _robust_z(x: float, hist: np.ndarray) -> Optional[float]:
-    a = np.asarray(hist, dtype=float)
-    a = a[np.isfinite(a)]
-    if len(a) < 20 or not np.isfinite(x):
-        return None
-    med = float(np.median(a))
-    mad = float(np.median(np.abs(a - med)))
-    if mad > 0:
-        return float((x - med) / (1.4826 * mad))
-    std = float(np.std(a))
-    if std > 0:
-        return float((x - float(np.mean(a))) / std)
-    return None
-
-
-def _analyze_one(
-    code: str,
-    name: str,
-    last_date: pd.Timestamp,
-    *,
-    window: int,
-    smooth: int,
-    hist_n: int,
-    lookback_days: int,
-    delta_floor: float,
-    z_thr: float,
-) -> Optional[dict]:
-    # lookback_days：拉取日线覆盖的自然日天数（不是交易日天数）
-    # 目的：确保有足够的历史样本计算：CHIP_WINDOW（计算滚动分布）+ HIST_N（计算自适应阈值）。
-    start_date = _to_date_ymd(last_date - pd.Timedelta(days=int(lookback_days)))
-    end_date = _to_date_ymd(last_date)
-    # FETCH_RETRIES：单股拉取失败重试次数。提高成功率但会增加耗时。
-    retries = int(os.getenv("FETCH_RETRIES", "2") or "2")
-    df_proxy = None
-    for attempt in range(max(1, retries)):
+def get_trading_date(n_days_ago=0):
+    """
+    获取最近的交易日
+    :param n_days_ago: 多少天前的交易日
+    :return: 交易日期字符串，格式为YYYYMMDD
+    """
+    today = datetime.now()
+    # 先尝试获取今天的日期，如果不是交易日则往前推
+    for i in range(30):  # 最多往前推30天
+        target_date = today - timedelta(days=i + n_days_ago)
+        date_str = target_date.strftime('%Y%m%d')
         try:
-            df_proxy = get_chip_concentration_proxy(
-                code=code,
-                start_date=start_date,
-                end_date=end_date,
-                params=ChipProxyParams(window=int(window), smooth=int(smooth)),
-                as_df=True,
-            )
+            # 使用trade_cal接口检查是否为交易日
+            cal_df = pro.trade_cal(exchange='SSE', start_date=date_str, end_date=date_str)
+            if not cal_df.empty and cal_df.iloc[0]['is_open'] == 1:
+                return date_str
+        except Exception as e:
+            pass
+    raise Exception("无法获取有效的交易日")
+
+
+def get_trading_dates(n_days=10):
+    """
+    获取最近的n个交易日
+    :param n_days: 需要的交易日数量
+    :return: 交易日期字符串列表，格式为YYYYMMDD
+    """
+    dates = []
+    for i in range(n_days * 3):  # 最多尝试3倍天数
+        date_str = get_trading_date(i)
+        if date_str not in dates:
+            dates.append(date_str)
+        if len(dates) >= n_days:
             break
-        except Exception:
-            df_proxy = None
-            time.sleep(0.05 * (attempt + 1))
-    if df_proxy is None or df_proxy.empty:
-        return None
-
-    dfp = df_proxy.copy()
-    dfp["date"] = pd.to_datetime(dfp["date"], errors="coerce").dt.normalize()
-    dfp = dfp.dropna(subset=["date"]).sort_values("date")
-    col_smooth = "proxy_70_concentration_smooth"
-    col_raw = "proxy_70_concentration"
-    if col_smooth not in dfp.columns or col_raw not in dfp.columns:
-        return None
-    dfp[col_smooth] = pd.to_numeric(dfp[col_smooth], errors="coerce")
-    dfp[col_raw] = pd.to_numeric(dfp[col_raw], errors="coerce")
-    dfp = dfp.dropna(subset=[col_smooth, col_raw])
-    if dfp.empty:
-        return None
-
-    df_last = dfp[dfp["date"] <= last_date].tail(2)
-    if len(df_last) < 2:
-        return None
-    row_prev = df_last.iloc[0]
-    row_t = df_last.iloc[1]
-
-    date_prev = pd.Timestamp(row_prev["date"]).normalize()
-    date_t = pd.Timestamp(row_t["date"]).normalize()
-    if (date_t - date_prev).days > 7:
-        return None
-
-    x_t_smooth = float(row_t[col_smooth])
-    x_prev_smooth = float(row_prev[col_smooth])
-    x_t_raw = float(row_t[col_raw])
-    x_prev_raw = float(row_prev[col_raw])
-    if (
-        not np.isfinite(x_t_smooth)
-        or not np.isfinite(x_prev_smooth)
-        or x_prev_smooth <= 0
-        or not np.isfinite(x_t_raw)
-        or not np.isfinite(x_prev_raw)
-        or x_prev_raw <= 0
-    ):
-        return None
-    delta = float((x_t_raw - x_prev_raw) / x_prev_raw)
-    delta_smooth = float((x_t_smooth - x_prev_smooth) / x_prev_smooth)
-
-    df_hist = dfp[dfp["date"] < date_prev].tail(int(hist_n))
-    if df_hist is None or df_hist.empty:
-        return None
-    hist_smooth = df_hist[col_smooth].to_numpy(dtype=float)
-    hist_smooth = hist_smooth[np.isfinite(hist_smooth)]
-    hist_raw = df_hist[col_raw].to_numpy(dtype=float)
-    hist_raw = hist_raw[np.isfinite(hist_raw)]
-    if len(hist_smooth) < max(30, int(hist_n) // 3) or len(hist_raw) < max(30, int(hist_n) // 3):
-        return None
-
-    q10_smooth = float(np.quantile(hist_smooth, 0.10))
-    q10_raw = float(np.quantile(hist_raw, 0.10))
-    percentile_smooth = float(np.mean(hist_smooth <= x_t_smooth)) * 100.0
-    percentile_raw = float(np.mean(hist_raw <= x_t_raw)) * 100.0
-
-    dh = pd.Series(df_hist[col_raw].to_numpy(dtype=float)).pct_change().dropna()
-    dh = dh[np.isfinite(dh)]
-    q05_delta = float(dh.quantile(0.05)) if len(dh) >= 20 else np.nan
-    delta_thr = float(min(q05_delta, float(delta_floor))) if np.isfinite(q05_delta) else float(delta_floor)
-
-    z_smooth = _robust_z(x_t_smooth, hist_smooth)
-    z_raw = _robust_z(x_t_raw, hist_raw)
-    if z_smooth is None or not np.isfinite(z_smooth) or z_raw is None or not np.isfinite(z_raw):
-        return None
-
-    abs_drop_floor = float(os.getenv("ABS_DROP_FLOOR", "0") or "0")
-    if abs_drop_floor > 0 and (x_prev_raw - x_t_raw) < abs_drop_floor:
-        return None
-
-    delta_smooth_floor = float(os.getenv("DELTA_SMOOTH_FLOOR", "-0.05") or "-0.05")
-    if delta_smooth > float(delta_smooth_floor):
-        return None
-
-    z_thr_raw = float(os.getenv("Z_THR_RAW", str(z_thr)) or str(z_thr))
-    if not (
-        x_t_smooth <= q10_smooth
-        and x_t_raw <= q10_raw
-        and delta <= delta_thr
-        and delta_smooth <= float(delta_smooth_floor)
-        and z_smooth <= float(z_thr)
-        and z_raw <= float(z_thr_raw)
-    ):
-        return None
-
-    score = float(
-        (-z_smooth) * 30.0
-        + (-z_raw) * 30.0
-        + (-delta) * 80.0
-        + (-delta_smooth) * 40.0
-        + (10.0 - min(10.0, percentile_smooth / 10.0)) * 2.0
-    )
-    reason = f"集中度突降 p{percentile_smooth:.0f}/p{percentile_raw:.0f} Δ{delta:.1%}/{delta_smooth:.1%} z{z_smooth:.2f}/{z_raw:.2f}"
-    return {
-        "symbol": str(code).zfill(6),
-        "name": str(name),
-        "date": _to_date_ymd(date_t),
-        "score": score,
-        "reason": reason,
-        "conc_today": x_t_raw,
-        "conc_prev": x_prev_raw,
-        "conc_today_smooth": x_t_smooth,
-        "conc_prev_smooth": x_prev_smooth,
-        "delta": delta,
-        "delta_smooth": delta_smooth,
-        "percentile_smooth": percentile_smooth,
-        "percentile_raw": percentile_raw,
-        "z_smooth": z_smooth,
-        "z_raw": z_raw,
-        "q10_smooth": q10_smooth,
-        "q10_raw": q10_raw,
-        "delta_thr": delta_thr,
-        "z_thr": float(z_thr),
-        "z_thr_raw": float(z_thr_raw),
-        "delta_smooth_floor": float(delta_smooth_floor),
-        "window": int(window),
-        "smooth": int(smooth),
-        "hist_n": int(hist_n),
-    }
+    return dates
 
 
-def _get_recent_open_dates(k: int = 2, today: Optional[pd.Timestamp] = None) -> list[pd.Timestamp]:
-    base = pd.Timestamp(today) if today is not None else pd.Timestamp.today()
-    base = base.normalize()
-
-    for ip, port in [("180.153.18.170", 7709), ("101.227.73.20", 7709)]:
-        try:
-            tdx.configure(ip, port)
-            bars = tdx.get_security_bars(9, 0, "000001", 0, 120) or []
-            df = pd.DataFrame(bars)
-            if df is None or df.empty or "datetime" not in df.columns:
-                continue
-            ds = pd.to_datetime(df["datetime"].astype(str).str.slice(0, 10), errors="coerce").dropna().dt.normalize()
-            ds = ds[ds <= base].drop_duplicates().sort_values()
-            if len(ds) >= k:
-                return [pd.Timestamp(x).normalize() for x in ds.tolist()[-k:]]
-        except Exception:
-            continue
-
-    out: list[pd.Timestamp] = []
-    d = base
-    for _ in range(30):
-        if d.weekday() < 5:
-            out.append(d)
-            if len(out) >= k:
-                break
-        d = (d - pd.Timedelta(days=1)).normalize()
-    return list(reversed(out))
-
-
-def _load_stock_pool(limit: Optional[int] = None) -> pd.DataFrame:
-    df_codes = get_all_a_share_codes()
-    if df_codes is None or df_codes.empty:
-        return pd.DataFrame(columns=["market", "code", "name"])
-    df_codes = df_codes.copy()
-    df_codes["code"] = df_codes["code"].astype(str).str.zfill(6)
-    df_codes["name"] = df_codes.get("name", "").astype(str)
-    if limit is not None:
-        df_codes = df_codes.head(int(limit))
-    return df_codes[["market", "code", "name"]].reset_index(drop=True)
-
-
-def main() -> pd.DataFrame:
-    print("开始运行：全市场筛选（筹码忽然集中）")
-    t0 = time.perf_counter()
-    open_dates = _get_recent_open_dates(k=2)
-    if len(open_dates) < 2:
-        print("无法确定最近两个交易日，结束。")
+def get_all_stock_codes():
+    """
+    获取全市场股票代码列表
+    :return: 包含ts_code和name的DataFrame
+    """
+    try:
+        # 获取当前所有正常上市交易的股票列表
+        df = pro.stock_basic(
+            exchange='',
+            list_status='L',
+            fields='ts_code,name'
+        )
+        print(f"获取到 {len(df)} 只股票")
+        return df
+    except Exception as e:
+        print(f"获取股票列表失败: {e}")
         return pd.DataFrame()
-    last_date = open_dates[-1]
-    prev_date = open_dates[-2]
-    print(f"最近交易日: {last_date:%Y-%m-%d}，上一交易日: {prev_date:%Y-%m-%d}")
 
-    max_stocks = int(os.getenv("MAX_STOCKS", "0") or "0")
-    # MAX_STOCKS：只跑前 N 只股票，方便快速验证与调参；0 表示全市场。
-    df_codes = _load_stock_pool(limit=max_stocks if max_stocks > 0 else None)
-    print(f"股票池数量: {len(df_codes)}")
 
-    # CHIP_WINDOW：集中度计算的滚动窗口长度（交易日）；越大越稳、越不敏感。
-    window = int(os.getenv("CHIP_WINDOW", "60") or "60")
-    # CHIP_SMOOTH：对集中度序列做均值平滑的窗口长度；越大越不容易被 1 日噪声触发。
-    smooth = int(os.getenv("CHIP_SMOOTH", "5") or "5")
-    # HIST_N：用于计算“自适应阈值”（历史分位、历史 delta 分位、历史 MAD）的样本长度。
-    hist_n = int(os.getenv("HIST_N", "120") or "120")
-    # LOOKBACK_DAYS：单股日线拉取覆盖的自然日天数（需足够覆盖 window+hist_n）。
-    lookback_days = int(os.getenv("LOOKBACK_DAYS", "220") or "220")
-    # DELTA_FLOOR：集中度“突然下降”的保底阈值（负数）。例如 -0.12 表示较昨日下降 ≥12% 才算突然。
-    delta_floor = float(os.getenv("DELTA_FLOOR", "-0.12") or "-0.12")
-    # Z_THR：鲁棒 z-score 阈值。比如 -2.0 表示当日显著低于自身历史中位数（约 2 个鲁棒标准差）。
-    z_thr = float(os.getenv("Z_THR", "-2.0") or "-2.0")
-    # MAX_WORKERS：并发线程数。提高会加速，但也会放大网络抖动/数据源限制导致的失败概率。
-    max_workers = int(os.getenv("MAX_WORKERS", "8") or "8")
+def get_chip_data(ts_code, start_date, end_date):
+    """
+    获取股票的筹码数据
+    :param ts_code: 股票代码
+    :param start_date: 开始日期
+    :param end_date: 结束日期
+    :return: 筹码数据DataFrame
+    """
+    try:
+        df = pro.cyq_perf(
+            ts_code=ts_code,
+            start_date=start_date,
+            end_date=end_date
+        )
+        if not df.empty:
+            pass
+        return df
+    except Exception as e:
+        print(f"获取 {ts_code} 筹码数据失败: {e}")
+        return pd.DataFrame()
 
-    rows: list[dict] = []
-    items = list(df_codes[["code", "name"]].itertuples(index=False, name=None))
-    total = len(items)
-    print(f"开始扫描：0/{total}")
-    if max_workers <= 1:
-        for i, (code, name) in enumerate(items, 1):
-            if i % 200 == 0:
-                print(f"已扫描了：{i}/{total}")
-            try:
-                r = _analyze_one(
-                    code=code,
-                    name=name,
-                    last_date=last_date,
-                    window=window,
-                    smooth=smooth,
-                    hist_n=hist_n,
-                    lookback_days=lookback_days,
-                    delta_floor=delta_floor,
-                    z_thr=z_thr,
-                )
-            except Exception:
-                r = None
-            if r is not None:
-                rows.append(r)
+
+# 策略配置对象
+STRATEGIES = {
+    "稳健型": {
+        "name": "稳健型",
+        "description": "适合长周期横盘蓄势的股票，风险较低",
+        "params": {
+            "cost_range_slope_threshold": -0.01,  # 成本范围斜率阈值（温和）
+            "cost_range_change_rate_threshold": -5,  # 成本范围变化率阈值
+            "winner_rate_slope_threshold": 0.1,  # 胜率斜率阈值（温和）
+            "winner_rate_change_rate_threshold": 10,  # 胜率变化率阈值
+            "weight_avg_change_rate_threshold": 15,  # 加权平均成本变化率阈值
+            "min_cost_range_percent": 5,  # 最小成本范围百分比（相对于股价）
+            "max_cost_range_percent": 30,  # 最大成本范围百分比（相对于股价）
+            "min_winner_rate": 50,  # 最小胜率
+            "max_weight_avg_diff_percent": 10  # 股价与加权平均成本差异百分比
+        }
+    },
+    "激进型": {
+        "name": "激进型",
+        "description": "适合即将爆发的股票，捕捉启动瞬间",
+        "params": {
+            "cost_range_slope_threshold": -0.05,  # 成本范围斜率阈值（陡峭）
+            "cost_range_change_rate_threshold": -10,  # 成本范围变化率阈值
+            "winner_rate_slope_threshold": 0.5,  # 胜率斜率阈值（陡峭）
+            "winner_rate_change_rate_threshold": 50,  # 胜率变化率阈值
+            "weight_avg_change_rate_threshold": 20,  # 加权平均成本变化率阈值
+            "min_cost_range_percent": 3,  # 最小成本范围百分比（相对于股价）
+            "max_cost_range_percent": 20,  # 最大成本范围百分比（相对于股价）
+            "min_winner_rate": 60,  # 最小胜率
+            "max_weight_avg_diff_percent": 15  # 股价与加权平均成本差异百分比
+        }
+    },
+    "平衡型": {
+        "name": "平衡型",
+        "description": "平衡风险和收益，适合大多数市场环境",
+        "params": {
+            "cost_range_slope_threshold": -0.02,  # 成本范围斜率阈值
+            "cost_range_change_rate_threshold": -7,  # 成本范围变化率阈值
+            "winner_rate_slope_threshold": 0.2,  # 胜率斜率阈值
+            "winner_rate_change_rate_threshold": 20,  # 胜率变化率阈值
+            "weight_avg_change_rate_threshold": 15,  # 加权平均成本变化率阈值
+            "min_cost_range_percent": 4,  # 最小成本范围百分比（相对于股价）
+            "max_cost_range_percent": 25,  # 最大成本范围百分比（相对于股价）
+            "min_winner_rate": 55,  # 最小胜率
+            "max_weight_avg_diff_percent": 12  # 股价与加权平均成本差异百分比
+        }
+    },
+    "暴力型": {
+        "name": "暴力型",
+        "description": "捕捉暴力连板和V型反转的股票，风险较高",
+        "params": {
+            "cost_range_slope_threshold": -0.1,  # 成本范围斜率阈值（非常陡峭）
+            "cost_range_change_rate_threshold": -15,  # 成本范围变化率阈值
+            "winner_rate_slope_threshold": 1.0,  # 胜率斜率阈值（非常陡峭）
+            "winner_rate_change_rate_threshold": 100,  # 胜率变化率阈值
+            "weight_avg_change_rate_threshold": 25,  # 加权平均成本变化率阈值
+            "min_cost_range_percent": 2,  # 最小成本范围百分比（相对于股价）
+            "max_cost_range_percent": 15,  # 最大成本范围百分比（相对于股价）
+            "min_winner_rate": 70,  # 最小胜率
+            "max_weight_avg_diff_percent": 20  # 股价与加权平均成本差异百分比
+        }
+    }
+}
+
+def is_chip_concentrated(chip_df, strategy_name="平衡型"):
+    """
+    分析筹码是否集中
+    
+    Args:
+        chip_df: 筹码数据DataFrame
+        strategy_name: 策略名称，可选值：稳健型、激进型、平衡型、暴力型
+    
+    Returns:
+        tuple: (是否集中, 相关指标)
+    """
+    # 获取策略参数
+    strategy = STRATEGIES.get(strategy_name, STRATEGIES["平衡型"])
+    params = strategy["params"]
+    
+    # 确保数据按日期降序排列
+    chip_df = chip_df.sort_values('trade_date', ascending=False)
+    
+    # 只使用最近的20个交易日数据
+    recent_data = chip_df.head(20)
+    
+    # 计算成本范围（95分位成本 - 5分位成本）
+    # 使用.loc避免SettingWithCopyWarning
+    recent_data = recent_data.copy()
+    recent_data.loc[:, 'cost_range'] = recent_data['cost_95pct'] - recent_data['cost_5pct']
+    
+    # 计算趋势（使用线性回归的斜率）
+    from scipy import stats
+    import numpy as np
+    
+    # 准备数据进行线性回归
+    x = np.arange(len(recent_data))[::-1]  # 时间序列，从早到晚
+    
+    # 成本范围趋势
+    slope_cost_range, _, _, _, _ = stats.linregress(x, recent_data['cost_range'])
+    cost_range_trend = "下降" if slope_cost_range < 0 else "上升"
+    
+    # 胜率趋势
+    slope_winner_rate, _, _, _, _ = stats.linregress(x, recent_data['winner_rate'])
+    winner_rate_trend = "上升" if slope_winner_rate > 0 else "下降"
+    
+    # 加权平均成本趋势
+    slope_weight_avg, _, _, _, _ = stats.linregress(x, recent_data['weight_avg'])
+    weight_avg_trend = "上升" if slope_weight_avg > 0 else "下降"
+    
+    # 计算变化率
+    first_cost_range = recent_data['cost_range'].iloc[-1]  # 最早的数据
+    last_cost_range = recent_data['cost_range'].iloc[0]   # 最新的数据
+    cost_range_change = last_cost_range - first_cost_range
+    cost_range_change_rate = (cost_range_change / first_cost_range) * 100 if first_cost_range != 0 else 0
+    
+    first_winner_rate = recent_data['winner_rate'].iloc[-1]
+    last_winner_rate = recent_data['winner_rate'].iloc[0]
+    winner_rate_change = last_winner_rate - first_winner_rate
+    winner_rate_change_rate = (winner_rate_change / first_winner_rate) * 100 if first_winner_rate != 0 else 0
+    
+    first_weight_avg = recent_data['weight_avg'].iloc[-1]
+    last_weight_avg = recent_data['weight_avg'].iloc[0]
+    weight_avg_change = last_weight_avg - first_weight_avg
+    weight_avg_change_rate = (weight_avg_change / first_weight_avg) * 100 if first_weight_avg != 0 else 0
+    
+    # 分析期间
+    start_date = recent_data['trade_date'].iloc[-1]
+    end_date = recent_data['trade_date'].iloc[0]
+    
+    # 获取最新股价（使用95分位成本作为近似）
+    latest_price = recent_data['cost_95pct'].iloc[0]
+    # 计算成本范围占股价的百分比
+    cost_range_percent = (last_cost_range / latest_price) * 100 if latest_price != 0 else 0
+    
+    # 计算股价与加权平均成本的差异百分比
+    weight_avg_diff_percent = ((latest_price - last_weight_avg) / last_weight_avg) * 100 if last_weight_avg != 0 else 0
+    
+    # 筹码集中的条件判断
+    is_concentrated = (
+        # 成本范围趋势为下降（筹码集中）
+        slope_cost_range < params["cost_range_slope_threshold"] and 
+        # 成本范围变化率小于阈值（有所集中）
+        cost_range_change_rate < params["cost_range_change_rate_threshold"] and 
+        # 胜率趋势为上升（市场情绪向好）
+        slope_winner_rate > params["winner_rate_slope_threshold"] and 
+        # 胜率变化率大于阈值（有所向好）
+        winner_rate_change_rate > params["winner_rate_change_rate_threshold"] and 
+        # 加权平均成本相对稳定（变化率小于阈值）
+        abs(weight_avg_change_rate) < params["weight_avg_change_rate_threshold"] and 
+        # 成本范围占股价的百分比在合理范围内
+        params["min_cost_range_percent"] < cost_range_percent < params["max_cost_range_percent"] and 
+        # 胜率达到一定水平
+        last_winner_rate > params["min_winner_rate"] and 
+        # 股价与加权平均成本的差异在合理范围内
+        abs(weight_avg_diff_percent) < params["max_weight_avg_diff_percent"]
+    )
+    
+    # 返回相关指标
+    indicators = {
+        'ts_code': recent_data['ts_code'].iloc[0],
+        'strategy': strategy['name'],
+        'cost_range_start': first_cost_range,
+        'cost_range_end': last_cost_range,
+        'cost_range_change': cost_range_change,
+        'cost_range_change_rate': cost_range_change_rate,
+        'cost_range_slope': slope_cost_range,
+        'cost_range_trend': cost_range_trend,
+        'cost_range_percent': cost_range_percent,
+        'winner_rate_start': first_winner_rate,
+        'winner_rate_end': last_winner_rate,
+        'winner_rate_change': winner_rate_change,
+        'winner_rate_change_rate': winner_rate_change_rate,
+        'winner_rate_slope': slope_winner_rate,
+        'winner_rate_trend': winner_rate_trend,
+        'weight_avg_start': first_weight_avg,
+        'weight_avg_end': last_weight_avg,
+        'weight_avg_change': weight_avg_change,
+        'weight_avg_change_rate': weight_avg_change_rate,
+        'weight_avg_slope': slope_weight_avg,
+        'weight_avg_trend': weight_avg_trend,
+        'weight_avg_diff_percent': weight_avg_diff_percent,
+        'start_date': start_date,
+        'end_date': end_date,
+        'latest_price': latest_price
+    }
+    
+    return is_concentrated, indicators
+
+
+def main():
+    """
+    主函数
+    """
+    print("开始执行筹码忽然集中选股策略...")
+    
+    # 选择策略
+    strategy_name = "平衡型"  # 可切换为：稳健型、激进型、平衡型、暴力型
+    print(f"使用策略: {STRATEGIES[strategy_name]['name']} - {STRATEGIES[strategy_name]['description']}")
+    
+    # 获取最近的20个交易日
+    trading_dates = get_trading_dates(20)
+    print(f"最近的20个交易日: {trading_dates}")
+    
+    # 使用最近的20个交易日
+    latest_date = trading_dates[0]
+    # 获取更早的日期作为开始日期，确保能获取到足够的数据
+    start_date = trading_dates[-1]  # 最早的交易日
+    print(f"使用的日期范围: 开始 {start_date}, 结束 {latest_date}")
+    
+    # 获取全市场股票代码
+    print("获取全市场股票代码...")
+    stock_list = get_all_stock_codes()
+    if stock_list.empty:
+        print("没有获取到股票列表，退出")
+        return
+    print(f"共获取到 {len(stock_list)} 只股票")
+    
+    # 存储符合条件的股票
+    concentrated_stocks = []
+    
+    # 遍历股票列表，获取筹码数据并分析
+    total = len(stock_list)
+    # 为了测试，先只分析前10只股票
+    for i, row in stock_list.iterrows():
+        ts_code = row['ts_code']
+        name = row['name']
+        
+        print(f"分析 {i+1}/{total}: {ts_code} {name}")
+        
+        # 获取筹码数据
+        chip_df = get_chip_data(ts_code, start_date, latest_date)
+        if chip_df.empty:
+            print(f"  筹码数据为空，跳过")
+            continue
+        
+        # 分析筹码是否集中
+        is_concentrated, indicators = is_chip_concentrated(chip_df, strategy_name)
+        if is_concentrated:
+            indicators['stock_name'] = name
+            concentrated_stocks.append(indicators)
+            print(f"发现筹码集中趋势股票: {ts_code} {name}")
+    
+    # 保存结果到CSV文件
+    if concentrated_stocks:
+        result_df = pd.DataFrame(concentrated_stocks)
+        # 按成本范围变化率排序（变化率越小，筹码集中程度越高）
+        result_df = result_df.sort_values('cost_range_change_rate')
+        
+        # 生成带日期和策略的文件名
+        output_file = f"筹码忽然集中_{strategy_name}_{latest_date}.csv"
+        result_df.to_csv(output_file, index=False, encoding='utf-8-sig')
+        print(f"\n分析完成，共发现 {len(concentrated_stocks)} 只筹码集中趋势的股票")
+        print(f"结果已保存到 {output_file}")
+        
+        # 打印前5只股票的简要信息
+        print("\n前5只筹码集中趋势最明显的股票:")
+        for i, row in result_df.head(5).iterrows():
+            print(f"{i+1}. {row['ts_code']} {row.get('stock_name', '')}")
+            print(f"   成本范围变化率: {row['cost_range_change_rate']:.2f}%, 胜率变化率: {row['winner_rate_change_rate']:.2f}%")
+            print()
     else:
-        done_n = 0
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            fut_map = {
-                pool.submit(
-                    _analyze_one,
-                    code,
-                    name,
-                    last_date,
-                    window=window,
-                    smooth=smooth,
-                    hist_n=hist_n,
-                    lookback_days=lookback_days,
-                    delta_floor=delta_floor,
-                    z_thr=z_thr,
-                ): (code, name)
-                for code, name in items
-            }
-            for fut in as_completed(fut_map):
-                done_n += 1
-                if done_n % 200 == 0:
-                    print(f"已扫描了：{done_n}/{total}")
-                try:
-                    r = fut.result()
-                except Exception:
-                    r = None
-                if r is not None:
-                    rows.append(r)
-        print(f"已扫描了：{total}/{total}")
+        print("\n未发现筹码集中趋势的股票")
+    
 
-    if not rows:
-        print("无入选标的。")
-        print(f"完成：总耗时 {time.perf_counter() - t0:.2f}s")
-        return pd.DataFrame(columns=["symbol", "name", "date", "score", "reason"])
-
-    df_out = pd.DataFrame(rows)
-    df_out = df_out.sort_values(["score", "delta"], ascending=[False, True]).reset_index(drop=True)
-    # MAX_RESULTS：最多保留多少条结果，避免结果过大导致存储/前端渲染压力。
-    max_results = int(os.getenv("MAX_RESULTS", "300") or "300")
-    df_out = df_out.head(max_results)
-    print(f"入选数量: {len(df_out)}")
-    print(df_out.head(50).to_string(index=False))
-    print(f"完成：总耗时 {time.perf_counter() - t0:.2f}s")
-    return df_out
 
 
 if __name__ == "__main__":
-    try:
-        df = main()
-    except Exception as e:
-        print("脚本异常:", str(e))
-        print(traceback.format_exc())
-        df = pd.DataFrame()
+    main()
