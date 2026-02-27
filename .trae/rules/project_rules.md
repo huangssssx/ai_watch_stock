@@ -15,8 +15,27 @@
 - 如需新增数据来源，必须先与项目负责人确认并获得授权
 - 所有数据获取均需在遵守相关法律法规的前提下进行，禁止进行任何形式的爬虫或数据采集
 
-## AKShare 数据单位规范 (Hand vs. Share)
+## pytdx client 使用方式
+- backend/utils/pytdx_client.py 中包含 pytdx client 的初始化代码，以及常用的接口调用示例
+- 接口的作用和参数请参考 docs/pytdx接口文档.md
+- 所有 pytdx 接口调用均需在代码中显式使用 `tdx` 对象，禁止直接调用 `pytdx` 模块
+- backend/scripts 脚本常用写法：
+  - 先把 backend 目录加入 sys.path
+  - 然后 `from utils.pytdx_client import tdx` 或 `from utils.pytdx_client import tdx, connected_endpoint, DEFAULT_IP, DEFAULT_PORT`
 
+## tushare client 使用方式
+- backend/utils/tushare_client.py 中包含 tushare client 的初始化代码，以及常用的接口调用示例
+- 接口的作用和参数请参考 docs/tushare 文档
+- 目前的 tushare 是 10000 积分权限
+- 所有 tushare 接口调用均需在代码中显式使用 `ts` 对象，禁止直接调用 `tushare` 模块
+- 所有 tushare 接口调用均需在代码中显式使用 `pro` 对象，禁止直接调用 `tushare` 模块
+- backend/scripts 脚本常用写法：
+  - 先把项目根目录加入 sys.path
+  - 然后 `from backend.utils.tushare_client import pro`
+
+
+## AKShare 数据单位规范 (Hand vs. Share)
+- **谨慎使用**:由于 akshare 变态的频率和数量限制，不建议频繁调用 akshare 接口，优先使用tushare接口和 pydtx 接口
 - **警惕单位陷阱**：AKShare 不同接口返回的成交量单位可能不一致（部分为“股”，部分为“手”）。
 - **必须校验**：在使用 `成交量` 或 `成交额` 进行计算（如 VWAP、换手率）前，**必须**进行数量级校验。
 - **自适应逻辑**：
@@ -25,14 +44,6 @@
   - 如果 `Raw_VWAP` 与当前股价接近（0.8-1.2倍），则说明 Volume 单位为“股”。
 - **禁止假设**：永远不要假设 API 返回的单位是固定的，必须在代码中实现自适应防御逻辑。
 - 常用接口对照表：`docs/akshare_units.md`
-
-## tushare client 使用方式
-- backend/utils/tushare_client.py 中包含 tushare client 的初始化代码，以及常用的接口调用示例
-- 接口的作用和参数请参考 docs/tushare 文档
-- 目前的 tushare 是 5000 积分权限
-- 所有 tushare 接口调用均需在代码中显式使用 `ts` 对象，禁止直接调用 `tushare` 模块
-- 所有 tushare 接口调用均需在代码中显式使用 `pro` 对象，禁止直接调用 `tushare` 模块
-
 
 ## 选股脚本编写规范
 - 编写选股脚本时请参考：docs/选股脚本编写规则.md

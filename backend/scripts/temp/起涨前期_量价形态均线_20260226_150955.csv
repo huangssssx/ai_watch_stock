@@ -1,0 +1,3 @@
+﻿code,name,market,trade_date,close,vol,score,ma_ok,volume_price_ok,k_pattern_ok,reason,breakout_date,breakout_level,breakout_vol_ratio,pullback_date,pullback_vol_ratio
+000890,法尔胜,0,2026-02-26,8.02,890752.0,10,True,True,True,量价:倍量突破+缩量回踩 | 量价:地量见底 | 均线:5/10/20多头发散 | 形态:近期涨停,2026-02-13,5.55,3.8,2026-02-24,0.308
+000571,新大洲A,0,2026-02-26,7.38,277034.0,10,True,True,True,量价:倍量突破+缩量回踩 | 量价:地量见底 | 均线:5/10/20多头发散 | 形态:近期涨停,2026-02-10,6.95,3.259,2026-02-13,0.23
