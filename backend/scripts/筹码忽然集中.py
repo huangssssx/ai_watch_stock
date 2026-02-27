@@ -7,15 +7,19 @@
 
 import os
 import sys
+import time
 import pandas as pd
+import os
 from datetime import datetime, timedelta
-
 # 添加项目根目录到路径，以便导入模块
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 # 导入tushare client
 from backend.utils.tushare_client import pro
 
+# 全局变量存储缓存数据
+cache_data = None
+cache_file_path = None
 
 def get_trading_date(n_days_ago=0):
     """
@@ -75,23 +79,130 @@ def get_all_stock_codes():
 
 def get_chip_data(ts_code, start_date, end_date):
     """
-    获取股票的筹码数据
+    获取指定股票的筹码数据
     :param ts_code: 股票代码
     :param start_date: 开始日期
     :param end_date: 结束日期
     :return: 筹码数据DataFrame
     """
+    global cache_data, cache_file_path
+    # 缓存文件路径 - 单个文件存储所有股票数据
+    cache_dir = "../data"
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # 生成缓存文件名，包含日期范围
+    today = datetime.now().strftime('%Y%m%d')
+    cache_file = f"{cache_dir}/all_chip_data_{today}.csv"
+    
+    # 检查是否需要加载缓存数据
+    if cache_data is None or cache_file_path != cache_file:
+        if os.path.exists(cache_file):
+            try:
+                # 从缓存文件中读取所有数据
+                all_chip_df = pd.read_csv(cache_file)
+                # 确保trade_date列是字符串类型
+                all_chip_df['trade_date'] = all_chip_df['trade_date'].astype(str)
+                cache_data = all_chip_df
+                cache_file_path = cache_file
+                print(f"缓存文件已加载到内存: {cache_file}")
+            except Exception as e:
+                print(f"读取缓存文件失败: {e}")
+                cache_data = pd.DataFrame()
+                cache_file_path = cache_file
+        else:
+            cache_data = pd.DataFrame()
+            cache_file_path = cache_file
+    
+    # 筛选当前股票的数据
+    chip_df = pd.DataFrame()
+    if not cache_data.empty and 'ts_code' in cache_data.columns:
+        chip_df = cache_data[
+            (cache_data['ts_code'] == ts_code) &
+            (cache_data['trade_date'] >= start_date) &
+            (cache_data['trade_date'] <= end_date)
+        ]
+    if not chip_df.empty:
+        print(f"从缓存读取{ts_code}筹码数据")
+        return chip_df
+    
     try:
-        df = pro.cyq_perf(
+        # 调用tushare接口获取筹码数据
+        print(f"获取{ts_code}筹码数据")
+        chip_df = pro.cyq_perf(
             ts_code=ts_code,
             start_date=start_date,
             end_date=end_date
         )
-        if not df.empty:
-            pass
-        return df
+        
+        # 保存到缓存文件和内存
+        if not chip_df.empty:
+            # 检查缓存文件是否存在
+            if os.path.exists(cache_file):
+                # 追加模式写入
+                chip_df.to_csv(cache_file, mode='a', header=False, index=False)
+            else:
+                # 新建文件写入
+                chip_df.to_csv(cache_file, index=False)
+            # 更新内存缓存
+            if cache_data.empty:
+                cache_data = chip_df
+            else:
+                cache_data = pd.concat([cache_data, chip_df], ignore_index=True)
+            print(f"{ts_code}筹码数据已保存到缓存")
+        
+        return chip_df
     except Exception as e:
-        print(f"获取 {ts_code} 筹码数据失败: {e}")
+        print(f"获取{ts_code}筹码数据失败: {e}")
+        return pd.DataFrame()
+
+
+def get_money_flow_data(ts_codes, trade_date):
+    """获取股票资金流向数据"""
+    try:
+        # 确保trade_date是字符串类型
+        trade_date_str = str(trade_date)
+        # 分批获取数据，每次最多200只股票
+        batch_size = 200
+        result = []
+        
+        for i in range(0, len(ts_codes), batch_size):
+            batch_codes = ts_codes[i:i+batch_size]
+            df = pro.moneyflow_dc(ts_code=','.join(batch_codes), trade_date=trade_date_str)
+            result.append(df)
+            time.sleep(0.5)  # 避免请求过于频繁
+        
+        if result:
+            return pd.concat(result, ignore_index=True)
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"获取资金流向数据失败: {e}")
+        return pd.DataFrame()
+
+
+def get_volume_data(ts_codes, trade_date, days=5):
+    """获取股票成交量数据，计算成交量放大情况"""
+    try:
+        # 确保trade_date是字符串类型
+        trade_date_str = str(trade_date)
+        # 计算开始日期
+        end_date = trade_date_str
+        start_date = (datetime.strptime(trade_date_str, '%Y%m%d') - timedelta(days=days)).strftime('%Y%m%d')
+        
+        # 分批获取数据
+        batch_size = 200
+        result = []
+        
+        for i in range(0, len(ts_codes), batch_size):
+            batch_codes = ts_codes[i:i+batch_size]
+            df = pro.daily(ts_code=','.join(batch_codes), start_date=start_date, end_date=end_date)
+            result.append(df)
+            time.sleep(0.5)  # 避免请求过于频繁
+        
+        if result:
+            return pd.concat(result, ignore_index=True)
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"获取成交量数据失败: {e}")
         return pd.DataFrame()
 
 
@@ -318,11 +429,17 @@ def main():
     # 遍历股票列表，获取筹码数据并分析
     total = len(stock_list)
     # 为了测试，先只分析前10只股票
+    test_mode = False  # 设置为True以启用测试模式，只分析前10只股票
+    max_stocks = 10 if test_mode else total
+    
     for i, row in stock_list.iterrows():
+        if i >= max_stocks:
+            break
+            
         ts_code = row['ts_code']
         name = row['name']
         
-        print(f"分析 {i+1}/{total}: {ts_code} {name}")
+        print(f"分析 {i+1}/{max_stocks}: {ts_code} {name}")
         
         # 获取筹码数据
         chip_df = get_chip_data(ts_code, start_date, latest_date)
@@ -355,8 +472,119 @@ def main():
             print(f"{i+1}. {row['ts_code']} {row.get('stock_name', '')}")
             print(f"   成本范围变化率: {row['cost_range_change_rate']:.2f}%, 胜率变化率: {row['winner_rate_change_rate']:.2f}%")
             print()
+        
+        # 二次筛选：寻找启动标的
+        print("\n开始二次筛选：寻找启动标的")
+        
+        # 筛选条件
+        print("\n筛选条件：")
+        print("1. 成本范围变化率 < -10% （筹码集中程度更高）")
+        print("2. 胜率变化率 > 30% （市场情绪向好更明显）")
+        print("3. 股价与加权平均成本差异 < 5% （主力未大幅获利，拉抬动力足）")
+        
+        # 应用筛选条件
+        filtered_df = result_df[
+            (result_df['cost_range_change_rate'] < -10) &  # 成本范围变化率 < -10%
+            (result_df['winner_rate_change_rate'] > 30) &  # 胜率变化率 > 30%
+            (result_df['weight_avg_diff_percent'] < 5)      # 股价与加权平均成本差异 < 5%
+        ]
+        
+        # 打印筛选后的数据行数
+        print(f"\n筛选后数据行数：{len(filtered_df)}")
+        
+        # 按成本范围变化率降序排序（负值越小，集中程度越高）
+        filtered_df = filtered_df.sort_values(by='cost_range_change_rate', ascending=True)
+        
+        # 重置索引
+        filtered_df = filtered_df.reset_index(drop=True)
+        
+        # 获取最近的交易日
+        latest_trading_date = latest_date
+        print(f"\n使用最近交易日数据：{latest_trading_date}")
+        
+        # 如果有筛选结果，进行资金流向和成交量核查
+        if len(filtered_df) > 0:
+            # 提取股票代码列表
+            stock_codes = filtered_df['ts_code'].tolist()
+            print(f"\n正在获取 {len(stock_codes)} 只股票的资金流向和成交量数据...")
+            
+            # 获取资金流向数据
+            money_flow_df = get_money_flow_data(stock_codes, latest_trading_date)
+            
+            # 获取成交量数据
+            volume_df = get_volume_data(stock_codes, latest_trading_date)
+            
+            # 合并数据
+            if not money_flow_df.empty:
+                filtered_df = filtered_df.merge(money_flow_df[['ts_code', 'net_amount', 'net_amount_rate']], on='ts_code', how='left')
+            else:
+                filtered_df['net_amount'] = 0
+                filtered_df['net_amount_rate'] = 0
+            
+            # 计算成交量放大情况
+            if not volume_df.empty:
+                # 计算每只股票的平均成交量和当日成交量
+                volume_stats = volume_df.groupby('ts_code').agg(
+                    avg_volume=('vol', 'mean'),
+                    latest_volume=('vol', 'last')
+                ).reset_index()
+                # 计算成交量放大倍数
+                volume_stats['volume_ratio'] = volume_stats['latest_volume'] / volume_stats['avg_volume']
+                # 合并到主数据框
+                filtered_df = filtered_df.merge(volume_stats[['ts_code', 'volume_ratio', 'latest_volume']], on='ts_code', how='left')
+            else:
+                filtered_df['volume_ratio'] = 1.0
+                filtered_df['latest_volume'] = 0
+            
+            # 应用资金流向和成交量筛选条件
+            print("\n应用资金流向和成交量筛选条件：")
+            print("1. 主力净流入 > 0 （资金流入）")
+            print("2. 成交量放大倍数 > 1.2 （有量）")
+            
+            final_df = filtered_df[
+                (filtered_df['net_amount'] > 0) &  # 主力净流入
+                (filtered_df['volume_ratio'] > 1.2)  # 成交量放大
+            ]
+            
+            # 按主力净流入和成交量放大倍数排序
+            final_df = final_df.sort_values(by=['net_amount', 'volume_ratio'], ascending=[False, False])
+            final_df = final_df.reset_index(drop=True)
+            
+            # 保存最终结果
+            output_file_launch = f"筹码集中启动标的_{strategy_name}_{latest_date}.csv"
+            print(f"\n正在保存最终筛选结果到：{output_file_launch}")
+            final_df.to_csv(output_file_launch, index=False, encoding='utf-8-sig')
+            
+            # 打印前10行结果
+            print("\n最终筛选结果前10行：")
+            print(final_df.head(10))
+            
+            # 打印总结
+            print(f"\n筛选完成！共筛选出 {len(final_df)} 只符合条件的股票。")
+            print(f"结果已保存到：{output_file_launch}")
+            
+            # 打印资金流向和成交量统计
+            if not final_df.empty:
+                print("\n资金流向和成交量统计：")
+                print(f"平均主力净流入：{final_df['net_amount'].mean():.2f} 万元")
+                print(f"平均成交量放大倍数：{final_df['volume_ratio'].mean():.2f} 倍")
+        else:
+            # 保存空结果
+            output_file_launch = f"筹码集中启动标的_{strategy_name}_{latest_date}.csv"
+            print(f"\n正在保存筛选结果到：{output_file_launch}")
+            filtered_df.to_csv(output_file_launch, index=False, encoding='utf-8-sig')
+            
+            # 打印总结
+            print(f"\n筛选完成！共筛选出 {len(filtered_df)} 只符合条件的股票。")
+            print(f"结果已保存到：{output_file_launch}")
     else:
         print("\n未发现筹码集中趋势的股票")
+        
+        # 保存空结果
+        output_file_launch = f"筹码集中启动标的_{strategy_name}_{latest_date}.csv"
+        pd.DataFrame().to_csv(output_file_launch, index=False, encoding='utf-8-sig')
+        print(f"\n筛选完成！共筛选出 0 只符合条件的股票。")
+        print(f"结果已保存到：{output_file_launch}")
     
 
 
