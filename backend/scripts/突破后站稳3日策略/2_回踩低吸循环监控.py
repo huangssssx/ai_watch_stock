@@ -6,16 +6,16 @@
 
 适用：当天/次日入场
 入场条件：
-1. 股价回踩关键位（High60/MA60/MA120）或回踩突破日开盘价/最低价
+1. 股价回踩关键位（High60/MA60/MA120）
 2. 回踩时缩量（量能＜昨日50% 最好）
 3. 不跌破关键位的 0.98（硬止损位）
 
 运行示例：
 1）一次性跑一轮（便于验证）：
-   python3 "backend/scripts/突破后站稳3日策略/2_回踩低吸循环监控.py" --once --input "backend/scripts/突破后站稳3日策略/breakout_hold_3days_20260227_231258.csv" --bars 160
+   python3 "backend/scripts/突破后站稳3日策略/2_回踩低吸循环监控.py" --once --bars 160 --categories 回踩触发,靠近关键位
 
 2）持续循环监控（每分钟一轮）：
-   python3 "backend/scripts/突破后站稳3日策略/2_回踩低吸循环监控.py" --input "backend/scripts/突破后站稳3日策略/breakout_hold_3days_20260227_231258.csv" --bars 160 --interval 60
+   python3 "backend/scripts/突破后站稳3日策略/2_回踩低吸循环监控.py" --bars 160 --categories 回踩触发,靠近关键位 --interval 60
 """
 
 import argparse
@@ -181,7 +181,6 @@ def screen_one(
         return None
 
     pullback_ratio = (anchor_level - last_close) / anchor_level
-
     if pullback_ratio < -0.01 or pullback_ratio > 0.05:
         return None
 
@@ -193,7 +192,6 @@ def screen_one(
         check_row = df.iloc[-(i + 1)]
         check_close = float(check_row["close"])
         check_low = float(check_row["low"])
-        check_vol = float(check_row["vol"])
 
         if check_low >= anchor_level * 0.98 and check_close <= anchor_level * 1.01:
             pullback_days += 1
@@ -236,8 +234,31 @@ def _load_input_df(input_file: str) -> pd.DataFrame:
             "key_level_type": str,
             "key_level": float,
             "breakout_price": float,
+            "category": str,
         },
     )
+
+
+def _parse_categories_arg(categories: str) -> List[str]:
+    raw = (categories or "").strip()
+    if not raw:
+        return []
+    if raw.lower() in ("all", "*"):
+        return ["*"]
+    parts = [p.strip() for p in raw.replace("，", ",").split(",")]
+    return [p for p in parts if p]
+
+
+def _filter_input_df_by_categories(input_df: pd.DataFrame, categories: List[str]) -> pd.DataFrame:
+    if input_df is None or input_df.empty:
+        return input_df
+    if not categories or categories == ["*"]:
+        return input_df
+    if "category" not in input_df.columns:
+        return input_df
+    s = input_df["category"].astype(str).fillna("")
+    keep = s.isin(set(categories))
+    return input_df[keep].reset_index(drop=True)
 
 
 def scan_once(input_df: pd.DataFrame, bars: int, per_stock_sleep: float) -> Tuple[bool, List[Dict[str, Any]], int, int]:
@@ -310,7 +331,13 @@ def main():
         "--input",
         type=str,
         default=os.getenv("INPUT", ""),
-        help="输入CSV路径（默认：同目录 breakout_hold_3days_20260227_231258.csv）",
+        help="输入CSV路径（默认：同目录 breakout_hold_3days.csv）",
+    )
+    parser.add_argument(
+        "--categories",
+        type=str,
+        default=os.getenv("CATEGORIES", "回踩触发,靠近关键位"),
+        help="按breakout_hold_3days.csv里的category过滤输入（逗号分隔；all表示不过滤）",
     )
     parser.add_argument(
         "--bars",
@@ -354,7 +381,7 @@ def main():
     if not input_file:
         input_file = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            "breakout_hold_3days_20260227_231258.csv",
+            "breakout_hold_3days.csv",
         )
 
     if not os.path.exists(input_file):
@@ -362,12 +389,18 @@ def main():
         return
 
     input_df = _load_input_df(input_file)
+    categories = _parse_categories_arg(args.categories)
+    input_df = _filter_input_df_by_categories(input_df, categories)
 
     print("=" * 60)
     print("回踩低吸循环监控策略")
     print("=" * 60)
     print(f"输入文件: {input_file}")
     print(f"监控股票数量: {len(input_df)}")
+    if categories == ["*"] or not categories:
+        print("category过滤: 不过滤")
+    else:
+        print(f"category过滤: {','.join(categories)}")
     print(f"参数: bars={args.bars}, interval={args.interval}s, once={args.once}, rounds={args.rounds}")
 
     rounds_done = 0

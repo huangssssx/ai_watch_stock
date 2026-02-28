@@ -395,6 +395,184 @@ def check_stand_firm(
     }
 
 
+def _limit_pct(market: int, code: str) -> float:
+    code = str(code or "").zfill(6)
+    if code.startswith(("300", "301")):
+        return 20.0
+    if int(market) == 1 and code.startswith("688"):
+        return 20.0
+    return 10.0
+
+
+def _is_limit_up(close: float, prev_close: float, limit_pct: float) -> bool:
+    if prev_close <= 0:
+        return False
+    chg_pct = (close / prev_close - 1.0) * 100.0
+    return chg_pct >= limit_pct * 0.98
+
+
+def _count_limit_up_streak(df: pd.DataFrame, market: int, code: str) -> int:
+    if df is None or len(df) < 2:
+        return 0
+    lp = _limit_pct(market, code)
+    streak = 0
+    for i in range(len(df) - 1, 0, -1):
+        c = float(df.iloc[i]["close"])
+        pc = float(df.iloc[i - 1]["close"])
+        if _is_limit_up(c, pc, lp):
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _count_up_streak(df: pd.DataFrame) -> int:
+    if df is None or len(df) < 2:
+        return 0
+    streak = 0
+    for i in range(len(df) - 1, 0, -1):
+        c = float(df.iloc[i]["close"])
+        pc = float(df.iloc[i - 1]["close"])
+        if pc > 0 and c > pc:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _count_yang_streak(df: pd.DataFrame) -> int:
+    if df is None or df.empty:
+        return 0
+    streak = 0
+    for i in range(len(df) - 1, -1, -1):
+        c = float(df.iloc[i]["close"])
+        o = float(df.iloc[i]["open"])
+        if c > o:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _n_day_return(df: pd.DataFrame, n: int) -> float:
+    if df is None or df.empty or n <= 0:
+        return 0.0
+    if len(df) < n + 1:
+        return 0.0
+    base = float(df.iloc[-(n + 1)]["close"])
+    last = float(df.iloc[-1]["close"])
+    if base <= 0:
+        return 0.0
+    return (last / base - 1.0) * 100.0
+
+
+def _classify_candidate(df: pd.DataFrame, market: int, symbol: str, key_level_type: str, key_level: float) -> dict:
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    last_close = float(last["close"])
+    last_open = float(last["open"])
+    prev_close = float(prev["close"])
+    last_vol = float(last["vol"])
+    prev_vol = float(prev["vol"])
+
+    chg_pct = (last_close / prev_close - 1.0) * 100.0 if prev_close > 0 else 0.0
+    lp = _limit_pct(market, symbol)
+    is_lu = _is_limit_up(last_close, prev_close, lp)
+    lu_streak = _count_limit_up_streak(df, market, symbol)
+    up_streak = _count_up_streak(df)
+    yang_streak = _count_yang_streak(df)
+    ret_3d = _n_day_return(df, 3)
+    ret_5d = _n_day_return(df, 5)
+    ret_10d = _n_day_return(df, 10)
+
+    anchor = float(key_level) if key_level else 0.0
+    hard_stop = anchor * 0.98
+    dist_to_key_pct = (last_close / anchor - 1.0) * 100.0 if anchor > 0 else 0.0
+    pullback_ratio = (anchor - last_close) / anchor if anchor > 0 else 0.0
+    in_pullback_zone = (-0.01 <= pullback_ratio <= 0.05) if anchor > 0 else False
+    not_break_stop = last_close >= hard_stop if anchor > 0 else False
+    is_volume_contract = last_vol <= prev_vol * 0.5 if prev_vol > 0 else False
+
+    last_ma20_vol = float(last["ma20_vol"]) if pd.notna(last.get("ma20_vol")) else 0.0
+    vol_ratio_ma20 = last_vol / last_ma20_vol if last_ma20_vol > 0 else 0.0
+    vol_ratio_prev = last_vol / prev_vol if prev_vol > 0 else 0.0
+
+    last_ma20 = float(last["ma20"]) if pd.notna(last.get("ma20")) else 0.0
+    ext_to_ma20_pct = (last_close / last_ma20 - 1.0) * 100.0 if last_ma20 > 0 else 0.0
+
+    category = ""
+    strategy_hint = ""
+    detail = ""
+
+    if anchor <= 0:
+        category = "中性观察"
+        strategy_hint = "观察回踩结构与量能变化"
+        detail = "无关键位"
+    elif last_close < hard_stop:
+        category = "跌破风控"
+        strategy_hint = "退出/观察，避免按回踩低吸入场"
+        detail = f"close<{hard_stop:.2f}"
+    elif lu_streak >= 2:
+        category = "连板情绪"
+        strategy_hint = "按连板/断板分歧策略管理，不用MA60回踩框架"
+        detail = f"{lu_streak}连板(按{lp:.0f}%板估算)"
+    elif is_lu:
+        category = "涨停首板"
+        strategy_hint = "关注次日分歧/换手，按强势延续策略跟踪"
+        detail = f"涨停(按{lp:.0f}%板估算)"
+    elif in_pullback_zone and not_break_stop and is_volume_contract:
+        category = "回踩触发"
+        strategy_hint = "可按回踩低吸策略跟踪，严格执行0.98硬止损"
+        detail = f"回踩{key_level_type}区间，缩量{vol_ratio_prev*100:.1f}%"
+    elif in_pullback_zone and not_break_stop and (not is_volume_contract):
+        category = "靠近关键位"
+        strategy_hint = "等待缩量/企稳信号，或降低仓位"
+        detail = f"回踩区间但未缩量({vol_ratio_prev*100:.1f}%昨日)"
+    elif last_close > anchor * 1.05:
+        category = "等待回踩"
+        strategy_hint = "不追高，等待回到关键位附近再评估"
+        detail = f"距{key_level_type}+{dist_to_key_pct:.1f}%"
+    else:
+        category = "中性观察"
+        strategy_hint = "观察回踩结构与量能变化"
+        detail = f"距{key_level_type}{dist_to_key_pct:.1f}%"
+
+    if category not in ("连板情绪", "跌破风控"):
+        if ext_to_ma20_pct >= 15.0 and last_ma20_vol > 0 and last_vol >= last_ma20_vol * 1.5:
+            detail = (detail + " | 高位放量") if detail else "高位放量"
+        elif ext_to_ma20_pct >= 15.0:
+            detail = (detail + " | 超涨") if detail else "超涨"
+
+    if up_streak > 0:
+        detail = (detail + f" | 连涨{up_streak}天") if detail else f"连涨{up_streak}天"
+    if yang_streak > 0:
+        detail = (detail + f" | 连阳{yang_streak}天") if detail else f"连阳{yang_streak}天"
+
+    return {
+        "trade_date": pd.Timestamp(last["datetime"]).strftime("%Y-%m-%d"),
+        "close": round(last_close, 4),
+        "open": round(last_open, 4),
+        "chg_pct": round(chg_pct, 2),
+        "limit_pct": round(lp, 0),
+        "is_limit_up": int(is_lu),
+        "limit_up_streak": int(lu_streak),
+        "up_streak": int(up_streak),
+        "yang_streak": int(yang_streak),
+        "ret_3d": round(float(ret_3d), 2),
+        "ret_5d": round(float(ret_5d), 2),
+        "ret_10d": round(float(ret_10d), 2),
+        "hard_stop": round(float(hard_stop), 4) if anchor > 0 else 0.0,
+        "dist_to_key_pct": round(float(dist_to_key_pct), 2) if anchor > 0 else 0.0,
+        "in_pullback_zone": int(in_pullback_zone),
+        "vol_ratio_prev": round(float(vol_ratio_prev), 3),
+        "vol_ratio_ma20": round(float(vol_ratio_ma20), 3),
+        "ext_to_ma20_pct": round(float(ext_to_ma20_pct), 2),
+        "category": category,
+        "strategy_hint": strategy_hint,
+        "detail": detail,
+    }
+
+
 def screen_one(
     stock: StockDef,
     bars_count: int,
@@ -440,7 +618,15 @@ def screen_one(
     
     last = df.iloc[-1]
     breakout_date = pd.Timestamp(row["datetime"]).strftime("%Y-%m-%d")
-    
+
+    classified = _classify_candidate(
+        df=df,
+        market=stock.market,
+        symbol=stock.code,
+        key_level_type=breakout["key_level_type"],
+        key_level=breakout["key_level"],
+    )
+
     return {
         "symbol": stock.code,
         "name": stock.name,
@@ -453,10 +639,8 @@ def screen_one(
         "breakout_vol_ratio": round(breakout["breakout_vol_ratio"], 3),
         "stand_days_above": stand_result["stand_days_above"],
         "min_close_ratio": stand_result["min_close_ratio"],
-        "trade_date": pd.Timestamp(last["datetime"]).strftime("%Y-%m-%d"),
+        **classified,
     }
-    
-    return None
 
 
 def main():
@@ -487,7 +671,7 @@ def main():
         "--out",
         type=str,
         default=os.getenv("OUT", ""),
-        help="输出 CSV 路径（留空则输出到脚本目录，文件名带时间戳）",
+        help="输出 CSV 路径（留空则输出到脚本目录 breakout_hold_3days.csv，会覆盖旧文件）",
     )
     parser.add_argument(
         "--sleep",
@@ -620,25 +804,46 @@ def main():
         print("无结果")
         return
     
-    # 默认按量比与站稳强度排序，方便先看“更强”的候选
-    df = df.sort_values(["breakout_vol_ratio", "stand_days_above"], ascending=[False, False])
+    df["category_rank"] = df.get("category", "").map(
+        {
+            "跌破风控": 0,
+            "连板情绪": 1,
+            "涨停首板": 2,
+            "回踩触发": 3,
+            "靠近关键位": 4,
+            "等待回踩": 5,
+            "中性观察": 6,
+        }
+    )
+    df = df.sort_values(
+        ["category_rank", "limit_up_streak", "dist_to_key_pct", "breakout_vol_ratio", "stand_days_above"],
+        ascending=[True, False, True, False, False],
+    )
+    df = df.drop(columns=["category_rank"])
     df = df.reset_index(drop=True)
     
-    ts = time.strftime("%Y%m%d_%H%M%S")
     out = args.out.strip()
     if not out:
-        out = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            f"breakout_hold_3days_{ts}.csv",
-        )
+        out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "breakout_hold_3days.csv")
     df.to_csv(out, index=False, encoding="utf-8-sig")
     
     print(f"完成: {len(df)} 条")
     print(f"输出: {out}")
     print("\nTop 20 结果:")
-    print(df.head(20)[["symbol", "name", "breakout_date", "key_level_type", 
-                       "key_level", "breakout_price", "current_price", 
-                       "stand_days_above"]].to_string(index=False))
+    show_cols = [
+        "symbol",
+        "name",
+        "breakout_date",
+        "key_level_type",
+        "key_level",
+        "breakout_price",
+        "current_price",
+        "stand_days_above",
+        "category",
+        "detail",
+    ]
+    show_cols = [c for c in show_cols if c in df.columns]
+    print(df.head(20)[show_cols].to_string(index=False))
     print(f"\n总耗时: {time.perf_counter() - t0:.2f}s")
 
 
