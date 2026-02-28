@@ -10,7 +10,7 @@ from typing import Optional, Tuple, List
 
 from pytdx.hq import TdxHq_API
 
-DEFAULT_IP = "180.153.18.170"
+DEFAULT_IP = "218.75.126.9"
 DEFAULT_PORT = 7709
 
 AUTO_SELECT_IP_ON_FAIL = os.getenv("PYTDX_AUTO_SELECT_IP_ON_FAIL", "1") not in ("0", "false", "False")

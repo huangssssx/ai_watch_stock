@@ -28,7 +28,19 @@ from typing import Iterable, Optional
 
 import pandas as pd
 
-backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+backend_dir = None
+_probe_dir = _script_dir
+for _ in range(8):
+    if os.path.exists(os.path.join(_probe_dir, "utils", "pytdx_client.py")):
+        backend_dir = _probe_dir
+        break
+    parent = os.path.dirname(_probe_dir)
+    if parent == _probe_dir:
+        break
+    _probe_dir = parent
+if backend_dir is None:
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
@@ -452,7 +464,7 @@ def main():
     脚本入口。
 
     运行方式示例：
-    - python3 backend/scripts/breakout_hold_3days.py --max-stocks 500 --bars 150
+    - python3 "backend/scripts/突破后站稳3日策略/1_突破后站稳3日.py" --max-stocks 500 --bars 150
 
     输出：
     - CSV：包含命中股票列表及关键信息，便于后续人工/模型分析
