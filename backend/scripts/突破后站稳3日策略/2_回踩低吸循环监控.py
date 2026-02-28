@@ -12,10 +12,10 @@
 
 运行示例：
 1）一次性跑一轮（便于验证）：
-   python3 "backend/scripts/突破后站稳3日策略/2_回踩低吸循环监控.py" --once --bars 160 --categories 回踩触发,靠近关键位
+   python3 "backend/scripts/突破后站稳3日策略/2_回踩低吸循环监控.py" --once --bars 160 --categories 回踩触发
 
 2）持续循环监控（每分钟一轮）：
-   python3 "backend/scripts/突破后站稳3日策略/2_回踩低吸循环监控.py" --bars 160 --categories 回踩触发,靠近关键位 --interval 60
+   python3 "backend/scripts/突破后站稳3日策略/2_回踩低吸循环监控.py" --bars 160 --categories 回踩触发,靠近关键位,等待回踩,危险回踩 --interval 60
 """
 
 import argparse
@@ -151,20 +151,21 @@ def screen_one(
 
     last = df.iloc[-1]
     last_close = float(last["close"])
+    last_open = float(last["open"])
+    last_high = float(last["high"])
+    last_low = float(last["low"])
     last_vol = float(last["vol"])
     last_dt = pd.Timestamp(last["datetime"]).strftime("%Y-%m-%d")
 
     prev = df.iloc[-2]
     prev_vol = float(prev["vol"])
+    prev_close = float(prev["close"])
 
     if key_level <= 0:
         return None
 
     anchor_level = float(key_level)
     hard_stop = anchor_level * 0.98
-
-    if last_close < hard_stop:
-        return None
 
     key_levels = get_key_levels(last)
 
@@ -184,8 +185,29 @@ def screen_one(
     if pullback_ratio < -0.01 or pullback_ratio > 0.05:
         return None
 
-    if last_vol > prev_vol * 0.5:
-        return None
+    chg_pct = (last_close / prev_close - 1.0) * 100.0 if prev_close > 0 else 0.0
+    gap_pct = (last_open / prev_close - 1.0) * 100.0 if prev_close > 0 else 0.0
+    range_pct = (last_high / last_low - 1.0) * 100.0 if last_low > 0 else 0.0
+    broke_stop = (last_close < hard_stop) or (last_low < hard_stop)
+    bad_k = (chg_pct <= -5.0) or (gap_pct <= -3.0) or (range_pct >= 9.0)
+    is_volume_contract = last_vol <= prev_vol * 0.5 if prev_vol > 0 else False
+
+    signal = ""
+    reason = ""
+    if broke_stop:
+        signal = "坏信号"
+        reason = f"刺破硬止损0.98({hard_stop:.2f})"
+    elif bad_k:
+        signal = "观察"
+        reason = f"剧烈波动(chg{chg_pct:.2f}%/gap{gap_pct:.2f}%/rng{range_pct:.2f}%)"
+    elif not is_volume_contract:
+        signal = "观察"
+        vol_ratio_prev = last_vol / prev_vol if prev_vol > 0 else 0
+        reason = f"未缩量({vol_ratio_prev*100:.1f}%昨日)"
+    else:
+        signal = "入场"
+        vol_ratio_prev = last_vol / prev_vol if prev_vol > 0 else 0
+        reason = f"回踩{key_level_type}缩量,量能{vol_ratio_prev*100:.1f}%昨日"
 
     pullback_days = 1
     for i in range(1, min(6, len(df))):
@@ -208,6 +230,7 @@ def screen_one(
         "name": name,
         "market": market,
         "trade_date": last_dt,
+        "signal": signal,
         "current_price": round(last_close, 4),
         "key_level_type": key_level_type,
         "key_level": round(anchor_level, 4),
@@ -219,7 +242,10 @@ def screen_one(
         "breakout_date": breakout_date,
         "breakout_price": round(breakout_price, 4),
         "hard_stop": round(hard_stop, 4),
-        "reason": f"回踩{key_level_type}缩量{pullback_days}日,量能{pullback_vol_ratio*100:.1f}%昨日",
+        "reason": reason,
+        "chg_pct": round(chg_pct, 2),
+        "gap_pct": round(gap_pct, 2),
+        "range_pct": round(range_pct, 2),
     }
 
 
@@ -261,10 +287,11 @@ def _filter_input_df_by_categories(input_df: pd.DataFrame, categories: List[str]
     return input_df[keep].reset_index(drop=True)
 
 
-def scan_once(input_df: pd.DataFrame, bars: int, per_stock_sleep: float) -> Tuple[bool, List[Dict[str, Any]], int, int]:
+def scan_once(input_df: pd.DataFrame, bars: int, per_stock_sleep: float) -> Tuple[bool, List[Dict[str, Any]], int, int, int]:
     rows: List[Dict[str, Any]] = []
     stat_total = 0
-    stat_hit = 0
+    stat_entry = 0
+    stat_watch = 0
 
     last_error = None
     for _ in range(2):
@@ -298,14 +325,22 @@ def scan_once(input_df: pd.DataFrame, bars: int, per_stock_sleep: float) -> Tupl
 
                     stat_total += 1
                     if r is not None:
-                        stat_hit += 1
                         rows.append(r)
-                        print(
-                            f"命中: {r['symbol']} {r['name']} | "
-                            f"回踩{r['key_level_type']} {r['pullback_ratio']}% | "
-                            f"缩量{r['vol_ratio_prev']*100:.1f}% | "
-                            f"回踩{r['pullback_days']}日"
-                        )
+                        if str(r.get("signal", "")) == "入场":
+                            stat_entry += 1
+                            print(
+                                f"入场: {r['symbol']} {r['name']} | "
+                                f"回踩{r['key_level_type']} {r['pullback_ratio']}% | "
+                                f"缩量{r['vol_ratio_prev']*100:.1f}% | "
+                                f"回踩{r['pullback_days']}日"
+                            )
+                        else:
+                            stat_watch += 1
+                            print(
+                                f"观察: {r['symbol']} {r['name']} | "
+                                f"回踩{r['key_level_type']} {r['pullback_ratio']}% | "
+                                f"{r.get('reason','')}"
+                            )
 
                     if per_stock_sleep and per_stock_sleep > 0:
                         time.sleep(float(per_stock_sleep))
@@ -320,9 +355,9 @@ def scan_once(input_df: pd.DataFrame, bars: int, per_stock_sleep: float) -> Tupl
 
     if last_error is not None:
         print(f"pytdx 连接失败或执行异常: {last_error}")
-        return False, [], stat_total, 0
+        return False, [], stat_total, 0, 0
 
-    return True, rows, stat_total, stat_hit
+    return True, rows, stat_total, stat_entry, stat_watch
 
 
 def main():
@@ -336,7 +371,7 @@ def main():
     parser.add_argument(
         "--categories",
         type=str,
-        default=os.getenv("CATEGORIES", "回踩触发,靠近关键位"),
+        default=os.getenv("CATEGORIES", "回踩触发"),
         help="按breakout_hold_3days.csv里的category过滤输入（逗号分隔；all表示不过滤）",
     )
     parser.add_argument(
@@ -388,9 +423,9 @@ def main():
         print(f"输入文件不存在: {input_file}")
         return
 
-    input_df = _load_input_df(input_file)
+    input_df_all = _load_input_df(input_file)
     categories = _parse_categories_arg(args.categories)
-    input_df = _filter_input_df_by_categories(input_df, categories)
+    input_df = _filter_input_df_by_categories(input_df_all, categories)
 
     print("=" * 60)
     print("回踩低吸循环监控策略")
@@ -403,6 +438,20 @@ def main():
         print(f"category过滤: {','.join(categories)}")
     print(f"参数: bars={args.bars}, interval={args.interval}s, once={args.once}, rounds={args.rounds}")
 
+    if input_df is None or input_df.empty:
+        print("-" * 60)
+        if categories == ["*"] or not categories:
+            print("输入为空：breakout_hold_3days.csv 可能没有任何行")
+        else:
+            print("category过滤后为空：当前过滤条件在输入文件里没有匹配到任何行")
+            print("建议：使用 --categories all 或改成输入文件里实际存在的 category")
+        if input_df_all is not None and not input_df_all.empty and "category" in input_df_all.columns:
+            s = input_df_all["category"].astype(str).fillna("")
+            vc = s.value_counts(dropna=False)
+            print("输入文件 category 分布(Top 30):")
+            print(vc.head(30).to_string())
+        return
+
     rounds_done = 0
     try:
         while True:
@@ -412,14 +461,16 @@ def main():
             print(f"第{rounds_done}轮开始: {round_ts}")
 
             t0 = time.perf_counter()
-            ok, rows, stat_total, stat_hit = scan_once(input_df, args.bars, args.sleep)
+            ok, rows, stat_total, stat_entry, stat_watch = scan_once(input_df, args.bars, args.sleep)
             elapsed = time.perf_counter() - t0
 
-            print(f"本轮耗时: {elapsed:.2f}s | 统计: 监控{stat_total}只, 命中{stat_hit}只")
+            print(f"本轮耗时: {elapsed:.2f}s | 统计: 监控{stat_total}只, 入场{stat_entry}只, 观察{stat_watch}只")
 
             if ok and rows:
                 output_df = pd.DataFrame(rows)
-                output_df = output_df.sort_values(["pullback_days", "vol_ratio_prev"], ascending=[False, True])
+                signal_order = {"入场": 0, "观察": 1, "坏信号": 2}
+                output_df["signal_order"] = output_df["signal"].map(lambda x: signal_order.get(str(x), 9))
+                output_df = output_df.sort_values(["signal_order", "pullback_days", "vol_ratio_prev"], ascending=[True, False, True])
                 output_df = output_df.reset_index(drop=True)
 
                 ts = time.strftime("%Y%m%d_%H%M%S")
@@ -433,7 +484,7 @@ def main():
                 output_df.to_csv(out, index=False, encoding="utf-8-sig")
                 print(f"输出: {out}")
                 print(output_df[[
-                    "symbol", "name", "trade_date", "current_price", "key_level_type",
+                    "signal", "symbol", "name", "trade_date", "current_price", "key_level_type",
                     "key_level", "pullback_ratio", "pullback_days", "vol_ratio_prev", "reason"
                 ]].head(50).to_string())
             else:

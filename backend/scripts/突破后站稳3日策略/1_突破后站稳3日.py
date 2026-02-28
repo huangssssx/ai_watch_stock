@@ -6,6 +6,18 @@
 - 从 A 股全市场股票池中，筛选出“在 T-3 日发生突破，随后连续 3 日站稳关键位”的强形态候选
 - 结果更适合作为后续人工/模型分析的候选池，而不是直接的次日涨跌预测器
 
+使用方法：
+- 默认全市场运行（会覆盖同目录 breakout_hold_3days.csv）：
+  python3 "backend/scripts/突破后站稳3日策略/1_突破后站稳3日.py" --bars 150
+- 只跑股票池前 N 只（用于快速验证）：
+  python3 "backend/scripts/突破后站稳3日策略/1_突破后站稳3日.py" --max-stocks 300 --bars 150
+- 自定义输出路径（不传则固定写入脚本同目录 breakout_hold_3days.csv）：
+  python3 "backend/scripts/突破后站稳3日策略/1_突破后站稳3日.py" --out "/tmp/breakout_hold_3days.csv"
+
+输出字段：
+- 基础命中信息：symbol/name/market/breakout_date/key_level_type/key_level/breakout_price/current_price/stand_days_above/min_close_ratio
+- 分类与辅助指标：category/strategy_hint/detail，以及 limit_up_streak/up_streak/yang_streak/dist_to_key_pct 等
+
 策略逻辑：
 1. 关键价位：High60（60日最高）、MA60、MA120
 2. 突破条件（T-3日）：
@@ -471,11 +483,15 @@ def _classify_candidate(df: pd.DataFrame, market: int, symbol: str, key_level_ty
     prev = df.iloc[-2]
     last_close = float(last["close"])
     last_open = float(last["open"])
+    last_high = float(last["high"])
+    last_low = float(last["low"])
     prev_close = float(prev["close"])
     last_vol = float(last["vol"])
     prev_vol = float(prev["vol"])
 
     chg_pct = (last_close / prev_close - 1.0) * 100.0 if prev_close > 0 else 0.0
+    gap_pct = (last_open / prev_close - 1.0) * 100.0 if prev_close > 0 else 0.0
+    range_pct = (last_high / last_low - 1.0) * 100.0 if last_low > 0 else 0.0
     lp = _limit_pct(market, symbol)
     is_lu = _is_limit_up(last_close, prev_close, lp)
     lu_streak = _count_limit_up_streak(df, market, symbol)
@@ -499,6 +515,11 @@ def _classify_candidate(df: pd.DataFrame, market: int, symbol: str, key_level_ty
 
     last_ma20 = float(last["ma20"]) if pd.notna(last.get("ma20")) else 0.0
     ext_to_ma20_pct = (last_close / last_ma20 - 1.0) * 100.0 if last_ma20 > 0 else 0.0
+
+    is_panic_pullback = (
+        (chg_pct <= -5.0 or gap_pct <= -3.0 or range_pct >= 9.0)
+        and (vol_ratio_prev >= 0.8)
+    )
 
     category = ""
     strategy_hint = ""
@@ -524,6 +545,10 @@ def _classify_candidate(df: pd.DataFrame, market: int, symbol: str, key_level_ty
         category = "回踩触发"
         strategy_hint = "可按回踩低吸策略跟踪，严格执行0.98硬止损"
         detail = f"回踩{key_level_type}区间，缩量{vol_ratio_prev*100:.1f}%"
+    elif in_pullback_zone and not_break_stop and (not is_volume_contract) and is_panic_pullback:
+        category = "危险回踩"
+        strategy_hint = "不按低吸入场，等待止跌与缩量后再评估"
+        detail = f"回踩区间但剧烈波动(chg{chg_pct:.2f}%/gap{gap_pct:.2f}%/rng{range_pct:.2f}%)"
     elif in_pullback_zone and not_break_stop and (not is_volume_contract):
         category = "靠近关键位"
         strategy_hint = "等待缩量/企稳信号，或降低仓位"
