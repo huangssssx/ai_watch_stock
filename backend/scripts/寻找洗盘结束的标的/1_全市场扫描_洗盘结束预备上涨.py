@@ -114,17 +114,315 @@ def _fetch_daily_all(pro, trade_dates: list[str], sleep_s: float) -> pd.DataFram
  
  
 def _fetch_daily_basic(pro, trade_date: str, sleep_s: float) -> pd.DataFrame:
+    fields_full = "ts_code,trade_date,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps_ttm,dv_ttm,circ_mv,total_mv"
     df = _safe_call(
-        lambda: pro.daily_basic(
-            trade_date=str(trade_date),
-            fields="ts_code,trade_date,turnover_rate,turnover_rate_f,volume_ratio,circ_mv,total_mv",
-        ),
+        lambda: pro.daily_basic(trade_date=str(trade_date), fields=fields_full),
         sleep_s=sleep_s,
         what=f"daily_basic({trade_date})",
     )
     if df is None:
+        df = pd.DataFrame()
+    if df is not None and not df.empty:
+        return df
+
+    fields_min = "ts_code,trade_date,turnover_rate,turnover_rate_f,volume_ratio,circ_mv,total_mv"
+    df2 = _safe_call(
+        lambda: pro.daily_basic(trade_date=str(trade_date), fields=fields_min),
+        sleep_s=sleep_s,
+        what=f"daily_basic_min({trade_date})",
+    )
+    if df2 is None:
+        return pd.DataFrame()
+    return df2
+
+
+def _fetch_income_one(pro, ts_code: str, start_date: str, end_date: str, sleep_s: float) -> pd.DataFrame:
+    df = _safe_call(
+        lambda: pro.income(
+            ts_code=str(ts_code),
+            start_date=str(start_date),
+            end_date=str(end_date),
+            fields="ts_code,end_date,revenue,n_income_attr_p,rd_exp",
+        ),
+        sleep_s=sleep_s,
+        what=f"income({ts_code})",
+    )
+    if df is None:
         return pd.DataFrame()
     return df
+
+
+def _fetch_balancesheet_one(pro, ts_code: str, start_date: str, end_date: str, sleep_s: float) -> pd.DataFrame:
+    df = _safe_call(
+        lambda: pro.balancesheet(
+            ts_code=str(ts_code),
+            start_date=str(start_date),
+            end_date=str(end_date),
+            fields="ts_code,end_date,accounts_receiv,inventories,total_cur_assets",
+        ),
+        sleep_s=sleep_s,
+        what=f"balancesheet({ts_code})",
+    )
+    if df is None:
+        return pd.DataFrame()
+    return df
+
+
+def _fetch_cashflow_one(pro, ts_code: str, start_date: str, end_date: str, sleep_s: float) -> pd.DataFrame:
+    df = _safe_call(
+        lambda: pro.cashflow(
+            ts_code=str(ts_code),
+            start_date=str(start_date),
+            end_date=str(end_date),
+            fields="ts_code,end_date,n_cashflow_act,net_profit",
+        ),
+        sleep_s=sleep_s,
+        what=f"cashflow({ts_code})",
+    )
+    if df is None:
+        return pd.DataFrame()
+    return df
+
+
+def _annual_only(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    out["end_date"] = out.get("end_date", "").astype(str).str.strip()
+    out = out[out["end_date"].str.len() == 8].copy()
+    out = out[out["end_date"].str.endswith("1231")].copy()
+    return out
+
+
+def _latest_annual_per_stock(df: pd.DataFrame, value_cols: list[str]) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["ts_code", "end_date", *value_cols])
+    work = _annual_only(df)
+    if work.empty:
+        return pd.DataFrame(columns=["ts_code", "end_date", *value_cols])
+    work["ts_code"] = work["ts_code"].astype(str).str.strip()
+    work = work.sort_values(["ts_code", "end_date"], ascending=[True, False])
+    keep = ["ts_code", "end_date", *[c for c in value_cols if c in work.columns]]
+    work = work[keep].groupby("ts_code", as_index=False).head(1).reset_index(drop=True)
+    return work
+
+
+def _safe_num(x) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return float("nan")
+
+
+def _build_risk_flags(row: pd.Series) -> tuple[float, str]:
+    flags: list[str] = []
+    risk = 0.0
+
+    pe_ttm = _safe_num(row.get("pe_ttm", np.nan))
+    if np.isfinite(pe_ttm):
+        if pe_ttm >= 1000:
+            flags.append("估值透支")
+            risk += 60
+        elif pe_ttm >= 300:
+            flags.append("估值偏高")
+            risk += 30
+        elif pe_ttm >= 150:
+            flags.append("估值偏贵")
+            risk += 15
+    else:
+        pe = _safe_num(row.get("pe", np.nan))
+        if not np.isfinite(pe):
+            flags.append("PE空(亏损?)")
+            risk += 10
+
+    ret20 = _safe_num(row.get("ret20", np.nan))
+    if np.isfinite(ret20):
+        if ret20 >= 1.0:
+            flags.append("短期翻倍")
+            risk += 20
+        elif ret20 >= 0.5:
+            flags.append("短期涨幅大")
+            risk += 10
+
+    tr = _safe_num(row.get("turnover_rate", np.nan))
+    if np.isfinite(tr):
+        if tr >= 25:
+            flags.append("换手极热")
+            risk += 18
+        elif tr >= 18:
+            flags.append("换手过热")
+            risk += 10
+
+    vr = _safe_num(row.get("volume_ratio", np.nan))
+    if np.isfinite(vr):
+        if vr >= 4.0:
+            flags.append("量比极热")
+            risk += 10
+        elif vr >= 2.8:
+            flags.append("量比过热")
+            risk += 6
+
+    ocf_neg_years_3 = _safe_num(row.get("ocf_neg_years_3", np.nan))
+    if np.isfinite(ocf_neg_years_3):
+        if ocf_neg_years_3 >= 3:
+            flags.append("经营现金流连负(3Y)")
+            risk += 40
+        elif ocf_neg_years_3 >= 2:
+            flags.append("经营现金流偏弱(3Y)")
+            risk += 25
+
+    ar_ratio = _safe_num(row.get("accounts_receiv_ratio", np.nan))
+    if np.isfinite(ar_ratio):
+        if ar_ratio >= 0.45:
+            flags.append("应收占比高")
+            risk += 18
+        elif ar_ratio >= 0.35:
+            flags.append("应收占比较高")
+            risk += 12
+
+    inv_yoy = _safe_num(row.get("inventories_yoy", np.nan))
+    if np.isfinite(inv_yoy):
+        if inv_yoy >= 0.8:
+            flags.append("存货猛增")
+            risk += 14
+        elif inv_yoy >= 0.5:
+            flags.append("存货增长快")
+            risk += 10
+
+    rd_ratio = _safe_num(row.get("rd_ratio", np.nan))
+    if np.isfinite(rd_ratio):
+        if rd_ratio >= 0.25:
+            flags.append("研发强度极高")
+            risk += 10
+        elif rd_ratio >= 0.15:
+            flags.append("研发强度高")
+            risk += 6
+
+    return float(risk), "；".join(flags[:8])[:200]
+
+
+def _enrich_candidates_with_fundamental_risk(
+    pro,
+    df: pd.DataFrame,
+    latest_trade_date: str,
+    sleep_s: float,
+    years: int,
+    top_n: int,
+) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    out["ts_code"] = out["ts_code"].astype(str).str.strip()
+    ts_codes = out["ts_code"].dropna().astype(str).tolist()
+    if int(top_n) > 0:
+        ts_codes = ts_codes[: int(top_n)]
+    if not ts_codes:
+        return out
+
+    end_dt = datetime.strptime(str(latest_trade_date), "%Y%m%d")
+    start_dt = end_dt - timedelta(days=int(years) * 370)
+    start_date = _as_yyyymmdd(start_dt)
+    end_date = _as_yyyymmdd(end_dt)
+
+    income_frames = []
+    bs_frames = []
+    cf_frames = []
+    for i, ts_code in enumerate(ts_codes, start=1):
+        if i % 50 == 0:
+            print(f"{_now_ts()} 基本面拉取进度 {i}/{len(ts_codes)}", flush=True)
+        inc = _fetch_income_one(pro, ts_code=ts_code, start_date=start_date, end_date=end_date, sleep_s=sleep_s)
+        if inc is not None and not inc.empty:
+            income_frames.append(inc)
+        bs = _fetch_balancesheet_one(pro, ts_code=ts_code, start_date=start_date, end_date=end_date, sleep_s=sleep_s)
+        if bs is not None and not bs.empty:
+            bs_frames.append(bs)
+        cf = _fetch_cashflow_one(pro, ts_code=ts_code, start_date=start_date, end_date=end_date, sleep_s=sleep_s)
+        if cf is not None and not cf.empty:
+            cf_frames.append(cf)
+
+    df_inc = pd.concat(income_frames, ignore_index=True) if income_frames else pd.DataFrame()
+    df_bs = pd.concat(bs_frames, ignore_index=True) if bs_frames else pd.DataFrame()
+    df_cf = pd.concat(cf_frames, ignore_index=True) if cf_frames else pd.DataFrame()
+
+    if df_inc is not None and not df_inc.empty:
+        for c in ("revenue", "n_income_attr_p", "rd_exp"):
+            if c in df_inc.columns:
+                df_inc[c] = pd.to_numeric(df_inc[c], errors="coerce")
+    if df_bs is not None and not df_bs.empty:
+        for c in ("accounts_receiv", "inventories", "total_cur_assets"):
+            if c in df_bs.columns:
+                df_bs[c] = pd.to_numeric(df_bs[c], errors="coerce")
+    if df_cf is not None and not df_cf.empty:
+        for c in ("n_cashflow_act", "net_profit"):
+            if c in df_cf.columns:
+                df_cf[c] = pd.to_numeric(df_cf[c], errors="coerce")
+
+    latest_inc = _latest_annual_per_stock(df_inc, value_cols=["revenue", "n_income_attr_p", "rd_exp"])
+    latest_bs = _latest_annual_per_stock(df_bs, value_cols=["accounts_receiv", "inventories", "total_cur_assets"])
+    latest_cf = _latest_annual_per_stock(df_cf, value_cols=["n_cashflow_act", "net_profit"])
+
+    if not latest_inc.empty:
+        latest_inc["rd_ratio"] = latest_inc["rd_exp"] / latest_inc["revenue"].replace(0, np.nan)
+        out = out.merge(latest_inc.drop(columns=["end_date"], errors="ignore"), on="ts_code", how="left")
+
+    if not latest_bs.empty:
+        latest_bs["accounts_receiv_ratio"] = latest_bs["accounts_receiv"] / latest_bs["total_cur_assets"].replace(0, np.nan)
+        latest_bs["inventories_ratio"] = latest_bs["inventories"] / latest_bs["total_cur_assets"].replace(0, np.nan)
+
+        inv_yoy = pd.DataFrame(columns=["ts_code", "inventories_yoy"])
+        bs_annual = _annual_only(df_bs)
+        if bs_annual is not None and not bs_annual.empty:
+            bs_annual["ts_code"] = bs_annual["ts_code"].astype(str).str.strip()
+            bs_annual["inventories"] = pd.to_numeric(bs_annual.get("inventories", np.nan), errors="coerce")
+            bs_annual = bs_annual.sort_values(["ts_code", "end_date"], ascending=[True, False])
+            pairs = []
+            for ts_code, g in bs_annual.groupby("ts_code", as_index=False):
+                g = g.dropna(subset=["inventories"]).head(2)
+                if len(g) < 2:
+                    continue
+                inv0 = float(g.iloc[0]["inventories"])
+                inv1 = float(g.iloc[1]["inventories"])
+                if np.isfinite(inv0) and np.isfinite(inv1) and inv1 != 0:
+                    pairs.append((ts_code, inv0 / inv1 - 1.0))
+            if pairs:
+                inv_yoy = pd.DataFrame(pairs, columns=["ts_code", "inventories_yoy"])
+
+        out = out.merge(latest_bs.drop(columns=["end_date"], errors="ignore"), on="ts_code", how="left")
+        if inv_yoy is not None and not inv_yoy.empty:
+            out = out.merge(inv_yoy, on="ts_code", how="left")
+
+    if not latest_cf.empty:
+        ocf = pd.DataFrame(columns=["ts_code", "ocf_neg_years_3"])
+        cf_annual = _annual_only(df_cf)
+        if cf_annual is not None and not cf_annual.empty:
+            cf_annual["ts_code"] = cf_annual["ts_code"].astype(str).str.strip()
+            cf_annual["n_cashflow_act"] = pd.to_numeric(cf_annual.get("n_cashflow_act", np.nan), errors="coerce")
+            cf_annual = cf_annual.sort_values(["ts_code", "end_date"], ascending=[True, False])
+            rows = []
+            for ts_code, g in cf_annual.groupby("ts_code", as_index=False):
+                g = g.dropna(subset=["n_cashflow_act"]).head(3)
+                if g.empty:
+                    continue
+                neg = int((g["n_cashflow_act"] < 0).sum())
+                rows.append((ts_code, neg))
+            if rows:
+                ocf = pd.DataFrame(rows, columns=["ts_code", "ocf_neg_years_3"])
+
+        out = out.merge(latest_cf.drop(columns=["end_date"], errors="ignore"), on="ts_code", how="left")
+        if ocf is not None and not ocf.empty:
+            out = out.merge(ocf, on="ts_code", how="left")
+
+    risks = []
+    risk_flags = []
+    for _, row in out.iterrows():
+        r, f = _build_risk_flags(row)
+        risks.append(r)
+        risk_flags.append(f)
+    out["risk_score"] = risks
+    out["risk_flags"] = risk_flags
+
+    return out
  
  
 def _fetch_moneyflow_days(pro, trade_dates: list[str], sleep_s: float) -> pd.DataFrame:
@@ -400,7 +698,7 @@ def _prepare_latest_candidates(
     if daily_basic is not None and not daily_basic.empty:
         daily_basic = daily_basic.copy()
         daily_basic["ts_code"] = daily_basic["ts_code"].astype(str).str.strip()
-        for c in ("turnover_rate", "turnover_rate_f", "volume_ratio", "circ_mv", "total_mv"):
+        for c in ("turnover_rate", "turnover_rate_f", "volume_ratio", "pe", "pe_ttm", "pb", "ps_ttm", "dv_ttm", "circ_mv", "total_mv"):
             if c in daily_basic.columns:
                 daily_basic[c] = pd.to_numeric(daily_basic[c], errors="coerce")
         latest = latest.merge(daily_basic, on=["ts_code", "trade_date"], how="left")
@@ -459,6 +757,14 @@ def main() -> None:
     parser.set_defaults(require_hot_industry=True)
     parser.add_argument("--sleep-s", type=float, default=0.12)
     parser.add_argument("--max-results", type=int, default=120)
+    parser.add_argument("--fundamentals", dest="use_fundamentals", action="store_true")
+    parser.add_argument("--no-fundamentals", dest="use_fundamentals", action="store_false")
+    parser.set_defaults(use_fundamentals=True)
+    parser.add_argument("--fundamental-years", type=int, default=5)
+    parser.add_argument("--fundamentals-top", type=int, default=0)
+    parser.add_argument("--max-pe-ttm", type=float, default=0.0)
+    parser.add_argument("--max-risk-score", type=float, default=0.0)
+    parser.add_argument("--risk-penalty", type=float, default=0.0)
     parser.add_argument("--out", type=str, default="")
     args = parser.parse_args()
  
@@ -514,6 +820,7 @@ def main() -> None:
         raise SystemExit("无候选结果（请调整参数或检查数据源）")
  
     keep_cols = [
+        "ts_code",
         "symbol",
         "name",
         "industry",
@@ -528,6 +835,13 @@ def main() -> None:
         "amount",
         "turnover_rate",
         "volume_ratio",
+        "pe",
+        "pe_ttm",
+        "pb",
+        "ps_ttm",
+        "dv_ttm",
+        "total_mv",
+        "circ_mv",
         "vol_ratio10",
         "vol_dry_ratio",
         "ret5",
@@ -537,11 +851,68 @@ def main() -> None:
         "ind_ret5_mean",
         "net_mf_amount",
         "net_mf_3d",
+        "revenue",
+        "n_income_attr_p",
+        "rd_exp",
+        "rd_ratio",
+        "accounts_receiv",
+        "inventories",
+        "total_cur_assets",
+        "accounts_receiv_ratio",
+        "inventories_ratio",
+        "inventories_yoy",
+        "n_cashflow_act",
+        "net_profit",
+        "ocf_neg_years_3",
+        "risk_score",
+        "risk_flags",
+        "score_risk_adj",
     ]
     for c in keep_cols:
         if c not in latest.columns:
             latest[c] = np.nan
     out_df = latest[keep_cols].copy()
+    out_df = out_df.head(int(args.max_results)).reset_index(drop=True)
+
+    for c in ("pe", "pe_ttm", "turnover_rate", "volume_ratio", "ret20", "score"):
+        if c in out_df.columns:
+            out_df[c] = pd.to_numeric(out_df[c], errors="coerce")
+
+    if bool(args.use_fundamentals):
+        top_n = int(args.fundamentals_top)
+        if top_n <= 0:
+            top_n = len(out_df)
+        out_df = _enrich_candidates_with_fundamental_risk(
+            pro=pro,
+            df=out_df,
+            latest_trade_date=latest_trade_date,
+            sleep_s=float(args.sleep_s),
+            years=int(args.fundamental_years),
+            top_n=top_n,
+        )
+    else:
+        risks = []
+        flags = []
+        for _, row in out_df.iterrows():
+            r, f = _build_risk_flags(row)
+            risks.append(r)
+            flags.append(f)
+        out_df["risk_score"] = risks
+        out_df["risk_flags"] = flags
+
+    out_df["score_risk_adj"] = pd.to_numeric(out_df.get("score", np.nan), errors="coerce") - pd.to_numeric(
+        out_df.get("risk_score", 0.0), errors="coerce"
+    ) * float(args.risk_penalty)
+
+    max_pe_ttm = float(args.max_pe_ttm)
+    if max_pe_ttm > 0 and "pe_ttm" in out_df.columns:
+        out_df = out_df[(out_df["pe_ttm"].isna()) | (out_df["pe_ttm"] <= max_pe_ttm)].copy()
+
+    max_risk = float(args.max_risk_score)
+    if max_risk > 0 and "risk_score" in out_df.columns:
+        out_df = out_df[(out_df["risk_score"].isna()) | (out_df["risk_score"] <= max_risk)].copy()
+
+    out_df = out_df.sort_values(["score_risk_adj", "amount"], ascending=[False, False]).reset_index(drop=True)
     out_df = out_df.head(int(args.max_results)).reset_index(drop=True)
  
     if str(args.out).strip():

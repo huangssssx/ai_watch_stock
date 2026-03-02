@@ -36,12 +36,10 @@ def _wrap_query_with_failover(pro, urls):
 
 
 try:
-    # Initialize with a dummy token initially if needed, but we override it below
-    ts.set_token('f5187841c7d5663c97cd3a4125214b8fa7f7866fa32fb2ea93e9bebfebba')
-    pro = ts.pro_api('此处不用改')
-    
-    # Configure with the specific token and URL provided by the user
-    pro._DataApi__token = 'f5187841c7d5663c97cd3a4125214b8fa7f7866fa32fb2ea93e9bebfebba'
+    token = os.getenv("TUSHARE_TOKEN", "f5187841c7d5663c97cd3a4125214b8fa7f7866fa32fb2ea93e9bebfebba")
+    ts.set_token(token)
+    pro = ts.pro_api(token)
+
     primary_url = os.getenv("TUSHARE_HTTP_URL", "http://lianghua.nanyangqiankun.top")
     backup_url = os.getenv("TUSHARE_OFFICIAL_HTTP_URL", "http://api.waditu.com")
     pro._DataApi__http_url = primary_url
