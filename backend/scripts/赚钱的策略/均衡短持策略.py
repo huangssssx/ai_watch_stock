@@ -1,5 +1,102 @@
 """
-顺势回踩短持：backtest/optimize/scan
+-8694
++891
+
+均衡短持策略：顺势回踩，低持有周期/低回撤/尽量高胜率
+
+核心思路
+- 进场：趋势（close > MA_fast > MA_slow）+ 回踩到 MA_fast 附近（pullback 区间）+ 缩量（当日量 <= 前一日均量 * vol_contract_ratio）
+- 出场：止盈/止损/追踪止损/到期退出/破均线退出，并处理涨跌停导致无法成交的边界
+- 可选增强：合并 Tushare 特征（换手/量比/资金流/涨跌停价）用于信号过滤与风控边界
+
+数据与缓存
+- 日线来源：pytdx（见 utils/pytdx_client.py），缓存文件：{cache_dir}/daily_{market}_{code}.csv.gz
+- Tushare 特征：daily_basic + moneyflow + stk_limit，缓存文件：{cache_dir}/tsfeat_{market}_{code}.csv.gz
+- 默认缓存目录：同目录下的 _cache_daily，可用 --cache-dir 指定
+
+运行模式
+- backtest：对当前参数做回测输出交易明细
+- optimize：网格搜索参数，分多轮（第 2/3 轮围绕上一轮最优做 refine）
+- scan：用当前参数扫描最近信号候选
+
+常用命令示例
+
+1) 只预热缓存（不做回测/优化）
+python3 "backend/scripts/赚钱的策略/均衡短持策略.py" \\
+  --mode optimize \\
+  --start-year 2019 --end-year 2024 \\
+  --max-stocks 0 --exclude-st \\
+  --use-tushare-features \\
+  --warmup-cache-only \\
+  --progress-every 200 \\
+  --fetch-timeout-s 15 --fetch-sleep 0.0 \\
+  --ts-timeout-s 60 --ts-fetch-sleep 0.05 \\
+  --debug
+
+2) 回测（用命令行参数直接指定一组策略参数）
+python3 "backend/scripts/赚钱的策略/均衡短持策略.py" \\
+  --mode backtest \\
+  --start-year 2019 --end-year 2024 \\
+  --max-stocks 800 --exclude-st \\
+  --use-tushare-features \\
+  --pullback-min -0.03 --pullback-max 0.01 \\
+  --vol-contract-ratio 0.75 \\
+  --take-profit-pct 0.012 --stop-loss-pct 0.02 \\
+  --trail-stop-pct 0.012 --breakeven-after-pct 0.01 \\
+  --max-hold-days 3 \\
+  --progress-every 200 \\
+  --debug
+
+3) 优化（探索版：放宽可行性硬门槛，先找相对最优 Top）
+python3 "backend/scripts/赚钱的策略/均衡短持策略.py" \\
+  --mode optimize \\
+  --start-year 2019 --end-year 2024 \\
+  --max-stocks 0 --exclude-st \\
+  --use-tushare-features \\
+  --progress-every 200 \\
+  --fetch-timeout-s 15 --fetch-sleep 0.0 \\
+  --ts-timeout-s 60 --ts-fetch-sleep 0.05 \\
+  --target-win-rate 0 --min-profit-factor 0 \\
+  --debug
+
+4) 优化（约束版：对胜率/利润因子/回撤类指标设置硬门槛）
+python3 "backend/scripts/赚钱的策略/均衡短持策略.py" \\
+  --mode optimize \\
+  --start-year 2019 --end-year 2024 \\
+  --max-stocks 0 --exclude-st \\
+  --use-tushare-features \\
+  --min-trades 200 \\
+  --target-win-rate 0.55 \\
+  --min-profit-factor 0.95 \\
+  --max-abs-min-ret 6.0 --max-abs-avg-loss-ret 2.8 --max-abs-worst-mae 5.0 \\
+  --progress-every 200 \\
+  --debug
+
+5) 优化（资金/筹码代理过滤：换手/量比/净流入强度）
+python3 "backend/scripts/赚钱的策略/均衡短持策略.py" \\
+  --mode optimize \\
+  --start-year 2019 --end-year 2024 \\
+  --max-stocks 0 --exclude-st \\
+  --use-tushare-features \\
+  --turnover-min 0.5 --turnover-max 15 \\
+  --vr-min 0.6 \\
+  --netmf-ratio-min 0.002 \\
+  --target-win-rate 0 --min-profit-factor 0 \\
+  --progress-every 200 \\
+  --debug
+
+6) 扫描（找最近候选信号）
+python3 "backend/scripts/赚钱的策略/均衡短持策略.py" \\
+  --mode scan \\
+  --scan-limit 200 \\
+  --max-stocks 0 --exclude-st \\
+  --use-tushare-features \\
+  --debug
+
+输出文件
+- optimize：*_topk.csv（每轮 TopK）、*_best_trades.csv（最优参数下交易明细）
+- backtest：*_trades.csv（交易明细）
+- scan：*_candidates.csv（候选信号列表）
 """
 
 import argparse
@@ -439,6 +536,7 @@ def load_or_fetch_tushare_features(
         return pd.DataFrame(), False
     _ensure_dir(cache_dir)
     p = _cache_path_tsfeat(cache_dir, market, code)
+    need_cols = ["turnover_rate", "volume_ratio", "net_mf_amount", "up_limit", "down_limit"]
     start_dt = pd.to_datetime(str(start_date), format="%Y%m%d", errors="coerce")
     end_dt = pd.to_datetime(str(end_date), format="%Y%m%d", errors="coerce")
     if pd.notna(start_dt):
@@ -448,11 +546,12 @@ def load_or_fetch_tushare_features(
     if (not refresh) and os.path.exists(p):
         try:
             df = _run_with_timeout(float(cache_read_timeout_s or 0.0), pd.read_csv, p)
+            if df is None or df.empty:
+                return pd.DataFrame(), True
             if df is not None and not df.empty and "datetime" in df.columns:
                 df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
                 df["datetime"] = df["datetime"].dt.normalize()
                 df = df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
-                need_cols = ["turnover_rate", "volume_ratio", "net_mf_amount", "up_limit", "down_limit"]
                 ok_cols = all((c in df.columns) for c in need_cols)
                 dt_min = df["datetime"].min() if "datetime" in df.columns else pd.NaT
                 dt_max = df["datetime"].max() if "datetime" in df.columns else pd.NaT
@@ -475,8 +574,10 @@ def load_or_fetch_tushare_features(
                     tol = pd.Timedelta(days=15)
                     if pd.isna(dt_max) or dt_max < (end_dt - tol):
                         ok_range = False
-                if ok_cols and ok_range and has_rows and has_values:
-                    return in_range.reset_index(drop=True), True
+                if ok_cols and ok_range and has_rows:
+                    if has_values:
+                        return in_range.reset_index(drop=True), True
+                    return pd.DataFrame(), True
         except Exception:
             pass
 
@@ -518,6 +619,24 @@ def load_or_fetch_tushare_features(
         time.sleep(wait_s)
 
     if df is None or df.empty:
+        try:
+            daily_p = _cache_path(cache_dir, market, code)
+            if os.path.exists(daily_p):
+                base = _run_with_timeout(float(cache_read_timeout_s or 0.0), pd.read_csv, daily_p)
+                if base is not None and (not base.empty) and ("datetime" in base.columns):
+                    base = base.copy()
+                    base["datetime"] = pd.to_datetime(base["datetime"], errors="coerce").dt.normalize()
+                    base = base.dropna(subset=["datetime"]).drop_duplicates(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+                    if pd.notna(start_dt):
+                        base = base[base["datetime"] >= start_dt]
+                    if pd.notna(end_dt):
+                        base = base[base["datetime"] <= end_dt]
+                    stub = base[["datetime"]].copy() if (base is not None and not base.empty) else pd.DataFrame(columns=["datetime"])
+                    for c in need_cols:
+                        stub[c] = np.nan
+                    stub.to_csv(p, index=False, encoding="utf-8", compression="gzip")
+        except Exception:
+            pass
         print(
             f"ERROR: tsfeat_failed market={int(market)} code={str(code).zfill(6)} reason={str(reason)}",
             flush=True,

@@ -4,6 +4,37 @@ import time
 
 import tushare as ts
 
+
+def _wrap_query_with_failover(pro, urls):
+    urls = [u for u in urls if u]
+    seen = set()
+    uniq_urls = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            uniq_urls.append(u)
+    urls = uniq_urls
+
+    orig_query = pro.query
+
+    def query(api_name, fields="", **kwargs):
+        last_err = None
+        for url in urls:
+            try:
+                pro._DataApi__http_url = url
+                res = orig_query(api_name, fields=fields, **kwargs)
+                if getattr(res, "empty", False):
+                    last_err = ValueError(f"empty_response url={url} api={api_name}")
+                    continue
+                return res
+            except Exception as e:
+                last_err = e
+                continue
+        raise last_err
+
+    pro.query = query
+
+
 try:
     # Initialize with a dummy token initially if needed, but we override it below
     ts.set_token('f5187841c7d5663c97cd3a4125214b8fa7f7866fa32fb2ea93e9bebfebba')
@@ -11,7 +42,14 @@ try:
     
     # Configure with the specific token and URL provided by the user
     pro._DataApi__token = 'f5187841c7d5663c97cd3a4125214b8fa7f7866fa32fb2ea93e9bebfebba'
-    pro._DataApi__http_url = 'http://lianghua.nanyangqiankun.top'
+    primary_url = os.getenv("TUSHARE_HTTP_URL", "http://lianghua.nanyangqiankun.top")
+    backup_url = os.getenv("TUSHARE_OFFICIAL_HTTP_URL", "http://api.waditu.com")
+    pro._DataApi__http_url = primary_url
+    try:
+        pro._DataApi__timeout = float(os.getenv("TUSHARE_TIMEOUT", "30"))
+    except Exception:
+        pass
+    _wrap_query_with_failover(pro, [primary_url, backup_url])
     
     print("Tushare client initialized successfully with custom config.")
 except Exception as e:
