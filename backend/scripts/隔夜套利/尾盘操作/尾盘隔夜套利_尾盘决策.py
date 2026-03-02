@@ -4,8 +4,11 @@
 尾盘隔夜套利：尾盘决策脚本
 
 功能
-- 把“盘后候选池”与“尾盘实时强弱”结合，输出一份尾盘可操作的隔夜备选清单 CSV。
-- 核心目标：尾盘买入 -> 隔夜持有 -> 次日择机卖出（套利/博弈）时，提高候选的可交易性与次日胜率。
+- 输出尾盘可操作的隔夜备选清单 CSV（tail_score + decision）。
+- 支持两种输入模式：
+  - 候选池模式：读取“盘后候选池”CSV + 叠加“尾盘实时强弱”
+  - 全市场扫描：买入时点全市场计算并直接输出 topk
+- 附带回测模式：用历史日线近似尾盘信号，评估“次日是否给过冲高/盈利机会”
 
 数据来源（尽量用到本项目文档里可用的参数）
 - Tushare（主要取前一交易日 / 今日涨跌停价）：
@@ -23,6 +26,8 @@
 - tail_score：尾盘综合分（0-100，越高越优先）
 - decision：BUY / WATCH / AVOID（粗粒度决策）
 - pass_*：各项关键过滤的布尔结果（点差/盘口强弱/VWAP/动量/跌停风险）
+- 回测明细：每条记录包含 buy_date/sell_date/buy_price/next_high/hit_next_high 等
+- 回测日汇总：按 buy_date 汇总 trades + high_hit（每日命中率曲线）
 
 流程（从输入到输出）
 1) 读取输入候选（优先从隔夜候选 CSV 取 topk）
@@ -36,13 +41,23 @@
   python3 backend/scripts/隔夜套利/尾盘操作/尾盘隔夜套利_尾盘决策.py --auto-input-latest --topk 80
 
 - 强化版：叠加分钟K、昨日涨停信息、两融、龙虎榜（更慢但信息更全）
-  python3 backend/scripts/隔夜套利/尾盘操作/尾盘隔夜套利_尾盘决策.py \\
-    --auto-input-latest --topk 80 \\
-    --with-minute-bars --minute-bars-n 40 \\
-    --with-prev-limit --with-margin --with-lhb
+  python3 backend/scripts/隔夜套利/尾盘操作/尾盘隔夜套利_尾盘决策.py  --auto-input-latest --topk 80 --with-minute-bars --minute-bars-n 40 --with-prev-limit --with-margin --with-lhb
 
 - 指定输入文件（不依赖 auto-input-latest）
   python3 backend/scripts/隔夜套利/尾盘操作/尾盘隔夜套利_尾盘决策.py --input-csv backend/scripts/隔夜套利/隔夜候选_YYYYMMDD_xxx.csv
+
+- 全市场扫描（买入时点直接扫全市场输出 topk）
+- 14:35~14:45 预扫（建观察池）
+- 目的：从全市场先抓一批“可能会进前列”的候选（比如 topk 200），你和 AI 开始盯盘、看题材/盘口/大盘强弱。
+- 14:50~14:55 二次扫描（收敛到可买清单）
+- 目的：尾盘动量、VWAP 偏离、买卖盘不平衡等信号更接近最终状态，这时做 topk 50 的“买入候选清单”更靠谱。
+- 14:56~14:58 最终扫描 + 分批下单（最关键）
+- 目的：尽量贴近收盘价完成买入，减少盘中反复造成的信号漂移；同时留出下单/成交时间，避免卡到最后几秒成交不确定。
+
+  python3 backend/scripts/隔夜套利/尾盘操作/尾盘隔夜套利_尾盘决策.py --scan-all --topk 50
+
+- 回测：近 N 个交易日，命中定义为“次日最高价 > 买入价 * (1 + high_hit_pct%)”
+  python3 backend/scripts/隔夜套利/尾盘操作/尾盘隔夜套利_尾盘决策.py --backtest --scan-all --topk 50 --bt-last-n 20 --bt-high-hit-pct 0.0 --bt-sell close
 
 - 只跑一小批并打开调试日志（逐环节耗时/维度/决策统计）
   python3 backend/scripts/隔夜套利/尾盘操作/尾盘隔夜套利_尾盘决策.py --auto-input-latest --topk 20 --with-minute-bars --debug
@@ -380,6 +395,326 @@ def _fetch_stk_limit_subset(pro, trade_date: str, ts_codes: List[str]) -> pd.Dat
     return df
 
 
+def _fetch_daily_ohlc_subset(pro, trade_date: str, ts_codes: List[str]) -> pd.DataFrame:
+    fields = "ts_code,trade_date,open,high,low,close,pre_close,pct_chg,vol,amount"
+    df = _safe_call(pro.daily, trade_date=trade_date, fields=fields)
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.copy()
+    df["ts_code"] = df["ts_code"].astype(str)
+    keep = set([str(x) for x in ts_codes])
+    return df[df["ts_code"].isin(keep)].copy()
+
+
+def _proxy_intraday_from_daily(daily_df: pd.DataFrame) -> pd.DataFrame:
+    if daily_df is None or daily_df.empty:
+        return pd.DataFrame()
+    df = daily_df.copy()
+    df["ts_code"] = df["ts_code"].astype(str)
+    for c in ["open", "high", "low", "close", "pre_close", "pct_chg", "amount"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    close = df.get("close")
+    high = df.get("high")
+    low = df.get("low")
+    pos_in_range = pd.Series([float("nan")] * len(df), index=df.index)
+    if close is not None and high is not None and low is not None:
+        denom = (high - low).replace(0.0, float("nan"))
+        pos_in_range = (close - low) / denom
+
+    df_out = pd.DataFrame(
+        {
+            "ts_code": df["ts_code"],
+            "rt_servertime": "",
+            "rt_price": close,
+            "rt_last_close": df.get("pre_close"),
+            "rt_gap_pct": df.get("pct_chg"),
+            "rt_high": high,
+            "rt_low": low,
+            "rt_pos_in_range": pos_in_range,
+            "rt_speed_pct": 0.0,
+            "rt_spread_bp": 10.0,
+            "rt_imbalance": 2.0,
+            "rt_bid1": close,
+            "rt_ask1": close,
+            "rt_bid_value": 1.0,
+            "rt_ask_value": 1.0,
+            "rt_bid_vol_5": 1.0,
+            "rt_ask_vol_5": 1.0,
+            "rt_vol_hand": float("nan"),
+            "rt_amount_yuan": pd.to_numeric(df.get("amount"), errors="coerce").fillna(0.0) * 1000.0,
+            "rt_vwap": float("nan"),
+            "rt_above_vwap_pct": 0.0,
+            "rt_b_vol_hand": float("nan"),
+            "rt_s_vol_hand": float("nan"),
+            "rt_b_ratio": 0.55,
+        }
+    )
+    return df_out
+
+
+def _trade_dates_in_range(pro, start_date: str, end_date: str) -> List[str]:
+    start_date = str(start_date).strip()
+    end_date = str(end_date).strip()
+    if not start_date or not end_date:
+        raise ValueError("start_date/end_date 不能为空")
+    df = _safe_call(
+        pro.trade_cal,
+        exchange="SSE",
+        start_date=start_date,
+        end_date=end_date,
+        fields="cal_date,is_open",
+    )
+    if df is None or df.empty:
+        return []
+    df = df.copy()
+    df["cal_date"] = df["cal_date"].astype(str)
+    df = df[df["is_open"].astype(int) == 1]
+    return df["cal_date"].sort_values().tolist()
+
+
+def _backtest_sell_price_row(row: pd.Series, mode: str) -> float:
+    mode = str(mode or "").strip().lower()
+    if mode == "open":
+        return float(row.get("open") or float("nan"))
+    if mode == "high":
+        return float(row.get("high") or float("nan"))
+    return float(row.get("close") or float("nan"))
+
+
+def _run_backtest(
+    pro,
+    scan_all: bool,
+    include_st: bool,
+    include_suspended: bool,
+    start_date: str,
+    end_date: str,
+    topk: int,
+    prefer_moneyflow: str,
+    sell_price_mode: str,
+    high_hit_pct: float,
+    tp_pct: float,
+    sl_pct: float,
+    out_csv: str,
+    debug: bool,
+) -> None:
+    dates = _trade_dates_in_range(pro, start_date=start_date, end_date=end_date)
+    if len(dates) < 2:
+        raise SystemExit("回测区间内开市日不足 2 天")
+
+    sb = pd.DataFrame()
+    if bool(scan_all):
+        sb = _safe_call(pro.stock_basic, exchange="", list_status="L", fields="ts_code,name")
+        if sb is None or sb.empty:
+            raise SystemExit("stock_basic 返回为空，无法回测 --scan-all")
+        sb = sb.copy()
+        sb["ts_code"] = sb["ts_code"].astype(str)
+        if "name" in sb.columns:
+            sb["name"] = sb["name"].astype(str)
+        else:
+            sb["name"] = ""
+        sb = sb[sb["ts_code"].str.endswith((".SZ", ".SH"))].copy()
+
+    st_cache: Dict[str, set] = {}
+    susp_cache: Dict[str, set] = {}
+
+    trades: List[Dict] = []
+    for i in range(1, len(dates) - 1):
+        asof = str(dates[i])
+        prev_open = str(dates[i - 1])
+        next_open = str(dates[i + 1])
+
+        base_df = pd.DataFrame()
+        if bool(scan_all):
+            day_sb = sb.copy()
+            if not bool(include_st):
+                st_set = st_cache.get(asof)
+                if st_set is None:
+                    try:
+                        st = _safe_call(pro.stock_st, trade_date=asof, fields="ts_code")
+                        st_set = set(st["ts_code"].astype(str).tolist()) if st is not None and not st.empty else set()
+                    except Exception:
+                        st_set = set()
+                    st_cache[asof] = st_set
+                if st_set:
+                    day_sb = day_sb[~day_sb["ts_code"].isin(st_set)].copy()
+
+            if not bool(include_suspended):
+                susp_set = susp_cache.get(asof)
+                if susp_set is None:
+                    try:
+                        susp = _safe_call(pro.suspend_d, trade_date=asof, suspend_type="S", fields="ts_code")
+                        susp_set = (
+                            set(susp["ts_code"].astype(str).tolist()) if susp is not None and not susp.empty else set()
+                        )
+                    except Exception:
+                        susp_set = set()
+                    susp_cache[asof] = susp_set
+                if susp_set:
+                    day_sb = day_sb[~day_sb["ts_code"].isin(susp_set)].copy()
+            base_df = day_sb[["ts_code", "name"]].drop_duplicates().copy()
+        else:
+            raise SystemExit("回测目前仅支持 --scan-all（需要全市场股票池）")
+
+        ts_codes = base_df["ts_code"].astype(str).dropna().tolist()
+        ts_codes = list(dict.fromkeys(ts_codes))
+        if not ts_codes:
+            continue
+
+        daily_today = _fetch_daily_ohlc_subset(pro, trade_date=asof, ts_codes=ts_codes)
+        if daily_today.empty:
+            continue
+        proxy_rt = _proxy_intraday_from_daily(daily_today)
+
+        daily_basic = _fetch_daily_basic_subset(pro, trade_date=prev_open, ts_codes=ts_codes)
+        moneyflow, moneyflow_source = _fetch_moneyflow_subset(
+            pro, trade_date=prev_open, ts_codes=ts_codes, prefer=str(prefer_moneyflow)
+        )
+        stk_limit = pd.DataFrame()
+        try:
+            stk_limit = _fetch_stk_limit_subset(pro, trade_date=asof, ts_codes=ts_codes)
+        except Exception:
+            stk_limit = pd.DataFrame()
+
+        out_df = base_df.copy()
+        out_df["asof_trade_date"] = asof
+        out_df["prev_open_trade_date"] = prev_open
+        out_df["run_at"] = asof
+        out_df = out_df.merge(daily_basic, on="ts_code", how="left")
+        out_df = out_df.merge(moneyflow, on="ts_code", how="left")
+        out_df = out_df.merge(stk_limit, on="ts_code", how="left")
+        out_df = out_df.merge(proxy_rt, on="ts_code", how="left")
+        out_df["moneyflow_source"] = moneyflow_source
+
+        out_df = _score_tail(out_df)
+        decision_order = {"BUY": 0, "WATCH": 1, "AVOID": 2}
+        out_df["_decision_rank"] = out_df["decision"].map(decision_order).fillna(9).astype(int)
+        out_df = out_df.sort_values(["_decision_rank", "tail_score"], ascending=[True, False], na_position="last")
+        out_df.drop(columns=["_decision_rank"], inplace=True)
+        out_df = out_df.head(max(1, int(topk))).copy()
+
+        buy_df = out_df[out_df["decision"] == "BUY"].copy()
+        if buy_df.empty:
+            if debug:
+                _log(debug, f"bt {asof}: BUY=0 out={len(out_df)}")
+            continue
+
+        buy_codes = buy_df["ts_code"].astype(str).tolist()
+        next_daily = _fetch_daily_ohlc_subset(pro, trade_date=next_open, ts_codes=buy_codes)
+        if next_daily.empty:
+            continue
+        next_daily = next_daily.copy()
+        next_daily["ts_code"] = next_daily["ts_code"].astype(str)
+        next_map = next_daily.set_index("ts_code").to_dict(orient="index")
+
+        buy_today_map = daily_today.set_index("ts_code").to_dict(orient="index")
+        for _, r in buy_df.iterrows():
+            ts_code = str(r.get("ts_code") or "")
+            if not ts_code or ts_code not in buy_today_map or ts_code not in next_map:
+                continue
+            t0 = buy_today_map[ts_code]
+            t1 = next_map[ts_code]
+            buy_px = float(t0.get("close") or float("nan"))
+            sell_px = _backtest_sell_price_row(pd.Series(t1), sell_price_mode)
+            if not (buy_px == buy_px and sell_px == sell_px and buy_px > 0):
+                continue
+
+            next_open_px = float(t1.get("open") or float("nan"))
+            next_high_px = float(t1.get("high") or float("nan"))
+            next_low_px = float(t1.get("low") or float("nan"))
+            next_close_px = float(t1.get("close") or float("nan"))
+
+            ret = sell_px / buy_px - 1.0
+            mfe = (next_high_px / buy_px - 1.0) if (next_high_px == next_high_px and buy_px > 0) else float("nan")
+            mae = (next_low_px / buy_px - 1.0) if (next_low_px == next_low_px and buy_px > 0) else float("nan")
+            high_hit_threshold = buy_px * (1.0 + float(high_hit_pct) / 100.0)
+            hit_next_high = bool(next_high_px == next_high_px and next_high_px > high_hit_threshold)
+            hit_tp = bool(mfe == mfe and mfe >= float(tp_pct) / 100.0)
+            hit_sl = bool(mae == mae and mae <= float(sl_pct) / 100.0)
+
+            trades.append(
+                {
+                    "buy_date": asof,
+                    "sell_date": next_open,
+                    "ts_code": ts_code,
+                    "name": str(r.get("name") or ""),
+                    "tail_score": float(r.get("tail_score") or 0.0),
+                    "buy_price": buy_px,
+                    "sell_price_mode": str(sell_price_mode),
+                    "sell_price": sell_px,
+                    "ret_pct": ret * 100.0,
+                    "next_open": next_open_px,
+                    "next_high": next_high_px,
+                    "next_low": next_low_px,
+                    "next_close": next_close_px,
+                    "mfe_pct": mfe * 100.0 if mfe == mfe else float("nan"),
+                    "mae_pct": mae * 100.0 if mae == mae else float("nan"),
+                    "high_hit_pct": float(high_hit_pct),
+                    "high_hit_threshold": high_hit_threshold,
+                    "hit_next_high": hit_next_high,
+                    "hit_tp": hit_tp,
+                    "hit_sl": hit_sl,
+                }
+            )
+
+        if debug:
+            _log(debug, f"bt {asof}: BUY={len(buy_df)} trades_total={len(trades)}")
+
+    if not trades:
+        raise SystemExit("回测区间内无交易记录（可能 BUY 条件过严或数据缺失）")
+
+    trades_df = pd.DataFrame(trades)
+    trades_df["ret_pct"] = pd.to_numeric(trades_df["ret_pct"], errors="coerce")
+    trades_df["hit_next_high"] = trades_df["hit_next_high"].astype(bool)
+    trades_df["hit_tp"] = trades_df["hit_tp"].astype(bool)
+    trades_df["hit_sl"] = trades_df["hit_sl"].astype(bool)
+
+    win_rate = float((trades_df["ret_pct"] > 0).mean() * 100.0)
+    high_hit_rate = float(trades_df["hit_next_high"].mean() * 100.0)
+    avg_ret = float(trades_df["ret_pct"].mean())
+    med_ret = float(trades_df["ret_pct"].median())
+    tp_rate = float(trades_df["hit_tp"].mean() * 100.0)
+    sl_rate = float(trades_df["hit_sl"].mean() * 100.0)
+
+    if not out_csv:
+        out_dir = os.path.dirname(os.path.abspath(__file__))
+        out_csv = os.path.join(out_dir, f"回测_尾盘决策_{start_date}_{end_date}_{_now_ts()}.csv")
+    os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+    trades_df.to_csv(out_csv, index=False, encoding="utf-8-sig")
+
+    if str(out_csv).lower().endswith(".csv"):
+        daily_csv = out_csv[:-4] + "_daily.csv"
+    else:
+        daily_csv = out_csv + "_daily.csv"
+    daily_df = (
+        trades_df.groupby("buy_date", as_index=False)
+        .agg(
+            trades=("ts_code", "count"),
+            high_hit=("hit_next_high", "mean"),
+            win_rate=("ret_pct", lambda s: (pd.to_numeric(s, errors="coerce") > 0).mean()),
+            avg_ret=("ret_pct", "mean"),
+            med_ret=("ret_pct", "median"),
+            tp_hit=("hit_tp", "mean"),
+            sl_hit=("hit_sl", "mean"),
+        )
+        .copy()
+    )
+    daily_df["high_hit"] = (pd.to_numeric(daily_df["high_hit"], errors="coerce") * 100.0).round(2)
+    daily_df["win_rate"] = (pd.to_numeric(daily_df["win_rate"], errors="coerce") * 100.0).round(2)
+    daily_df["tp_hit"] = (pd.to_numeric(daily_df["tp_hit"], errors="coerce") * 100.0).round(2)
+    daily_df["sl_hit"] = (pd.to_numeric(daily_df["sl_hit"], errors="coerce") * 100.0).round(2)
+    daily_df["avg_ret"] = pd.to_numeric(daily_df["avg_ret"], errors="coerce").round(3)
+    daily_df["med_ret"] = pd.to_numeric(daily_df["med_ret"], errors="coerce").round(3)
+    daily_df.to_csv(daily_csv, index=False, encoding="utf-8-sig")
+
+    print(
+        f"backtest start={start_date} end={end_date} trades={len(trades_df)} win_rate={win_rate:.2f}% "
+        f"high_hit={high_hit_rate:.2f}% high_hit_pct={float(high_hit_pct):.2f}% avg_ret={avg_ret:.3f}% med_ret={med_ret:.3f}% "
+        f"tp_hit={tp_rate:.2f}% sl_hit={sl_rate:.2f}% out={out_csv} daily_out={daily_csv}"
+    )
+
+
 def _tdx_quotes_snapshot(tdx, ts_codes: List[str], chunk_size: int, sleep_s: float) -> pd.DataFrame:
     pairs = []
     keep = []
@@ -694,8 +1029,20 @@ def main() -> None:
     parser.add_argument("--input-csv", type=str, default="")
     parser.add_argument("--auto-input-latest", action="store_true")
     parser.add_argument("--ts-codes", type=str, default="")
+    parser.add_argument("--scan-all", action="store_true")
+    parser.add_argument("--include-st", action="store_true")
+    parser.add_argument("--include-suspended", action="store_true")
     parser.add_argument("--topk", type=int, default=80)
     parser.add_argument("--asof-trade-date", type=str, default="")
+    parser.add_argument("--backtest", action="store_true")
+    parser.add_argument("--bt-start", type=str, default="")
+    parser.add_argument("--bt-end", type=str, default="")
+    parser.add_argument("--bt-last-n", type=int, default=0)
+    parser.add_argument("--bt-sell", type=str, default="close", choices=["open", "close", "high"])
+    parser.add_argument("--bt-high-hit-pct", type=float, default=0.0)
+    parser.add_argument("--bt-tp-pct", type=float, default=2.0)
+    parser.add_argument("--bt-sl-pct", type=float, default=-2.0)
+    parser.add_argument("--bt-out", type=str, default="")
     parser.add_argument("--prefer-moneyflow", type=str, default="dc", choices=["dc", "ths", "moneyflow"])
     parser.add_argument("--with-minute-bars", action="store_true")
     parser.add_argument("--minute-bars-n", type=int, default=40)
@@ -728,6 +1075,64 @@ def main() -> None:
         raise SystemExit("pro=None，无法执行（请检查 tushare token/config）")
     _log(debug, "tushare pro ready")
 
+    if bool(args.backtest):
+        start_date = str(args.bt_start).strip()
+        end_date = str(args.bt_end).strip()
+        bt_last_n = int(getattr(args, "bt_last_n", 0) or 0)
+
+        if (not start_date or not end_date) and bt_last_n > 0:
+            anchor = str(args.asof_trade_date).strip()
+            ref_dt = None
+            if anchor:
+                try:
+                    ref_dt = datetime.strptime(anchor, "%Y%m%d")
+                except Exception:
+                    ref_dt = None
+
+            end_dt = None
+            try:
+                end_dt = datetime.strptime(end_date, "%Y%m%d") if end_date else None
+            except Exception:
+                end_dt = None
+
+            if ref_dt is not None:
+                end_date = _last_open_trade_date(pro, ref=ref_dt)
+            else:
+                end_date = _last_open_trade_date(pro)
+
+            end_dt = datetime.strptime(end_date, "%Y%m%d")
+            probe_start_dt = end_dt - timedelta(days=400)
+            probe_start = _ts_date(probe_start_dt)
+            dates = _trade_dates_in_range(pro, start_date=probe_start, end_date=end_date)
+            need = bt_last_n + 2
+            if len(dates) < need:
+                raise SystemExit(f"回测近 {bt_last_n} 日失败：区间内开市日不足 {need} 天")
+            dates = dates[-need:]
+            start_date = str(dates[0])
+            end_date = str(dates[-1])
+            _log(debug, f"bt_last_n={bt_last_n} resolved start={start_date} end={end_date}")
+
+        if not start_date or not end_date:
+            raise SystemExit("--backtest 需要提供 (--bt-start 与 --bt-end) 或 --bt-last-n")
+
+        _run_backtest(
+            pro=pro,
+            scan_all=bool(args.scan_all),
+            include_st=bool(args.include_st),
+            include_suspended=bool(args.include_suspended),
+            start_date=start_date,
+            end_date=end_date,
+            topk=int(args.topk),
+            prefer_moneyflow=str(args.prefer_moneyflow),
+            sell_price_mode=str(args.bt_sell),
+            high_hit_pct=float(args.bt_high_hit_pct),
+            tp_pct=float(args.bt_tp_pct),
+            sl_pct=float(args.bt_sl_pct),
+            out_csv=str(args.bt_out).strip(),
+            debug=bool(args.debug),
+        )
+        return
+
     try:
         from backend.utils.pytdx_client import tdx
     except Exception as e:
@@ -737,10 +1142,57 @@ def main() -> None:
     input_csv = str(args.input_csv).strip()
     if not input_csv and bool(args.auto_input_latest):
         input_csv = _find_latest_candidates_csv()
-    _log(debug, f"input_csv={input_csv or 'manual'} topk={int(args.topk)}")
+    _log(debug, f"input_csv={input_csv or 'manual'} topk={int(args.topk)} scan_all={1 if bool(args.scan_all) else 0}")
+
+    if bool(args.scan_all) and (bool(args.with_minute_bars) or bool(args.with_margin) or bool(args.with_lhb)):
+        raise SystemExit("--scan-all 不支持 --with-minute-bars/--with-margin/--with-lhb（全市场会非常慢）")
+
+    today = _ts_date(datetime.now())
+    asof = str(args.asof_trade_date).strip()
+    if not asof:
+        asof = _last_open_trade_date(pro)
+    _log(debug, f"asof_trade_date={asof} today={today}")
+
+    prev_open = _prev_open_trade_date(pro, asof)
+    _log(debug, f"prev_open_trade_date={prev_open}")
 
     base_df = pd.DataFrame()
-    if input_csv:
+    if bool(args.scan_all):
+        sb = _safe_call(pro.stock_basic, exchange="", list_status="L", fields="ts_code,name")
+        if sb is None or sb.empty:
+            raise SystemExit("stock_basic 返回为空，无法 --scan-all")
+        sb = sb.copy()
+        sb["ts_code"] = sb["ts_code"].astype(str)
+        if "name" in sb.columns:
+            sb["name"] = sb["name"].astype(str)
+        else:
+            sb["name"] = ""
+        sb = sb[sb["ts_code"].str.endswith((".SZ", ".SH"))].copy()
+
+        if not bool(args.include_st):
+            st_set: set[str] = set()
+            try:
+                st = _safe_call(pro.stock_st, trade_date=asof, fields="ts_code")
+                if st is not None and not st.empty:
+                    st_set = set(st["ts_code"].astype(str).tolist())
+            except Exception:
+                st_set = set()
+            if st_set:
+                sb = sb[~sb["ts_code"].isin(st_set)].copy()
+
+        if not bool(args.include_suspended):
+            susp_set: set[str] = set()
+            try:
+                susp = _safe_call(pro.suspend_d, trade_date=asof, suspend_type="S", fields="ts_code")
+                if susp is not None and not susp.empty:
+                    susp_set = set(susp["ts_code"].astype(str).tolist())
+            except Exception:
+                susp_set = set()
+            if susp_set:
+                sb = sb[~sb["ts_code"].isin(susp_set)].copy()
+
+        base_df = sb[["ts_code", "name"]].drop_duplicates().copy()
+    elif input_csv:
         base_df = pd.read_csv(input_csv)
         if "ts_code" not in base_df.columns:
             raise SystemExit("input-csv 缺少 ts_code 列")
@@ -752,7 +1204,7 @@ def main() -> None:
     else:
         raw = str(args.ts_codes).strip()
         if not raw:
-            raise SystemExit("未提供股票列表（用 --input-csv/--auto-input-latest 或 --ts-codes）")
+            raise SystemExit("未提供股票列表（用 --scan-all/--input-csv/--auto-input-latest 或 --ts-codes）")
         ts_codes = [x.strip() for x in raw.split(",") if x.strip()]
         base_df = pd.DataFrame({"ts_code": ts_codes[: max(1, int(args.topk))]})
     _log(debug, f"base_df={_shape(base_df)} cols={len(base_df.columns)}")
@@ -760,15 +1212,6 @@ def main() -> None:
     ts_codes = base_df["ts_code"].astype(str).dropna().tolist()
     ts_codes = list(dict.fromkeys(ts_codes))
     _log(debug, f"unique ts_codes={len(ts_codes)}")
-
-    today = _ts_date(datetime.now())
-    asof = str(args.asof_trade_date).strip()
-    if not asof:
-        asof = _last_open_trade_date(pro)
-    _log(debug, f"asof_trade_date={asof} today={today}")
-
-    prev_open = _prev_open_trade_date(pro, asof)
-    _log(debug, f"prev_open_trade_date={prev_open}")
 
     t0 = time.time()
     daily_basic = _fetch_daily_basic_subset(pro, trade_date=prev_open, ts_codes=ts_codes)
@@ -857,7 +1300,12 @@ def main() -> None:
     _log(debug, "score_tail start")
     out_df = _score_tail(out_df)
     _log(debug, f"score_tail done decision_counts={out_df['decision'].value_counts(dropna=False).to_dict()}")
-    out_df = out_df.sort_values(["decision", "tail_score"], ascending=[True, False], na_position="last")
+    decision_order = {"BUY": 0, "WATCH": 1, "AVOID": 2}
+    out_df["_decision_rank"] = out_df["decision"].map(decision_order).fillna(9).astype(int)
+    out_df = out_df.sort_values(["_decision_rank", "tail_score"], ascending=[True, False], na_position="last")
+    out_df.drop(columns=["_decision_rank"], inplace=True)
+    if bool(args.scan_all):
+        out_df = out_df.head(max(1, int(args.topk))).copy()
 
     out = str(args.out).strip()
     if not out:
