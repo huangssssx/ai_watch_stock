@@ -123,11 +123,16 @@ class StrategyParams:
     trend_ma_slow: int
     trend_ma_long: int
     use_tushare_features: int
+    use_chip_features: int
     min_turnover_rate: float
     max_turnover_rate: float
     min_volume_ratio: float
     min_net_mf_amount: float
     min_net_mf_ratio: float
+    min_winner_rate: float
+    max_winner_rate: float
+    min_chip_pos: float
+    max_chip_band: float
 
 
 @dataclass(frozen=True)
@@ -169,6 +174,10 @@ class PreparedStockData:
     net_mf_amount: np.ndarray
     up_limit: np.ndarray
     down_limit: np.ndarray
+    chip_weight_avg: np.ndarray
+    chip_winner_rate: np.ndarray
+    chip_band: np.ndarray
+    chip_pos: np.ndarray
 
 
 def _ensure_dir(path: str) -> None:
@@ -181,6 +190,10 @@ def _cache_path(cache_dir: str, market: int, code: str) -> str:
 
 def _cache_path_tsfeat(cache_dir: str, market: int, code: str) -> str:
     return os.path.join(cache_dir, f"tsfeat_{int(market)}_{str(code).zfill(6)}.csv.gz")
+
+
+def _cache_path_cyqperf(cache_dir: str, market: int, code: str) -> str:
+    return os.path.join(cache_dir, f"cyqperf_{int(market)}_{str(code).zfill(6)}.csv.gz")
 
 
 def _count_cache_files(cache_dir: str, prefix: str) -> int:
@@ -364,6 +377,52 @@ def _fetch_tushare_features_one(ts_code: str, start_date: str, end_date: str) ->
     return out[keep].copy()
 
 
+def _fetch_cyq_perf_one(ts_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    if pro is None:
+        return pd.DataFrame()
+    ts_code = str(ts_code).strip()
+    if not ts_code:
+        return pd.DataFrame()
+    df = _ts_call(
+        "cyq_perf",
+        pro.cyq_perf,
+        ts_code=ts_code,
+        start_date=str(start_date),
+        end_date=str(end_date),
+        fields="ts_code,trade_date,cost_5pct,cost_50pct,cost_95pct,weight_avg,winner_rate",
+    )
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.copy()
+    if "trade_date" not in df.columns:
+        return pd.DataFrame()
+    df["trade_date"] = df["trade_date"].astype(str).str.strip()
+    df = df.dropna(subset=["trade_date"])
+    df["datetime"] = pd.to_datetime(df["trade_date"], format="%Y%m%d", errors="coerce")
+    df["datetime"] = df["datetime"].dt.normalize()
+    df = df.dropna(subset=["datetime"]).drop_duplicates(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+
+    rename = {
+        "cost_5pct": "chip_cost_5pct",
+        "cost_50pct": "chip_cost_50pct",
+        "cost_95pct": "chip_cost_95pct",
+        "weight_avg": "chip_weight_avg",
+        "winner_rate": "chip_winner_rate",
+    }
+    for src, dst in rename.items():
+        if src not in df.columns:
+            df[src] = np.nan
+        df[dst] = pd.to_numeric(df[src], errors="coerce")
+
+    w = df["chip_weight_avg"].astype(float)
+    c5 = df["chip_cost_5pct"].astype(float)
+    c95 = df["chip_cost_95pct"].astype(float)
+    df["chip_band"] = np.where((w > 0) & np.isfinite(w) & np.isfinite(c5) & np.isfinite(c95), (c95 - c5) / w, np.nan)
+
+    keep = ["datetime", "chip_weight_avg", "chip_winner_rate", "chip_cost_5pct", "chip_cost_50pct", "chip_cost_95pct", "chip_band"]
+    return df[keep].copy()
+
+
 def load_or_fetch_tushare_features(
     cache_dir: str,
     market: int,
@@ -463,6 +522,112 @@ def load_or_fetch_tushare_features(
             f"ERROR: tsfeat_failed market={int(market)} code={str(code).zfill(6)} reason={str(reason)}",
             flush=True,
         )
+        return pd.DataFrame(), False
+    df.to_csv(p, index=False, encoding="utf-8", compression="gzip")
+    if sleep_s and sleep_s > 0:
+        time.sleep(float(sleep_s))
+    df = df.copy()
+    if "datetime" in df.columns:
+        df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce").dt.normalize()
+        df = df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+        if pd.notna(start_dt):
+            df = df[df["datetime"] >= start_dt]
+        if pd.notna(end_dt):
+            df = df[df["datetime"] <= end_dt]
+    return df.reset_index(drop=True), False
+
+
+def load_or_fetch_cyq_perf(
+    cache_dir: str,
+    market: int,
+    code: str,
+    start_date: str,
+    end_date: str,
+    strict_range: bool,
+    refresh: bool,
+    sleep_s: float,
+    ts_timeout_s: float = 60.0,
+    cache_read_timeout_s: float = 8.0,
+) -> Tuple[pd.DataFrame, bool]:
+    if pro is None:
+        return pd.DataFrame(), False
+    _ensure_dir(cache_dir)
+    p = _cache_path_cyqperf(cache_dir, market, code)
+    start_dt = pd.to_datetime(str(start_date), format="%Y%m%d", errors="coerce")
+    end_dt = pd.to_datetime(str(end_date), format="%Y%m%d", errors="coerce")
+    if pd.notna(start_dt):
+        start_dt = start_dt.normalize()
+    if pd.notna(end_dt):
+        end_dt = end_dt.normalize()
+
+    if (not refresh) and os.path.exists(p):
+        try:
+            df = _run_with_timeout(float(cache_read_timeout_s or 0.0), pd.read_csv, p)
+            if df is not None and not df.empty and "datetime" in df.columns:
+                df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+                df["datetime"] = df["datetime"].dt.normalize()
+                df = df.dropna(subset=["datetime"]).sort_values("datetime").reset_index(drop=True)
+                need_cols = ["chip_weight_avg", "chip_winner_rate", "chip_band"]
+                ok_cols = all((c in df.columns) for c in need_cols)
+                dt_min = df["datetime"].min()
+                dt_max = df["datetime"].max()
+                ok_range = True
+                if bool(strict_range) and pd.notna(start_dt) and (pd.isna(dt_min) or dt_min > start_dt):
+                    ok_range = False
+                if pd.notna(end_dt):
+                    tol = pd.Timedelta(days=15)
+                    if pd.isna(dt_max) or dt_max < (end_dt - tol):
+                        ok_range = False
+                in_range = df
+                if pd.notna(start_dt):
+                    in_range = in_range[in_range["datetime"] >= start_dt]
+                if pd.notna(end_dt):
+                    in_range = in_range[in_range["datetime"] <= end_dt]
+                if ok_cols and ok_range and (in_range is not None) and (len(in_range) > 0):
+                    return in_range.reset_index(drop=True), True
+        except Exception:
+            pass
+
+    ts_code = _ts_code(market, code)
+    df = pd.DataFrame()
+    reason = ""
+    base_timeout_s = float(ts_timeout_s or 0.0)
+    retry_wait_s = [1.0, 2.0, 4.0]
+    for retry_idx in range(0, len(retry_wait_s) + 1):
+        try:
+            call_timeout_s = base_timeout_s
+            if retry_idx > 0 and call_timeout_s > 0:
+                call_timeout_s = min(120.0, max(10.0, call_timeout_s * (2.0 ** float(retry_idx))))
+            df = _run_with_timeout(
+                float(call_timeout_s or 0.0),
+                _fetch_cyq_perf_one,
+                ts_code=ts_code,
+                start_date=str(start_date),
+                end_date=str(end_date),
+            )
+            reason = "empty" if (df is None or df.empty) else "ok"
+        except _TimeoutError:
+            df = pd.DataFrame()
+            reason = "timeout"
+        except Exception as e:
+            df = pd.DataFrame()
+            reason = f"error:{type(e).__name__}:{e}"
+
+        if df is not None and not df.empty:
+            break
+        if retry_idx >= len(retry_wait_s):
+            break
+        wait_s = float(retry_wait_s[retry_idx])
+        if bool(_TS_DEBUG):
+            print(
+                f"DEBUG: cyqperf_retry market={int(market)} code={str(code).zfill(6)} "
+                f"retry={retry_idx+1}/{len(retry_wait_s)} wait_s={wait_s:.2f} reason={str(reason)}",
+                flush=True,
+            )
+        time.sleep(wait_s)
+
+    if df is None or df.empty:
+        print(f"ERROR: cyqperf_failed market={int(market)} code={str(code).zfill(6)} ts_code={ts_code} reason={str(reason)}", flush=True)
         return pd.DataFrame(), False
     df.to_csv(p, index=False, encoding="utf-8", compression="gzip")
     if sleep_s and sleep_s > 0:
@@ -652,6 +817,24 @@ def _signal_ok_at(i: int, data: PreparedStockData, params: StrategyParams) -> bo
             if a_wan <= 0 or (not np.isfinite(nmf)):
                 return False
             if float(nmf) / float(a_wan) < float(params.min_net_mf_ratio):
+                return False
+
+    if int(params.use_chip_features) > 0:
+        wr = float(data.chip_winner_rate[i]) if np.isfinite(data.chip_winner_rate[i]) else np.nan
+        chip_pos = float(data.chip_pos[i]) if np.isfinite(data.chip_pos[i]) else np.nan
+        chip_band = float(data.chip_band[i]) if np.isfinite(data.chip_band[i]) else np.nan
+
+        if float(params.min_winner_rate) > 0:
+            if not np.isfinite(wr) or wr < float(params.min_winner_rate):
+                return False
+        if float(params.max_winner_rate) > 0:
+            if not np.isfinite(wr) or wr > float(params.max_winner_rate):
+                return False
+        if float(params.min_chip_pos) > 0:
+            if not np.isfinite(chip_pos) or chip_pos < float(params.min_chip_pos):
+                return False
+        if float(params.max_chip_band) > 0:
+            if not np.isfinite(chip_band) or chip_band > float(params.max_chip_band):
                 return False
 
     return True
@@ -899,11 +1082,16 @@ def _build_default_grid(
     hold_max: int,
     max_gap_up_pct: float,
     use_tushare_features: int,
+    use_chip_features: int,
     min_turnover_rate: float,
     max_turnover_rate: float,
     min_volume_ratio: float,
     min_net_mf_amount: float,
     min_net_mf_ratio: float,
+    min_winner_rate: float,
+    max_winner_rate: float,
+    min_chip_pos: float,
+    max_chip_band: float,
 ) -> List[StrategyParams]:
     tp_min = float(tp_min)
     tp_max = float(tp_max)
@@ -993,11 +1181,16 @@ def _build_default_grid(
                 trend_ma_slow=int(s),
                 trend_ma_long=int(l),
                 use_tushare_features=int(center.use_tushare_features if center is not None else use_tushare_features),
+                use_chip_features=int(center.use_chip_features if center is not None else use_chip_features),
                 min_turnover_rate=float(center.min_turnover_rate if center is not None else min_turnover_rate),
                 max_turnover_rate=float(center.max_turnover_rate if center is not None else max_turnover_rate),
                 min_volume_ratio=float(center.min_volume_ratio if center is not None else min_volume_ratio),
                 min_net_mf_amount=float(center.min_net_mf_amount if center is not None else min_net_mf_amount),
                 min_net_mf_ratio=float(center.min_net_mf_ratio if center is not None else min_net_mf_ratio),
+                min_winner_rate=float(center.min_winner_rate if center is not None else min_winner_rate),
+                max_winner_rate=float(center.max_winner_rate if center is not None else max_winner_rate),
+                min_chip_pos=float(center.min_chip_pos if center is not None else min_chip_pos),
+                max_chip_band=float(center.max_chip_band if center is not None else max_chip_band),
             )
         )
     return grid
@@ -1110,6 +1303,40 @@ def _debug_signal_rejections_one(
                     out["nmf_ratio_lt"] = out.get("nmf_ratio_lt", 0) + 1
                     continue
 
+        if int(params.use_chip_features) > 0:
+            wr = float(data.chip_winner_rate[i]) if np.isfinite(data.chip_winner_rate[i]) else np.nan
+            chip_pos = float(data.chip_pos[i]) if np.isfinite(data.chip_pos[i]) else np.nan
+            chip_band = float(data.chip_band[i]) if np.isfinite(data.chip_band[i]) else np.nan
+
+            if float(params.min_winner_rate) > 0:
+                if not np.isfinite(wr):
+                    out["winner_nan"] = out.get("winner_nan", 0) + 1
+                    continue
+                if wr < float(params.min_winner_rate):
+                    out["winner_lt"] = out.get("winner_lt", 0) + 1
+                    continue
+            if float(params.max_winner_rate) > 0:
+                if not np.isfinite(wr):
+                    out["winner_nan"] = out.get("winner_nan", 0) + 1
+                    continue
+                if wr > float(params.max_winner_rate):
+                    out["winner_gt"] = out.get("winner_gt", 0) + 1
+                    continue
+            if float(params.min_chip_pos) > 0:
+                if not np.isfinite(chip_pos):
+                    out["chip_pos_nan"] = out.get("chip_pos_nan", 0) + 1
+                    continue
+                if chip_pos < float(params.min_chip_pos):
+                    out["chip_pos_lt"] = out.get("chip_pos_lt", 0) + 1
+                    continue
+            if float(params.max_chip_band) > 0:
+                if not np.isfinite(chip_band):
+                    out["chip_band_nan"] = out.get("chip_band_nan", 0) + 1
+                    continue
+                if chip_band > float(params.max_chip_band):
+                    out["chip_band_gt"] = out.get("chip_band_gt", 0) + 1
+                    continue
+
         passes += 1
 
     out["checked"] = int(checks)
@@ -1171,6 +1398,8 @@ def preload_stock_data(
     fetch_sleep: float,
     ts_refresh_cache: bool,
     ts_fetch_sleep: float,
+    chip_refresh_cache: bool,
+    chip_fetch_sleep: float,
     min_date: str,
     max_date: str,
     params_for_indicators: StrategyParams,
@@ -1186,8 +1415,12 @@ def preload_stock_data(
     daily_cache_miss = 0
     ts_cache_hit = 0
     ts_cache_miss = 0
+    chip_cache_hit = 0
+    chip_cache_miss = 0
     ts_ok = 0
     ts_empty = 0
+    chip_ok = 0
+    chip_empty = 0
     ts_fail_merge = 0
     ts_cover_turnover_sum = 0.0
     ts_cover_vr_sum = 0.0
@@ -1220,7 +1453,8 @@ def preload_stock_data(
                         print(f"DEBUG: ts_cache_files={int(ts_files)}/{len(stocks)}", flush=True)
                 if bool(debug):
                     print(
-                        f"DEBUG: cache daily_hit={daily_cache_hit} daily_miss={daily_cache_miss} ts_hit={ts_cache_hit} ts_miss={ts_cache_miss}",
+                        f"DEBUG: cache daily_hit={daily_cache_hit} daily_miss={daily_cache_miss} "
+                        f"ts_hit={ts_cache_hit} ts_miss={ts_cache_miss} chip_hit={chip_cache_hit} chip_miss={chip_cache_miss}",
                         flush=True,
                     )
             t0 = time.time()
@@ -1293,6 +1527,47 @@ def preload_stock_data(
                 for c in ["turnover_rate", "volume_ratio", "net_mf_amount", "up_limit", "down_limit"]:
                     if c not in df.columns:
                         df[c] = np.nan
+
+            chip_ran = False
+            chip_used_cache = False
+            chip_has_data = False
+            if int(params_for_indicators.use_chip_features) > 0 and pro is not None:
+                chip_ran = True
+                t4 = time.time()
+                df_chip, chip_used_cache = load_or_fetch_cyq_perf(
+                    cache_dir=cache_dir,
+                    market=int(s.market),
+                    code=str(s.code),
+                    start_date=str(pd.to_datetime(min_date).strftime("%Y%m%d")),
+                    end_date=str(pd.to_datetime(max_date).strftime("%Y%m%d")),
+                    strict_range=bool(strict_range),
+                    refresh=bool(chip_refresh_cache),
+                    sleep_s=float(chip_fetch_sleep),
+                    ts_timeout_s=float(ts_timeout_s or 0.0),
+                    cache_read_timeout_s=float(cache_read_timeout_s or 0.0),
+                )
+                t5 = time.time()
+                if bool(debug) and (t5 - t4) >= 3.0:
+                    print(
+                        f"DEBUG: slow_cyqperf market={int(s.market)} code={str(s.code).zfill(6)} cache={int(bool(chip_used_cache))} elapsed_s={(t5 - t4):.2f}",
+                        flush=True,
+                    )
+                if df_chip is not None and not df_chip.empty:
+                    df = df.merge(df_chip, on="datetime", how="left")
+                    chip_has_data = True
+                else:
+                    for c in ["chip_weight_avg", "chip_winner_rate", "chip_band", "chip_cost_5pct", "chip_cost_50pct", "chip_cost_95pct"]:
+                        if c not in df.columns:
+                            df[c] = np.nan
+            else:
+                for c in ["chip_weight_avg", "chip_winner_rate", "chip_band", "chip_cost_5pct", "chip_cost_50pct", "chip_cost_95pct"]:
+                    if c not in df.columns:
+                        df[c] = np.nan
+
+            w = df["chip_weight_avg"].astype(float) if "chip_weight_avg" in df.columns else pd.Series(np.nan, index=df.index)
+            close_s = df["close"].astype(float)
+            df["chip_pos"] = np.where((w > 0) & np.isfinite(w) & np.isfinite(close_s), close_s / w - 1.0, np.nan)
+
             df = df.dropna(subset=["datetime", "open", "close", "high", "low", "vol", "ma_fast", "ma_slow", "ma_long", "ma_vol"]).reset_index(
                 drop=True
             )
@@ -1308,6 +1583,15 @@ def preload_stock_data(
                     ts_ok += 1
                 else:
                     ts_empty += 1
+            if bool(chip_ran):
+                if bool(chip_used_cache):
+                    chip_cache_hit += 1
+                else:
+                    chip_cache_miss += 1
+                if bool(chip_has_data):
+                    chip_ok += 1
+                else:
+                    chip_empty += 1
             td = pd.to_datetime(df["datetime"]).dt.strftime("%Y-%m-%d").astype(str).values
             if "amount" not in df.columns:
                 df["amount"] = df["close"].astype(float).values * df["vol"].astype(float).values
@@ -1342,6 +1626,10 @@ def preload_stock_data(
                     net_mf_amount=df["net_mf_amount"].astype(float).values,
                     up_limit=df["up_limit"].astype(float).values,
                     down_limit=df["down_limit"].astype(float).values,
+                    chip_weight_avg=df["chip_weight_avg"].astype(float).values,
+                    chip_winner_rate=df["chip_winner_rate"].astype(float).values,
+                    chip_band=df["chip_band"].astype(float).values,
+                    chip_pos=df["chip_pos"].astype(float).values,
                 )
             )
     if bool(debug) and int(params_for_indicators.use_tushare_features) > 0:
@@ -1352,7 +1640,10 @@ def preload_stock_data(
             f"cover(turnover/vr/nmf/ul/dl)={ts_cover_turnover_sum/denom:.3f}/{ts_cover_vr_sum/denom:.3f}/{ts_cover_nmf_sum/denom:.3f}/{ts_cover_ul_sum/denom:.3f}/{ts_cover_dl_sum/denom:.3f}"
         )
     if bool(debug):
-        print(f"DEBUG: cache_summary daily_hit={daily_cache_hit} daily_miss={daily_cache_miss} ts_hit={ts_cache_hit} ts_miss={ts_cache_miss}")
+        print(
+            f"DEBUG: cache_summary daily_hit={daily_cache_hit} daily_miss={daily_cache_miss} "
+            f"ts_hit={ts_cache_hit} ts_miss={ts_cache_miss} chip_hit={chip_cache_hit} chip_miss={chip_cache_miss}"
+        )
         print(
             "DEBUG: preload_skips "
             f"daily_empty={skip_daily_empty} prepare_empty={skip_prepare_empty} missing_ind={skip_missing_indicators} too_short_after_dropna={skip_too_short_after_dropna}",
@@ -1417,7 +1708,7 @@ def evaluate_params(
         feasible = 0.0
 
     base_score = float(m.get("score", -1e9))
-    m["score"] = (base_score - float(penalty)) if feasible > 0.0 else (-1e9 - float(penalty))
+    m["score"] = base_score - float(penalty)
     m["penalty"] = float(penalty)
     m["feasible"] = float(feasible)
     df = pd.DataFrame([t.__dict__ for t in all_trades]) if all_trades else pd.DataFrame()
@@ -1440,11 +1731,16 @@ def format_params(p: StrategyParams) -> Dict[str, float]:
         "trend_ma_slow": float(p.trend_ma_slow),
         "trend_ma_long": float(p.trend_ma_long),
         "use_tushare_features": float(p.use_tushare_features),
+        "use_chip_features": float(p.use_chip_features),
         "min_turnover_rate": float(p.min_turnover_rate),
         "max_turnover_rate": float(p.max_turnover_rate),
         "min_volume_ratio": float(p.min_volume_ratio),
         "min_net_mf_amount": float(p.min_net_mf_amount),
         "min_net_mf_ratio": float(p.min_net_mf_ratio),
+        "min_winner_rate": float(p.min_winner_rate),
+        "max_winner_rate": float(p.max_winner_rate),
+        "min_chip_pos": float(p.min_chip_pos),
+        "max_chip_band": float(p.max_chip_band),
     }
 
 
@@ -1464,11 +1760,16 @@ def _params_from_args(args: argparse.Namespace) -> StrategyParams:
         trend_ma_slow=int(args.trend_ma_slow),
         trend_ma_long=int(args.trend_ma_long),
         use_tushare_features=1 if bool(args.use_tushare_features) else 0,
+        use_chip_features=1 if bool(args.use_chip_features) else 0,
         min_turnover_rate=float(args.turnover_min),
         max_turnover_rate=float(args.turnover_max),
         min_volume_ratio=float(args.vr_min),
         min_net_mf_amount=float(args.netmf_min),
         min_net_mf_ratio=float(args.netmf_ratio_min),
+        min_winner_rate=float(args.winner_min),
+        max_winner_rate=float(args.winner_max),
+        min_chip_pos=float(args.chip_pos_min),
+        max_chip_band=float(args.chip_band_max),
     )
 
 
@@ -1496,11 +1797,16 @@ def _try_load_params_from_topk_csv(path: str) -> Optional[StrategyParams]:
             trend_ma_slow=int(float(row.get("trend_ma_slow"))),
             trend_ma_long=int(float(row.get("trend_ma_long"))),
             use_tushare_features=int(float(row.get("use_tushare_features", 0.0))),
+            use_chip_features=int(float(row.get("use_chip_features", 0.0))),
             min_turnover_rate=float(row.get("min_turnover_rate", 0.0)),
             max_turnover_rate=float(row.get("max_turnover_rate", 0.0)),
             min_volume_ratio=float(row.get("min_volume_ratio", 0.0)),
             min_net_mf_amount=float(row.get("min_net_mf_amount", 0.0)),
             min_net_mf_ratio=float(row.get("min_net_mf_ratio", 0.0)),
+            min_winner_rate=float(row.get("min_winner_rate", 0.0)),
+            max_winner_rate=float(row.get("max_winner_rate", 0.0)),
+            min_chip_pos=float(row.get("min_chip_pos", 0.0)),
+            max_chip_band=float(row.get("max_chip_band", 0.0)),
         )
     except Exception:
         return None
@@ -1522,6 +1828,9 @@ def scan_candidates(prepared: List[PreparedStockData], params: StrategyParams, l
         tr = float(d.turnover_rate[i]) if np.isfinite(d.turnover_rate[i]) else np.nan
         vr = float(d.volume_ratio[i]) if np.isfinite(d.volume_ratio[i]) else np.nan
         nmf = float(d.net_mf_amount[i]) if np.isfinite(d.net_mf_amount[i]) else np.nan
+        wr = float(d.chip_winner_rate[i]) if np.isfinite(d.chip_winner_rate[i]) else np.nan
+        chip_pos = float(d.chip_pos[i]) if np.isfinite(d.chip_pos[i]) else np.nan
+        chip_band = float(d.chip_band[i]) if np.isfinite(d.chip_band[i]) else np.nan
         pb = float(pullback) if np.isfinite(pullback) else 0.0
         vr_vol = float(vol_ratio) if np.isfinite(vol_ratio) else 1.0
         close_ma = (float(d.close[i]) / float(d.ma_fast[i]) - 1.0) if float(d.ma_fast[i]) > 0 else 0.0
@@ -1531,8 +1840,11 @@ def scan_candidates(prepared: List[PreparedStockData], params: StrategyParams, l
             - abs(vr_vol - 0.8) * 30.0
             + (float(nmf) / 200.0 if np.isfinite(nmf) else 0.0)
             + (float(vr) * 5.0 if np.isfinite(vr) else 0.0)
+            + ((float(wr) - 10.0) * 0.25 if np.isfinite(wr) else 0.0)
+            - (abs(float(chip_pos)) * 60.0 if np.isfinite(chip_pos) else 0.0)
+            - (float(chip_band) * 20.0 if np.isfinite(chip_band) else 0.0)
         )
-        reason = f"趋势>MA 回踩={pb:.3%} 缩量比={vr_vol:.2f}"
+        reason = f"趋势>MA 回踩={pb:.3%} 缩量比={vr_vol:.2f} 胜率={wr:.1f}% 成本偏离={chip_pos:.2%} 集中度={chip_band:.2f}"
         rows.append(
             {
                 "symbol": d.stock.code,
@@ -1549,6 +1861,9 @@ def scan_candidates(prepared: List[PreparedStockData], params: StrategyParams, l
                 "turnover_rate": float(tr) if np.isfinite(tr) else np.nan,
                 "volume_ratio": float(vr) if np.isfinite(vr) else np.nan,
                 "net_mf_amount": float(nmf) if np.isfinite(nmf) else np.nan,
+                "chip_winner_rate": float(wr) if np.isfinite(wr) else np.nan,
+                "chip_pos": float(chip_pos) if np.isfinite(chip_pos) else np.nan,
+                "chip_band": float(chip_band) if np.isfinite(chip_band) else np.nan,
             }
         )
     df = pd.DataFrame(rows)
@@ -1568,7 +1883,7 @@ def main() -> None:
     parser.add_argument("--start-year", type=int, default=2020)
     parser.add_argument("--end-year", type=int, default=pd.Timestamp.today().year - 1)
     parser.add_argument("--max-stocks", type=int, default=300)
-    parser.add_argument("--cache-dir", type=str, default=os.path.join(_script_dir, "_cache_daily"))
+    parser.add_argument("--cache-dir", type=str, default=os.path.join("backend", "scripts", "赚钱的策略", "_cache_daily"))
     parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument("--fetch-sleep", type=float, default=0.0)
     parser.add_argument("--cache-strict-range", action="store_true")
@@ -1586,6 +1901,14 @@ def main() -> None:
     parser.add_argument("--vr-min", type=float, default=0.0)
     parser.add_argument("--netmf-min", type=float, default=0.0)
     parser.add_argument("--netmf-ratio-min", type=float, default=0.0)
+
+    parser.add_argument("--use-chip-features", action="store_true")
+    parser.add_argument("--chip-refresh-cache", action="store_true")
+    parser.add_argument("--chip-fetch-sleep", type=float, default=0.0)
+    parser.add_argument("--winner-min", type=float, default=0.0)
+    parser.add_argument("--winner-max", type=float, default=0.0)
+    parser.add_argument("--chip-pos-min", type=float, default=0.0)
+    parser.add_argument("--chip-band-max", type=float, default=0.0)
 
     parser.add_argument("--pullback-min", type=float, default=-0.03)
     parser.add_argument("--pullback-max", type=float, default=0.01)
@@ -1612,8 +1935,8 @@ def main() -> None:
     parser.add_argument("--hold-min", type=int, default=1)
     parser.add_argument("--hold-max", type=int, default=5)
     parser.add_argument("--min-trades", type=int, default=200)
-    parser.add_argument("--target-win-rate", type=float, default=0.75)
-    parser.add_argument("--min-profit-factor", type=float, default=1.0)
+    parser.add_argument("--target-win-rate", type=float, default=0.0)
+    parser.add_argument("--min-profit-factor", type=float, default=0.0)
     parser.add_argument("--max-abs-min-ret", type=float, default=6.0)
     parser.add_argument("--max-abs-avg-loss-ret", type=float, default=2.8)
     parser.add_argument("--max-abs-worst-mae", type=float, default=5.0)
@@ -1670,7 +1993,9 @@ def main() -> None:
     print("均衡短持策略")
     print(f"mode={args.mode} tdx_endpoint={connected_endpoint()}")
     print(f"stocks={len(stocks)} cache_dir={args.cache_dir} refresh_cache={bool(args.refresh_cache)}")
-    print(f"use_tushare_features={bool(args.use_tushare_features)} pro={'ok' if pro is not None else 'none'}")
+    print(
+        f"use_tushare_features={bool(args.use_tushare_features)} use_chip_features={bool(args.use_chip_features)} pro={'ok' if pro is not None else 'none'}"
+    )
     print(pd.Series(format_params(params)).to_string())
     print("=" * 60)
 
@@ -1681,6 +2006,8 @@ def main() -> None:
         fetch_sleep=float(args.fetch_sleep),
         ts_refresh_cache=bool(args.ts_refresh_cache),
         ts_fetch_sleep=float(args.ts_fetch_sleep),
+        chip_refresh_cache=bool(args.chip_refresh_cache),
+        chip_fetch_sleep=float(args.chip_fetch_sleep),
         min_date=str(min_date),
         max_date=str(max_date),
         params_for_indicators=params,
@@ -1783,11 +2110,16 @@ def main() -> None:
                 hold_max=int(args.hold_max),
                 max_gap_up_pct=float(args.max_gap_up_pct),
                 use_tushare_features=1 if bool(args.use_tushare_features) else 0,
+                use_chip_features=1 if bool(args.use_chip_features) else 0,
                 min_turnover_rate=float(args.turnover_min),
                 max_turnover_rate=float(args.turnover_max),
                 min_volume_ratio=float(args.vr_min),
                 min_net_mf_amount=float(args.netmf_min),
                 min_net_mf_ratio=float(args.netmf_ratio_min),
+                min_winner_rate=float(args.winner_min),
+                max_winner_rate=float(args.winner_max),
+                min_chip_pos=float(args.chip_pos_min),
+                max_chip_band=float(args.chip_band_max),
             )
             print("-" * 60)
             print(f"第{it+1}轮参数搜索：候选={len(grid)} refine={refine}")
