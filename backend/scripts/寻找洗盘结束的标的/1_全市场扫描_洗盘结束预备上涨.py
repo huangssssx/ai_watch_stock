@@ -198,6 +198,8 @@ def _add_group_indicators(df: pd.DataFrame) -> pd.DataFrame:
  
     df["vol_ma10_prev"] = g["vol"].transform(lambda s: s.rolling(10, min_periods=10).mean().shift(1))
     df["vol_ma30_prev"] = g["vol"].transform(lambda s: s.rolling(30, min_periods=30).mean().shift(1))
+    df["vol_ratio10"] = df["vol"] / df["vol_ma10_prev"].replace(0, np.nan)
+    df["vol_dry_ratio"] = df["vol_ma10_prev"] / df["vol_ma30_prev"].replace(0, np.nan)
     df["ret5"] = g["close"].transform(lambda s: s.pct_change(5))
     df["ret20"] = g["close"].transform(lambda s: s.pct_change(20))
     df["rsi14"] = g["close"].transform(lambda s: _calc_rsi_wilder(s, 14))
@@ -251,6 +253,8 @@ def _score_washout_end(row: pd.Series) -> tuple[float, str]:
     vol = float(row.get("vol", np.nan))
     vol_ma10_prev = float(row.get("vol_ma10_prev", np.nan))
     vol_ma30_prev = float(row.get("vol_ma30_prev", np.nan))
+    vol_ratio10 = row.get("vol_ratio10", np.nan)
+    vol_dry_ratio = row.get("vol_dry_ratio", np.nan)
     atr14_pct = float(row.get("atr14_pct", np.nan))
     atr14_pct_med10_prev = float(row.get("atr14_pct_med10_prev", np.nan))
     rsi14 = float(row.get("rsi14", np.nan))
@@ -294,10 +298,13 @@ def _score_washout_end(row: pd.Series) -> tuple[float, str]:
     if np.isfinite(vol_ma10_prev) and vol_ma10_prev > 0 and np.isfinite(vol) and vol >= vol_ma10_prev * 1.5:
         score += 10
         reasons.append("放量确认")
-    if np.isfinite(vol_ma30_prev) and vol_ma30_prev > 0 and np.isfinite(vol_ma10_prev):
-        if vol_ma10_prev / vol_ma30_prev <= 0.85:
-            score += 6
-            reasons.append("缩量洗盘")
+    try:
+        vdry = float(vol_dry_ratio)
+    except Exception:
+        vdry = np.nan
+    if np.isfinite(vdry) and vdry <= 0.85:
+        score += 6
+        reasons.append("缩量洗盘")
  
     if np.isfinite(atr14_pct) and atr14_pct <= 0.06:
         score += 6
@@ -313,6 +320,11 @@ def _score_washout_end(row: pd.Series) -> tuple[float, str]:
         vr = float(volume_ratio)
     except Exception:
         vr = np.nan
+    if not np.isfinite(vr):
+        try:
+            vr = float(vol_ratio10)
+        except Exception:
+            vr = np.nan
     if np.isfinite(vr) and vr >= 1.4:
         score += 6
         reasons.append("量比偏强")
@@ -388,6 +400,9 @@ def _prepare_latest_candidates(
     if daily_basic is not None and not daily_basic.empty:
         daily_basic = daily_basic.copy()
         daily_basic["ts_code"] = daily_basic["ts_code"].astype(str).str.strip()
+        for c in ("turnover_rate", "turnover_rate_f", "volume_ratio", "circ_mv", "total_mv"):
+            if c in daily_basic.columns:
+                daily_basic[c] = pd.to_numeric(daily_basic[c], errors="coerce")
         latest = latest.merge(daily_basic, on=["ts_code", "trade_date"], how="left")
  
     latest["net_mf_amount"] = np.nan
@@ -439,7 +454,9 @@ def main() -> None:
     parser.add_argument("--min-list-days", type=int, default=200)
     parser.add_argument("--top-industries", type=int, default=12)
     parser.add_argument("--min-industry-stocks", type=int, default=12)
-    parser.add_argument("--require-hot-industry", action="store_true")
+    parser.add_argument("--hot-industry", dest="require_hot_industry", action="store_true")
+    parser.add_argument("--no-hot-industry", dest="require_hot_industry", action="store_false")
+    parser.set_defaults(require_hot_industry=True)
     parser.add_argument("--sleep-s", type=float, default=0.12)
     parser.add_argument("--max-results", type=int, default=120)
     parser.add_argument("--out", type=str, default="")
@@ -501,6 +518,8 @@ def main() -> None:
         "name",
         "industry",
         "market",
+        "industry_hot",
+        "ind_ret5_rank",
         "trade_date",
         "score",
         "reason",
@@ -509,6 +528,8 @@ def main() -> None:
         "amount",
         "turnover_rate",
         "volume_ratio",
+        "vol_ratio10",
+        "vol_dry_ratio",
         "ret5",
         "ret20",
         "atr14_pct",
