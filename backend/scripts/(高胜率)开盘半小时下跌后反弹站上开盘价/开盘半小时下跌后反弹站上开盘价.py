@@ -1,6 +1,7 @@
 """
 全市场扫描：开盘前 30 分钟先下跌，随后反弹并稳稳站上开盘价（强主力扫货信号）
 10:20–10:40 之间跑一遍
+对结果标的进行排查：先看所属板块情况，再看当前量比
 典型用法（盘中任意时刻运行，asof_time 默认取当前时间）：
 python3 "backend/scripts/开盘半小时下跌后反弹站上开盘价.py"
 
@@ -191,6 +192,9 @@ def _detect_signal(
     max_cross_minutes: int,
     hold_tolerance_pct: float,
     min_hold_minutes: int,
+    enable_after_cross_support: bool,
+    min_after_cross_up_dn_vol_ratio: float,
+    max_after_cross_down_vol_share: float,
 ) -> Optional[Dict]:
     if df_1m is None or df_1m.empty:
         return None
@@ -260,6 +264,31 @@ def _detect_signal(
     if min_close_after_cross < hold_line:
         return None
 
+    if bool(enable_after_cross_support):
+        if "vol" not in df_1m.columns:
+            return None
+        ac = after_cross.copy()
+        ac["_o"] = pd.to_numeric(ac["open"], errors="coerce")
+        ac["_c"] = pd.to_numeric(ac["close"], errors="coerce")
+        ac["_v"] = pd.to_numeric(ac["vol"], errors="coerce")
+        ac = ac.dropna(subset=["_o", "_c", "_v"])
+        ac = ac[ac["_v"] > 0].copy()
+        if ac.empty:
+            return None
+        up = ac[ac["_c"] >= ac["_o"]]
+        dn = ac[ac["_c"] < ac["_o"]]
+        up_vol = float(pd.to_numeric(up["_v"], errors="coerce").sum() or 0.0)
+        dn_vol = float(pd.to_numeric(dn["_v"], errors="coerce").sum() or 0.0)
+        denom = up_vol + dn_vol
+        if denom <= 0:
+            return None
+        up_dn_ratio = up_vol / (dn_vol + 1e-12)
+        dn_share = dn_vol / (denom + 1e-12)
+        if float(min_after_cross_up_dn_vol_ratio) > 0 and up_dn_ratio < float(min_after_cross_up_dn_vol_ratio):
+            return None
+        if 0 < float(max_after_cross_down_vol_share) < 1 and dn_share > float(max_after_cross_down_vol_share):
+            return None
+
     last_close = float(pd.to_numeric(df_1m["close"].iloc[-1], errors="coerce") or 0.0)
     if last_close <= 0:
         return None
@@ -295,14 +324,17 @@ def main() -> int:
     parser.add_argument("--exclude-st", action="store_true", help="剔除名称包含 ST 的标的")
     parser.add_argument("--max-stocks", type=int, default=0, help="最多扫描多少只（0=不限制）")
 
-    parser.add_argument("--prefilter-pct-from-open", type=float, default=0.2, help="快照预筛：当前价相对开盘涨幅下限(%)")
-    parser.add_argument("--first30-drop-pct", type=float, default=0.4, help="前30分钟最低价相对开盘的跌幅下限(%)")
-    parser.add_argument("--first30-close-below-open-pct", type=float, default=0.05, help="前30分钟结束时(≈09:59)收盘低于开盘的跌幅下限(%)")
-    parser.add_argument("--min-rebound-pct", type=float, default=0.9, help="截至时刻相对开盘涨幅下限(%)")
-    parser.add_argument("--cross-above-open-pct", type=float, default=0.1, help="站上开盘价的阈值(%)")
+    parser.add_argument("--prefilter-pct-from-open", type=float, default=0.2, help="快照预筛：当前价相对开盘涨幅下限(%%)")
+    parser.add_argument("--first30-drop-pct", type=float, default=0.4, help="前30分钟最低价相对开盘的跌幅下限(%%)")
+    parser.add_argument("--first30-close-below-open-pct", type=float, default=0.05, help="前30分钟结束时(≈09:59)收盘低于开盘的跌幅下限(%%)")
+    parser.add_argument("--min-rebound-pct", type=float, default=0.9, help="截至时刻相对开盘涨幅下限(%%)")
+    parser.add_argument("--cross-above-open-pct", type=float, default=0.1, help="站上开盘价的阈值(%%)")
     parser.add_argument("--max-cross-minutes", type=int, default=45, help="必须在开盘后多少分钟内站上开盘价")
-    parser.add_argument("--hold-tolerance-pct", type=float, default=0.03, help="站上后允许回踩开盘价的容忍度(%)")
-    parser.add_argument("--min-hold-minutes", type=int, default=20, help="最近 N 分钟需要持续站稳开盘价")
+    parser.add_argument("--hold-tolerance-pct", type=float, default=0.03, help="站上后允许回踩开盘价的容忍度(%%)")
+    parser.add_argument("--min-hold-minutes", type=int, default=10, help="最近 N 分钟需要持续站稳开盘价")
+    parser.add_argument("--enable-after-cross-support", action="store_true", help="启用站上后承接过滤")
+    parser.add_argument("--min-after-cross-up-dn-vol-ratio", type=float, default=1.5, help="站上后上涨分钟量/下跌分钟量下限")
+    parser.add_argument("--max-after-cross-down-vol-share", type=float, default=0.4, help="站上后下跌分钟量占比上限(0-1)")
 
     parser.add_argument("--quote-chunk-size", type=int, default=80, help="快照请求分块大小")
     parser.add_argument("--quote-sleep-s", type=float, default=0.02, help="快照分块间隔(秒)")
@@ -384,6 +416,9 @@ def main() -> int:
                 max_cross_minutes=int(args.max_cross_minutes),
                 hold_tolerance_pct=float(args.hold_tolerance_pct),
                 min_hold_minutes=int(args.min_hold_minutes),
+                enable_after_cross_support=bool(args.enable_after_cross_support),
+                min_after_cross_up_dn_vol_ratio=float(args.min_after_cross_up_dn_vol_ratio),
+                max_after_cross_down_vol_share=float(args.max_after_cross_down_vol_share),
             )
             if sig is not None:
                 rows.append(
