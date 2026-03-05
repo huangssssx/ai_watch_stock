@@ -5,40 +5,56 @@ import time
 import tushare as ts
 
 
-def _wrap_query_with_failover(pro, urls):
-    urls = [u for u in urls if u]
-    seen = set()
-    uniq_urls = []
-    for u in urls:
-        if u not in seen:
-            seen.add(u)
-            uniq_urls.append(u)
-    urls = uniq_urls
-
+def _wrap_query_with_failover(pro, urls, failover_on_empty: bool):
     orig_query = pro.query
 
     def query(api_name, fields="", **kwargs):
+        url = str(urls[0]) if urls else ""
+        if not url:
+            raise RuntimeError(f"tushare_request_failed api={api_name} url=EMPTY")
+
+        try:
+            max_retries = int(os.getenv("TUSHARE_RETRY_MAX", "3"))
+        except Exception:
+            max_retries = 3
+        max_retries = max(1, max_retries)
+
+        try:
+            base_sleep_s = float(os.getenv("TUSHARE_RETRY_BASE_S", "0.8"))
+        except Exception:
+            base_sleep_s = 0.8
+        base_sleep_s = max(0.0, base_sleep_s)
+
         last_err = None
-        for url in urls:
+        for i in range(max_retries):
             try:
                 pro._DataApi__http_url = url
                 res = orig_query(api_name, fields=fields, **kwargs)
-                if getattr(res, "empty", False):
-                    last_err = ValueError(f"empty_response url={url} api={api_name}")
-                    continue
+                if bool(failover_on_empty) and getattr(res, "empty", False):
+                    raise ValueError(f"empty_response url={url} api={api_name}")
                 return res
             except Exception as e:
                 last_err = e
+                if i < max_retries - 1 and base_sleep_s > 0:
+                    time.sleep(base_sleep_s * (2**i))
                 continue
-        raise last_err
+        raise RuntimeError(f"tushare_request_failed api={api_name} url={url} retries={max_retries} err={type(last_err).__name__}:{last_err}")
 
     pro.query = query
 
 
 try:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(override=False)
+    except Exception:
+        pass
+
     token = os.getenv("TUSHARE_TOKEN", "f5187841c7d5663c97cd3a4125214b8fa7f7866fa32fb2ea93e9bebfebba")
     ts.set_token(token)
     pro = ts.pro_api(token)
+    pro._DataApi__token = token
 
     primary_url = os.getenv("TUSHARE_HTTP_URL", "http://lianghua.nanyangqiankun.top")
     backup_url = os.getenv("TUSHARE_OFFICIAL_HTTP_URL", "http://api.waditu.com")
@@ -47,7 +63,8 @@ try:
         pro._DataApi__timeout = float(os.getenv("TUSHARE_TIMEOUT", "30"))
     except Exception:
         pass
-    _wrap_query_with_failover(pro, [primary_url, backup_url])
+    failover_on_empty = str(os.getenv("TUSHARE_FAILOVER_ON_EMPTY", "0")).strip() in ("1", "true", "True", "yes", "YES")
+    _wrap_query_with_failover(pro, [primary_url], failover_on_empty=failover_on_empty)
     
     print("Tushare client initialized successfully with custom config.")
 except Exception as e:
