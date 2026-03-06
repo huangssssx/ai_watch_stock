@@ -198,8 +198,8 @@ def _detect_signal(
 ) -> Optional[Dict]:
     if df_1m is None or df_1m.empty:
         return None
-
     try:
+
         open_start = datetime.strptime(f"{trade_date} 09:30", "%Y%m%d %H:%M")
         first30_end = datetime.strptime(f"{trade_date} 10:00", "%Y%m%d %H:%M")
     except Exception:

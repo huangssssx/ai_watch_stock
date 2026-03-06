@@ -202,6 +202,7 @@ def _recent_concentration_trend(
     anchor_peak_date: str,
     min_days: int,
     lookback_days: int,
+    max_days: int,
     min_drop_pct: float,
     min_down_ratio: float,
     min_slope: float,
@@ -220,8 +221,10 @@ def _recent_concentration_trend(
     k = max(0, int(min_days))
     if k <= 0:
         return True, {}
-    if n < k + 3:
+    min_seg = max(2, k)
+    if n < min_seg + 1:
         return False, {}
+    max_k = max(0, int(max_days))
 
     i_peak = -1
     apd = str(anchor_peak_date or "").strip()
@@ -230,26 +233,30 @@ def _recent_concentration_trend(
         if idx.size > 0:
             i_peak = int(idx[-1])
     if i_peak < 0:
-        i_peak = int(np.argmax(x[: max(1, n - k - 1)]))
-    if i_peak >= n - k - 1:
+        i_peak = int(np.argmax(x[: max(1, n - min_seg)]))
+    if i_peak >= n - min_seg:
         return False, {}
 
     lb = max(0, int(lookback_days))
     lb = min(lb, n)
     search_start = max(i_peak + 1, n - lb - 1) if lb > 0 else i_peak + 1
-    search_end = n - k - 1
+    search_end = n - min_seg
     if search_start >= search_end:
         return False, {}
 
     best_j = -1
     best_meta = None
-    best_j_any = -1
-    best_meta_any = None
     for j in range(int(search_start), int(search_end) + 1):
         if j <= i_peak or j >= n - 1:
             continue
+        if max_k > 0 and (n - j) > max_k:
+            continue
+        if n - j >= 3:
+            is_local_peak = bool(x[j] >= x[j - 1] and x[j] >= x[j + 1])
+            if not is_local_peak:
+                continue
         seg = x[j:]
-        if seg.size < k + 2:
+        if seg.size < min_seg:
             continue
         start_v = float(seg[0])
         end_v = float(seg[-1])
@@ -286,19 +293,12 @@ def _recent_concentration_trend(
             "rc_end_global_q": float(end_q) if np.isfinite(end_q) else float("nan"),
         }
 
-        is_local_peak = bool(x[j] >= x[j - 1] and x[j] >= x[j + 1])
-        if is_local_peak:
-            if j > best_j:
-                best_j = j
-                best_meta = meta
-        if j > best_j_any:
-            best_j_any = j
-            best_meta_any = meta
+        if j > best_j:
+            best_j = j
+            best_meta = meta
 
     if best_meta is not None:
         return True, best_meta
-    if best_meta_any is not None:
-        return True, best_meta_any
     return False, {}
 
 
@@ -448,6 +448,54 @@ def _not_raised_filter(daily_df: pd.DataFrame, t_date: str, max_ret_10d: float, 
         if t_pct_chg > float(max_pct_chg_t) * 100.0:
             ok = False
     return ok, {"t_close": t_close, "t_pct_chg": t_pct_chg, "ret_10d": ret_10d}
+
+
+def _rc_not_already_risen_filter(
+    daily_df: pd.DataFrame,
+    rc_start_date: str,
+    t_date: str,
+    max_ret: float,
+    max_up_days: int,
+) -> tuple[bool, dict]:
+    if daily_df is None or daily_df.empty:
+        return False, {}
+    rsd = str(rc_start_date or "").strip()
+    if not rsd or len(rsd) != 8:
+        return True, {}
+    df = daily_df.copy()
+    df["trade_date"] = df["trade_date"].astype(str).str.strip()
+    df = df[(df["trade_date"] >= rsd) & (df["trade_date"] <= str(t_date))].copy()
+    df = df.dropna(subset=["trade_date", "close"]).copy()
+    if df.empty:
+        return False, {}
+    df = df.sort_values("trade_date").reset_index(drop=True)
+
+    start_close = float(df["close"].iloc[0])
+    t_close = float(df["close"].iloc[-1])
+    rc_ret = float("nan")
+    if start_close > 0 and np.isfinite(t_close):
+        rc_ret = t_close / start_close - 1.0
+
+    up_days = 0
+    if "pct_chg" in df.columns:
+        pct = pd.to_numeric(df["pct_chg"], errors="coerce").fillna(0).to_numpy(dtype=float)
+        up_days = int(np.sum(pct > 0))
+
+    ok = True
+    if np.isfinite(rc_ret) and float(max_ret) > 0:
+        if rc_ret > float(max_ret):
+            ok = False
+    if int(max_up_days) >= 0:
+        if up_days > int(max_up_days):
+            ok = False
+
+    meta = {
+        "rc_start_close": float(start_close),
+        "rc_t_close": float(t_close),
+        "rc_ret": float(rc_ret),
+        "rc_up_days": int(up_days),
+    }
+    return ok, meta
 
 
 def _price_wave_early_filter(
@@ -624,12 +672,18 @@ def main():
     parser.add_argument("--recent-conc", dest="require_recent_conc", action="store_true")
     parser.add_argument("--no-recent-conc", dest="require_recent_conc", action="store_false")
     parser.set_defaults(require_recent_conc=True)
-    parser.add_argument("--recent-conc-days", type=int, default=5)
+    parser.add_argument("--recent-conc-days", type=int, default=2)
     parser.add_argument("--recent-conc-lookback", type=int, default=25)
+    parser.add_argument("--recent-conc-max-days", type=int, default=2)
     parser.add_argument("--recent-conc-min-drop", type=float, default=0.06)
     parser.add_argument("--recent-conc-min-down-ratio", type=float, default=0.60)
     parser.add_argument("--recent-conc-min-slope", type=float, default=0.001)
     parser.add_argument("--recent-start-min-global-q", type=float, default=0.35)
+    parser.add_argument("--rc-price-filter", dest="use_rc_price_filter", action="store_true")
+    parser.add_argument("--no-rc-price-filter", dest="use_rc_price_filter", action="store_false")
+    parser.set_defaults(use_rc_price_filter=True)
+    parser.add_argument("--rc-max-ret", type=float, default=0.10)
+    parser.add_argument("--rc-max-up-days", type=int, default=4)
     parser.add_argument("--price-wave", dest="require_price_wave", action="store_true")
     parser.add_argument("--no-price-wave", dest="require_price_wave", action="store_false")
     parser.set_defaults(require_price_wave=True)
@@ -642,6 +696,9 @@ def main():
     parser.add_argument("--pw-t-over-peak-max", type=float, default=0.03)
     parser.add_argument("--out", default="")
     args = parser.parse_args()
+    args.recent_conc_max_days = min(int(getattr(args, "recent_conc_max_days", 0) or 0), 2)
+    if int(getattr(args, "recent_conc_days", 0) or 0) > int(args.recent_conc_max_days):
+        args.recent_conc_days = int(args.recent_conc_max_days)
 
     root = _project_root()
     if root not in sys.path:
@@ -726,6 +783,7 @@ def main():
                 anchor_peak_date=str(m.get("stage2_date") or ""),
                 min_days=int(args.recent_conc_days),
                 lookback_days=int(args.recent_conc_lookback),
+                max_days=int(args.recent_conc_max_days),
                 min_drop_pct=float(args.recent_conc_min_drop),
                 min_down_ratio=float(args.recent_conc_min_down_ratio),
                 min_slope=float(args.recent_conc_min_slope),
@@ -735,14 +793,30 @@ def main():
                 continue
             m.update(rc)
 
-        need_daily = bool(args.use_rise_filter) or bool(args.require_price_wave)
+        need_daily = bool(args.use_rise_filter) or bool(args.require_price_wave) or bool(args.use_rc_price_filter)
         if need_daily:
             daily_start = str(m.get("stage2_date") or start_date)
+            if bool(args.use_rc_price_filter):
+                rsd = str(m.get("rc_start_date") or "").strip()
+                if rsd and len(rsd) == 8:
+                    daily_start = min(daily_start, rsd)
             daily_df = _fetch_daily_close(pro, ts_code=ts_code, start_date=daily_start, end_date=t_date, sleep_s=sleep_s)
         else:
             daily_df = pd.DataFrame()
 
         extra = {}
+        if bool(args.use_rc_price_filter):
+            ok, extra0 = _rc_not_already_risen_filter(
+                daily_df=daily_df,
+                rc_start_date=str(m.get("rc_start_date") or ""),
+                t_date=t_date,
+                max_ret=float(args.rc_max_ret),
+                max_up_days=int(args.rc_max_up_days),
+            )
+            if not ok:
+                continue
+            extra.update(extra0)
+
         if bool(args.use_rise_filter):
             ok, extra1 = _not_raised_filter(
                 daily_df=daily_df,
@@ -871,6 +945,8 @@ def main():
         "rc_down_ratio",
         "rc_slope",
         "rc_start_global_q",
+        "rc_ret",
+        "rc_up_days",
         "pw_dd_pct",
         "pw_rebound_pct",
         "pw_rebound_days",
