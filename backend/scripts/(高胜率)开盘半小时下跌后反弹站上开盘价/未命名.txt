@@ -1,0 +1,1239 @@
+// ==UserScript==
+// @name         猎聘列表采集助手
+// @description  自动采集猎聘搜索列表候选人信息（含全屏URL），支持翻页、断点续采与导出
+// @namespace    liepin-crawler
+// @version      0.2.1
+// @match        https://lpt.liepin.com/*
+// @match        https://lpt.liepin.com/search*
+// @match        https://lpt.liepin.com/*/search*
+// @match        file://*/*demo.html
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_listValues
+// @grant        GM_addStyle
+// ==/UserScript==
+
+(function () {
+  'use strict'
+
+  const APP = {
+    storageKey: 'liepin_crawler_state_v1',
+    schemaVersion: 2,
+  }
+
+  const isDemo = () => location.protocol === 'file:' && /demo\.html$/i.test(location.pathname)
+
+  const isTargetRoute = () => {
+    if (isDemo()) return true
+    const p = location.pathname || ''
+    if (p === '/search' || p.startsWith('/search/')) return true
+    return String(location.href || '').includes('/search')
+  }
+
+  const DefaultConfig = {
+    endPage: 100,
+    startPage: null,
+    delayMode: 'random',
+    delayFixedMs: 900,
+    delayMinMs: 700,
+    delayMaxMs: 1400,
+    popupTimeoutMs: 25000,
+    pageTimeoutMs: 25000,
+    retryOpenPopup: 1,
+    retryNextPage: 2,
+    perPageLimit: 0,
+  }
+
+  const StateEnum = {
+    IDLE: 'IDLE',
+    RUNNING: 'RUNNING',
+    PAUSED: 'PAUSED',
+    STOPPING: 'STOPPING',
+    DONE: 'DONE',
+  }
+
+  const nowIso = () => new Date().toISOString()
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+  const normalizeSpace = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
+
+  const q = (sel, root = document) => (root ? root.querySelector(sel) : null)
+  const qa = (sel, root = document) => (root ? Array.from(root.querySelectorAll(sel)) : [])
+
+  const getText = (sel, root = document) => normalizeSpace(q(sel, root)?.textContent || '')
+
+  const normalizeTextBlock = (s) =>
+    String(s ?? '')
+      .replace(/\r/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n[ \t]+/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+
+  const toAbsUrl = (u) => {
+    const s = String(u ?? '').trim()
+    if (!s) return ''
+    try {
+      return new URL(s, location.href).toString()
+    } catch {
+      return s
+    }
+  }
+
+  const hasGM = () => typeof GM_getValue === 'function' && typeof GM_setValue === 'function'
+
+  const kvGet = async (k, defVal) => {
+    if (hasGM()) return GM_getValue(k, defVal)
+    try {
+      const raw = localStorage.getItem(k)
+      return raw ? JSON.parse(raw) : defVal
+    } catch {
+      return defVal
+    }
+  }
+
+  const kvSet = async (k, v) => {
+    if (hasGM()) return GM_setValue(k, v)
+    localStorage.setItem(k, JSON.stringify(v))
+  }
+
+  const kvDel = async (k) => {
+    if (hasGM()) return GM_deleteValue(k)
+    localStorage.removeItem(k)
+  }
+
+  const addStyle = (css) => {
+    if (typeof GM_addStyle === 'function') return GM_addStyle(css)
+    const el = document.createElement('style')
+    el.textContent = css
+    document.head.appendChild(el)
+  }
+
+  const waitFor = async (predicate, timeoutMs, intervalMs = 120) => {
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+      if (predicate()) return true
+      await sleep(intervalMs)
+    }
+    return false
+  }
+
+  const waitForElement = async (selector, timeoutMs, root = document) => {
+    const ok = await waitFor(() => !!q(selector, root), timeoutMs)
+    return ok ? q(selector, root) : null
+  }
+
+  const waitForTextMatch = async (root, regex, timeoutMs) => {
+    return waitFor(() => regex.test(root?.textContent || ''), timeoutMs)
+  }
+
+  const safeClick = (el) => {
+    if (!el) return false
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'center' })
+    } catch {}
+    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    el.click()
+    return true
+  }
+
+  const parseNumber = (s) => {
+    const m = String(s ?? '').match(/(\d+)/)
+    return m ? Number(m[1]) : null
+  }
+
+  const extractResumeIdFromUrl = (u) => {
+    try {
+      const url = new URL(u)
+      return url.searchParams.get('resIdEncode') || ''
+    } catch {
+      return ''
+    }
+  }
+
+  const getDelayMs = (cfg) => {
+    if (cfg.delayMode === 'fixed') return Math.max(0, Number(cfg.delayFixedMs) || 0)
+    const a = Math.max(0, Number(cfg.delayMinMs) || 0)
+    const b = Math.max(0, Number(cfg.delayMaxMs) || 0)
+    const min = Math.min(a, b)
+    const max = Math.max(a, b)
+    return Math.floor(min + Math.random() * (max - min))
+  }
+
+  const buildUniqueKey = ({ resumeId, fullscreenUrl, name, city, workYears }) => {
+    const strong = normalizeSpace(resumeId) || normalizeSpace(extractResumeIdFromUrl(fullscreenUrl)) || ''
+    if (strong) return `res:${strong}`
+    const weak = [name, city, workYears].map(normalizeSpace).filter(Boolean).join('|')
+    return weak ? `weak:${weak}` : `weak:${Math.random().toString(16).slice(2)}`
+  }
+
+  const findListContainer = () => q('[data-selector="mapping-search-result"]') || q('.xpath-resume-list-box')
+
+  const getListItems = () => {
+    const container = findListContainer()
+    if (!container) return []
+    const items = qa('li[data-resumeidencode], li[data-resumeurl]', container)
+    return items
+  }
+
+  const findNameClickable = (li) => {
+    const a = q('.nest-resume-personal-name em', li) || q('.nest-resume-personal-name', li)
+    if (a) return a
+    const b = q('[data-tlg-elem-id="b_pc_search_res_listcard"]', li) || q('.xpath-resume-card', li)
+    return b || li
+  }
+
+  const findModalRoot = () => q('.ant-lpt-modal-wrap.resume-detail-modal-wrap') || q('.resume-detail-modal-wrap')
+
+  const isModalVisible = (root) => {
+    if (!root) return false
+    const style = getComputedStyle(root)
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false
+    const dlg = q('[role="dialog"][aria-modal="true"]', root) || q('[role="dialog"]', root)
+    return !!dlg
+  }
+
+  const closeModal = async () => {
+    const root = findModalRoot()
+    if (!root) return
+    const closeBtn =
+      q('.closeBtn--I_u6B', root) ||
+      q('[data-tlg-elem-id="b_pc_pop_res_detail_close_btn"]', root) ||
+      q('button[aria-label="Close"]', root) ||
+      q('.ant-lpt-modal-close', root)
+    safeClick(closeBtn)
+    await sleep(250)
+  }
+
+  const captureFullscreenUrl = async ({ modalRoot, fallbackUrl }) => {
+    const btn =
+      q('[data-tlg-elem-id="b_pc_pop_res_detail_full_screen_btn"]', modalRoot) ||
+      q('.fullscreen--MPrdK', modalRoot) ||
+      qa('[class*="fullscreen--"]', modalRoot)[0]
+    if (!btn) return { url: fallbackUrl || '', reason: 'FULLSCREEN_BTN_MISSING' }
+
+    const link =
+      q('a[href]', btn) ||
+      q('a[href]', btn.parentElement || null) ||
+      q('a[href]', btn.closest('a') || null)
+    if (link?.getAttribute('href')) return { url: toAbsUrl(link.getAttribute('href')), reason: '' }
+
+    const attrKeys = ['data-url', 'data-href', 'data-link', 'data-resumeurl']
+    for (const k of attrKeys) {
+      const v = btn.getAttribute?.(k) || btn.closest?.(`[${k}]`)?.getAttribute?.(k)
+      if (v) return { url: toAbsUrl(v), reason: '' }
+    }
+
+    let captured = ''
+    const originalOpen = window.open
+    try {
+      window.open = function (url) {
+        captured = String(url || '')
+        return { closed: true, close: () => {} }
+      }
+      safeClick(btn)
+      await sleep(120)
+    } catch {
+    } finally {
+      window.open = originalOpen
+    }
+
+    if (captured) return { url: toAbsUrl(captured), reason: '' }
+    return { url: fallbackUrl || '', reason: fallbackUrl ? 'FULLSCREEN_URL_FALLBACK' : 'FULLSCREEN_URL_MISSING' }
+  }
+
+  const findSectionByTitle = (modalRoot, titleText) => {
+    const headers = qa('header', modalRoot)
+    const header = headers.find((h) => normalizeSpace(h.textContent).includes(titleText))
+    if (!header) return null
+    let cur = header
+    for (let i = 0; i < 4 && cur; i++) cur = cur.parentElement
+    return cur || header.parentElement
+  }
+
+  const extractActiveStatus = (modalRoot) => {
+    const txt = normalizeSpace(q('.individualInfo--IK5c2', modalRoot)?.textContent || '')
+    const m = txt.match(/(今天活跃|昨天活跃|刚刚活跃|\d+\s*天内活跃)/)
+    return m ? normalizeSpace(m[1]) : ''
+  }
+
+  const extractUpdateTime = (modalRoot) => {
+    const t = normalizeSpace(getText('.time--we6FD', modalRoot))
+    const m = t.match(/(\d{4}\.\d{2}\.\d{2})/)
+    return { text: t, date: m ? m[1] : '' }
+  }
+
+  const extractInfoItemMap = (modalRoot) => {
+    const map = {}
+    const items = qa('.individualDetail--NDMzk .infoItem--hRzCV', modalRoot)
+    for (const it of items) {
+      const icon = q('[aria-label]', it)
+      const k = normalizeSpace(icon?.getAttribute('aria-label') || '')
+      const vEl = q('.hasIcon--M7e9r', it)
+      const v = normalizeSpace(vEl?.getAttribute('title') || vEl?.textContent || '')
+      if (!k || !v) continue
+      if (!map[k]) map[k] = v
+    }
+    const eduEl = q('.individualDetail--NDMzk [aria-label="education"]', modalRoot)?.closest('.infoItem--hRzCV')
+    if (eduEl) {
+      const vEl = q('.hasIcon--M7e9r', eduEl)
+      const v = normalizeSpace(vEl?.getAttribute('title') || vEl?.textContent || '')
+      if (v) map.education = v
+    }
+    return map
+  }
+
+  const parseEducationLine = (line) => {
+    const raw = normalizeSpace(line || '')
+    if (!raw) return { raw: '', school: '', major: '', degree: '', extra: '' }
+    const parts = raw.split('·').map((x) => normalizeSpace(x)).filter(Boolean)
+    return {
+      raw,
+      school: parts[0] || '',
+      major: parts[1] || '',
+      degree: parts[2] || '',
+      extra: parts.slice(3).join(' · '),
+    }
+  }
+
+  const extractSections = (modalRoot) => {
+    const res = []
+    const blocks = qa('.contentWrap--A1eO2', modalRoot)
+    for (const b of blocks) {
+      const header = q('header', b)
+      const title = normalizeSpace(header?.textContent || '')
+      const body = header?.nextElementSibling || b
+      const text = normalizeTextBlock(body?.innerText || body?.textContent || '')
+      if (!title && !text) continue
+      res.push({ title, text })
+    }
+    return res
+  }
+
+  const sectionsToMap = (sections) => {
+    const map = {}
+    for (const s of sections) {
+      const key = s.title || '未命名'
+      if (!map[key]) map[key] = s.text || ''
+      else map[`${key}#${Object.keys(map).filter((k) => k.startsWith(`${key}#`)).length + 2}`] = s.text || ''
+    }
+    return map
+  }
+
+  const findSectionTextFallback = (modalRoot, title) => {
+    const hs = qa('h1,h2,h3,h4,header', modalRoot)
+    const h = hs.find((x) => normalizeSpace(x.textContent).includes(title))
+    if (h) {
+      const box = h.closest('section') || h.closest('div') || h.parentElement
+      return normalizeTextBlock(box?.innerText || box?.textContent || '')
+    }
+    return ''
+  }
+
+  const extractLabeledBlocks = (text) => {
+    const lines = normalizeTextBlock(text).split('\n').map((x) => normalizeSpace(x)).filter(Boolean)
+    const buckets = { description: [], responsibilities: [], achievements: [], other: [] }
+    let mode = 'description'
+    for (const line of lines) {
+      if (/^(职责范围|职责|工作任务|工作内容|工作描述|职责描述)[:：]?$/.test(line)) {
+        mode = 'responsibilities'
+        continue
+      }
+      if (/^(业绩|成绩|成果|产出|业绩成果)[:：]?$/.test(line)) {
+        mode = 'achievements'
+        continue
+      }
+      if (/^(描述|项目描述)[:：]?$/.test(line)) {
+        mode = 'description'
+        continue
+      }
+      if (/^(其他|补充|说明)[:：]?$/.test(line)) {
+        mode = 'other'
+        continue
+      }
+      buckets[mode].push(line)
+    }
+    return {
+      description: normalizeTextBlock(buckets.description.join('\n')),
+      responsibilities: normalizeTextBlock(buckets.responsibilities.join('\n')),
+      achievements: normalizeTextBlock(buckets.achievements.join('\n')),
+      other: normalizeTextBlock(buckets.other.join('\n')),
+    }
+  }
+
+  const parseTimeRange = (text) => {
+    const t = String(text ?? '')
+    const m = t.match(/(\d{4}\.\d{2})\s*-\s*(\d{4}\.\d{2}|至今)/)
+    if (!m) return { startDate: '', endDate: '', durationText: normalizeSpace(text || '') }
+    return { startDate: m[1], endDate: m[2] === '至今' ? '' : m[2], durationText: normalizeSpace(m[0]) }
+  }
+
+  const extractProjectExperiencesFromText = (sectionText) => {
+    const text = normalizeTextBlock(sectionText)
+    if (!text) return []
+    const chunks = text
+      .split(/\n{2,}/)
+      .map((x) => normalizeTextBlock(x))
+      .filter(Boolean)
+
+    const entries = []
+    for (const chunk of chunks) {
+      const time = chunk.match(/(\d{4}\.\d{2})\s*-\s*(\d{4}\.\d{2}|至今)/)
+      const hasTime = !!time
+      const lines = chunk.split('\n').map((x) => normalizeSpace(x)).filter(Boolean)
+      if (!lines.length) continue
+      if (!hasTime && lines.length < 4) continue
+
+      const name = lines[0]
+      const timeLine = lines.find((l) => /(\d{4}\.\d{2})\s*-\s*(\d{4}\.\d{2}|至今)/.test(l)) || ''
+      const tr = parseTimeRange(timeLine)
+
+      const roleLine =
+        lines.find((l) => /(工程师|负责人|Leader|经理|全栈|前端|后端|测试|PM|架构|开发)/.test(l) && l !== name) || ''
+      const companyLine =
+        lines.find((l) => /(有限公司|集团|公司|银行|研究所|大学|学院)/.test(l) && l !== name && l !== roleLine) || ''
+
+      const labeled = extractLabeledBlocks(chunk)
+      entries.push({
+        name,
+        role: roleLine,
+        company: companyLine,
+        startDate: tr.startDate,
+        endDate: tr.endDate,
+        durationText: tr.durationText || timeLine,
+        description: labeled.description || chunk,
+        responsibilities: labeled.responsibilities,
+        achievements: labeled.achievements,
+        rawText: chunk,
+      })
+    }
+    return entries
+  }
+
+  const extractWorkExperiences = (modalRoot) => {
+    const wrap = q('.xpath-work-experience', modalRoot) || q('.xpath-work-experience.wrap--NtQ_e', modalRoot)
+    if (!wrap) return []
+    const items = qa('.workCont--FuJ0Y', wrap)
+    return items.map((it) => {
+      const company = normalizeSpace(getText('.xpath-work-cont-company .ant-lpt-typography', it) || getText('.xpath-work-cont-company', it))
+      const title = normalizeSpace(getText('.companyPosition--emiuN .ant-lpt-typography', it) || getText('.companyPosition--emiuN', it))
+      const salary = normalizeSpace(getText('[data-selector="resume_detail_page_work_salary"]', it))
+      const durationText = normalizeSpace(getText('.time--AFypu', it))
+      const description = normalizeTextBlock(qa('.detailContent--kjKHd', it).map((x) => x.innerText || x.textContent || '').join('\n'))
+      const rawText = normalizeTextBlock(it.innerText || it.textContent || '')
+      const labeled = extractLabeledBlocks(description || rawText)
+      const tr = parseTimeRange(durationText)
+      return {
+        company,
+        title,
+        durationText,
+        salary,
+        location: '',
+        startDate: tr.startDate,
+        endDate: tr.endDate,
+        description: labeled.description || description,
+        responsibilities: labeled.responsibilities,
+        achievements: labeled.achievements,
+        rawText,
+      }
+    })
+  }
+
+  const extractEducationExperiences = (modalRoot) => {
+    const wrap = q('.xpath-education-experience-wrap', modalRoot)
+    if (!wrap) return []
+    const lis = qa('li', wrap)
+    return lis.map((li) => {
+      const school = normalizeSpace(getText('.schoolName--omUJu', li) || getText('.edu-item-school', li))
+      const degree = normalizeSpace(getText('.eduOtherInfoItem--vHyEO:nth-child(2)', li) || '')
+      const major = normalizeSpace(getText('.eduOtherInfoItem--vHyEO:nth-child(1)', li) || '')
+      const time = normalizeSpace(getText('time', li) || '')
+      const tags = qa('.ant-lpt-tag', li).map((x) => normalizeSpace(x.textContent)).filter(Boolean)
+      const rawText = normalizeTextBlock(li.innerText || li.textContent || '')
+      return { school, degree, major, startDate: '', endDate: '', timeText: time, tags, description: '', rawText }
+    })
+  }
+
+  const extractSkillTags = (modalRoot) => qa('.tag--tEILf', modalRoot).map((x) => normalizeSpace(x.textContent)).filter(Boolean)
+
+  const extractLanguageTags = (modalRoot) =>
+    qa('.xpath-language-tag', modalRoot).map((x) => normalizeSpace(x.textContent)).filter(Boolean)
+
+  const extractIntention = (modalRoot) => {
+    const sec = findSectionByTitle(modalRoot, '求职意向')
+    const base = sec || modalRoot
+    const li = q('li', base) || base
+    const jobEl = q('p.title--LjNBU .textDivider--TIu5L[title]', li) || q('p.title--LjNBU span[title]', li)
+    const desiredJobTitle = normalizeSpace(jobEl?.getAttribute('title') || jobEl?.textContent || '')
+    const desiredSalary = normalizeSpace(getText('[data-selector="resume_detail_page_expect_income"]', sec || modalRoot) || '')
+    const cityEl = q('p.title--LjNBU + p.title--LjNBU span[title]', li) || q('p.title--LjNBU + p.title--LjNBU span', li)
+    const desiredCity = normalizeSpace(cityEl?.getAttribute('title') || cityEl?.textContent || '')
+    const industry = normalizeSpace(getText('.ant-lpt-tag', sec || modalRoot) || '')
+    return { desiredJobTitle, desiredSalary, desiredCity, industry, notes: '' }
+  }
+
+  const extractBasic = (modalRoot) => {
+    const infoMap = extractInfoItemMap(modalRoot)
+    const name = normalizeSpace(getText('.name--tU2DG', modalRoot))
+    const activeStatus = extractActiveStatus(modalRoot)
+    const updateTime = extractUpdateTime(modalRoot)
+    const city = normalizeSpace(infoMap.environment || '')
+    const workYearsText = normalizeSpace(infoMap.work || '')
+    const ageText = normalizeSpace(infoMap.birthday ? `${infoMap.birthday}` : '')
+    const jobStatus = normalizeSpace(infoMap['work-place'] || '')
+    const salaryCurrent = normalizeSpace(infoMap['pay-circle'] || '')
+    const eduParsed = parseEducationLine(infoMap.education || '')
+    const educationLevel = eduParsed.degree
+    const school = eduParsed.school
+    const major = eduParsed.major
+    const highlights = normalizeSpace(getText('.xpath-resume-highlights-wrapper', modalRoot))
+    const summaryText = normalizeTextBlock(q('.xpath-resume-highlights-wrapper', modalRoot)?.innerText || '')
+    return {
+      name,
+      gender: '',
+      age: parseNumber(ageText),
+      ageText,
+      city,
+      workYears: parseNumber(workYearsText),
+      workYearsText,
+      educationLevel,
+      school,
+      major,
+      salaryExpectation: '',
+      salaryCurrent,
+      jobStatus,
+      activeStatus,
+      updatedAtText: updateTime.text,
+      updatedAtDate: updateTime.date,
+      educationText: eduParsed.raw,
+      educationExtra: eduParsed.extra,
+      tags: extractSkillTags(modalRoot),
+      highlights,
+      summaryText,
+    }
+  }
+
+  const extractResumeId = (modalRoot) => {
+    const btn = q('.xpath-copy-resId-btn', modalRoot)
+    const t = normalizeSpace(btn?.textContent || '')
+    const m = t.match(/:\s*([A-Za-z0-9]+)/)
+    return m ? m[1] : ''
+  }
+
+  const extractFromModal = async ({ page, indexInPage, sourceListUrl, fallbackResumeUrl }) => {
+    const modalRoot = findModalRoot()
+    if (!modalRoot) return { record: null, error: { code: 'POPUP_NOT_FOUND', message: '未找到简历弹窗', detail: '' } }
+    const ready = await waitForTextMatch(modalRoot, /工作经历|教育经历|技能标签|语言能力/, DefaultConfig.popupTimeoutMs)
+    if (!ready) return { record: null, error: { code: 'POPUP_TIMEOUT', message: '弹窗加载超时', detail: '' } }
+
+    const resumeId = extractResumeId(modalRoot)
+    const fullscreen = await captureFullscreenUrl({ modalRoot, fallbackUrl: fallbackResumeUrl })
+    const basic = extractBasic(modalRoot)
+    const intention = extractIntention(modalRoot)
+    const work = extractWorkExperiences(modalRoot)
+    const education = extractEducationExperiences(modalRoot)
+    const language = extractLanguageTags(modalRoot)
+    const sections = extractSections(modalRoot)
+    const sectionMap = sectionsToMap(sections)
+    const projectText = sectionMap['项目经历'] || findSectionTextFallback(modalRoot, '项目经历')
+    const project = extractProjectExperiencesFromText(projectText)
+    const profileText =
+      basic.summaryText ||
+      sectionMap['个人优势'] ||
+      sectionMap['自我评价'] ||
+      sectionMap['简历亮点'] ||
+      sectionMap['个人简介'] ||
+      ''
+    const attachmentText = sectionMap['附件简历'] || findSectionTextFallback(modalRoot, '附件简历')
+    const attachment = {
+      text: attachmentText,
+      uploaded: /已上传附件简历/.test(attachmentText),
+      needRequestToView: /向TA索要/.test(attachmentText),
+    }
+    const additionalInfoText = sectionMap['附加信息'] || findSectionTextFallback(modalRoot, '附加信息')
+
+    const uniqueKey = buildUniqueKey({
+      resumeId,
+      fullscreenUrl: fullscreen.url,
+      name: basic.name,
+      city: basic.city,
+      workYears: basic.workYears,
+    })
+
+    const errors = []
+    if (fullscreen.reason && fullscreen.reason !== 'FULLSCREEN_URL_FALLBACK') {
+      errors.push({ code: fullscreen.reason, message: '全屏URL采集失败或回退', detail: '' })
+    }
+
+    const record = {
+      meta: {
+        schemaVersion: APP.schemaVersion,
+        capturedAt: nowIso(),
+        page,
+        indexInPage,
+        sourceListUrl,
+        fullscreenUrl: fullscreen.url || '',
+        resumeId: resumeId || '',
+        uniqueKey,
+      },
+      basic: {
+        name: basic.name || '',
+        gender: '',
+        age: basic.age ?? '',
+        ageText: basic.ageText || '',
+        city: basic.city || '',
+        workYears: basic.workYears ?? '',
+        workYearsText: basic.workYearsText || '',
+        educationLevel: basic.educationLevel || '',
+        school: basic.school || '',
+        major: basic.major || '',
+        salaryExpectation: intention.desiredSalary || '',
+        salaryCurrent: basic.salaryCurrent || '',
+        jobStatus: basic.jobStatus || '',
+        activeStatus: basic.activeStatus || '',
+        updatedAtText: basic.updatedAtText || '',
+        updatedAtDate: basic.updatedAtDate || '',
+        educationText: basic.educationText || '',
+        educationExtra: basic.educationExtra || '',
+        tags: basic.tags || [],
+      },
+      intention,
+      summary: {
+        resumeSummary: profileText || basic.highlights || '',
+        highlights: basic.highlights ? [basic.highlights] : [],
+      },
+      experience: {
+        work,
+        education,
+        project,
+        other: [{ language }],
+      },
+      sections: {
+        list: sections,
+        map: { ...sectionMap, ...(projectText ? { 项目经历: projectText } : {}) },
+      },
+      attachments: attachment,
+      additionalInfo: {
+        text: additionalInfoText,
+      },
+      actions: {
+        hasPhoneButton: !!q('[data-tlg-elem-id="b_pc_pop_res_detail_tel_buy_btn"]', modalRoot),
+        hasChatButton: !!q('[data-tlg-elem-id="b_pc_pop_res_detail_chat_btn"]', modalRoot),
+        hasFullScreenButton: !!q('[data-tlg-elem-id="b_pc_pop_res_detail_full_screen_btn"]', modalRoot),
+      },
+      raw: {
+        textSnapshot: normalizeTextBlock(modalRoot.innerText || modalRoot.textContent || ''),
+        htmlSnapshot: '',
+      },
+      errors,
+    }
+
+    return { record, error: null }
+  }
+
+  const flattenForCsv = (records) => {
+    const rows = records.map((r) => {
+      const lastWork = r.experience?.work?.[0] || {}
+      return {
+        capturedAt: r.meta?.capturedAt || '',
+        page: r.meta?.page ?? '',
+        indexInPage: r.meta?.indexInPage ?? '',
+        uniqueKey: r.meta?.uniqueKey || '',
+        resumeId: r.meta?.resumeId || '',
+        name: r.basic?.name || '',
+        activeStatus: r.basic?.activeStatus || '',
+        updatedAtDate: r.basic?.updatedAtDate || '',
+        city: r.basic?.city || '',
+        age: r.basic?.ageText || r.basic?.age || '',
+        workYears: r.basic?.workYearsText || r.basic?.workYears || '',
+        jobStatus: r.basic?.jobStatus || '',
+        salaryCurrent: r.basic?.salaryCurrent || '',
+        educationLevel: r.basic?.educationLevel || '',
+        school: r.basic?.school || '',
+        major: r.basic?.major || '',
+        desiredSalary: r.intention?.desiredSalary || '',
+        educationText: r.basic?.educationText || '',
+        desiredJobTitle: r.intention?.desiredJobTitle || '',
+        desiredCity: r.intention?.desiredCity || '',
+        fullscreenUrl: r.meta?.fullscreenUrl || '',
+        sourceListUrl: r.meta?.sourceListUrl || '',
+        tags: Array.isArray(r.basic?.tags) ? r.basic.tags.join('|') : '',
+        attachmentUploaded: r.attachments?.uploaded ? '1' : '0',
+        attachmentNeedRequest: r.attachments?.needRequestToView ? '1' : '0',
+        modalText: r.raw?.textSnapshot || '',
+        workCount: Array.isArray(r.experience?.work) ? r.experience.work.length : 0,
+        eduCount: Array.isArray(r.experience?.education) ? r.experience.education.length : 0,
+        projectCount: Array.isArray(r.experience?.project) ? r.experience.project.length : 0,
+        lastCompany: lastWork.company || '',
+        lastTitle: lastWork.title || '',
+      }
+    })
+    return rows
+  }
+
+  const toCsv = (rows) => {
+    const headers = Object.keys(rows[0] || {})
+    const esc = (v) => {
+      const s = String(v ?? '')
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+      return s
+    }
+    const lines = []
+    lines.push(headers.join(','))
+    for (const row of rows) {
+      lines.push(headers.map((h) => esc(row[h])).join(','))
+    }
+    return lines.join('\n')
+  }
+
+  const downloadText = (filename, text, mime = 'text/plain;charset=utf-8') => {
+    const blob = new Blob([text], { type: mime })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1500)
+  }
+
+  const fmtStamp = () => {
+    const d = new Date()
+    const pad = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  }
+
+  const createEmptyRunState = () => ({
+    state: StateEnum.IDLE,
+    config: { ...DefaultConfig },
+    meta: {
+      startTime: '',
+      startPage: null,
+      endPage: DefaultConfig.endPage,
+      currentPage: null,
+      currentIndex: 0,
+    },
+    seen: [],
+    records: [],
+    failures: [],
+    stats: { ok: 0, fail: 0 },
+  })
+
+  const loadRunState = async () => {
+    const s = await kvGet(APP.storageKey, null)
+    if (!s || typeof s !== 'object') return createEmptyRunState()
+    const merged = createEmptyRunState()
+    merged.state = s.state || merged.state
+    merged.config = { ...merged.config, ...(s.config || {}) }
+    merged.meta = { ...merged.meta, ...(s.meta || {}) }
+    merged.seen = Array.isArray(s.seen) ? s.seen : []
+    merged.records = Array.isArray(s.records) ? s.records : []
+    merged.failures = Array.isArray(s.failures) ? s.failures : []
+    merged.stats = { ...merged.stats, ...(s.stats || {}) }
+    return merged
+  }
+
+  const persistRunState = async (runState) => kvSet(APP.storageKey, runState)
+
+  const clearRunState = async () => kvDel(APP.storageKey)
+
+  const computeCurrentPage = (runState) => {
+    const url = new URL(location.href)
+    const keys = ['curPage', 'currentPage', 'page', 'cur_page']
+    for (const k of keys) {
+      const v = url.searchParams.get(k)
+      if (v) return Number(v)
+    }
+    const cur =
+      q('[aria-current="page"]') ||
+      q('.ant-pagination-item-active') ||
+      q('.ant-lpt-pagination-item-active') ||
+      q('.pagination-item-active')
+    const n = parseNumber(cur?.textContent || '')
+    if (n) return n
+    return runState.meta.currentPage || runState.meta.startPage || runState.config.startPage || 1
+  }
+
+  const navigateToPage = (targetPage) => {
+    const url = new URL(location.href)
+    const keys = ['curPage', 'currentPage', 'page', 'cur_page']
+    const existing = keys.find((k) => url.searchParams.has(k))
+    if (existing) {
+      url.searchParams.set(existing, String(targetPage))
+      location.href = url.toString()
+      return true
+    }
+    return false
+  }
+
+  const findNextPageButton = () => {
+    const byTitleLi =
+      q('li[title="下一页"].ant-lpt-pagination-next') ||
+      q('li[title="下一页"].ant-pagination-next') ||
+      q('li[title="下一页"]')
+    if (byTitleLi) {
+      const ariaDisabled = String(byTitleLi.getAttribute('aria-disabled') || '').toLowerCase() === 'true'
+      const disabled = ariaDisabled || byTitleLi.classList.contains('ant-lpt-pagination-disabled') || byTitleLi.classList.contains('ant-pagination-disabled')
+      if (!disabled) return q('button, a', byTitleLi) || byTitleLi
+    }
+
+    const byRel = q('a[rel="next"]')
+    if (byRel) return byRel
+
+    const candidates = qa('a,button')
+    const nextText = (el) => normalizeSpace(el.textContent)
+    const byText = candidates.find((el) => nextText(el) === '下一页' || nextText(el) === '下一页>' || nextText(el).includes('下一页'))
+    if (byText) return byText
+
+    const byAria = candidates.find((el) => String(el.getAttribute('aria-label') || '').includes('下一页'))
+    return byAria || null
+  }
+
+  const waitListRefreshed = async (fingerprintBefore, timeoutMs) => {
+    return waitFor(() => {
+      const items = getListItems()
+      const fp = items.slice(0, 3).map((x) => x.getAttribute('data-resumeidencode') || x.getAttribute('data-resumeurl') || '').join('|')
+      return fp && fp !== fingerprintBefore
+    }, timeoutMs, 150)
+  }
+
+  const openPopupForListItem = async (li, { timeoutMs, retry }) => {
+    const expectedId = li.getAttribute('data-resumeidencode') || extractResumeIdFromUrl(li.getAttribute('data-resumeurl') || '')
+    for (let i = 0; i <= retry; i++) {
+      const clickEl = findNameClickable(li)
+      safeClick(clickEl)
+      const ok = await waitFor(() => isModalVisible(findModalRoot()), timeoutMs, 120)
+      if (!ok) continue
+      const modalRoot = findModalRoot()
+      if (!modalRoot) continue
+      const idInModal = extractResumeId(modalRoot)
+      if (!expectedId || !idInModal || expectedId === idInModal) return true
+      await closeModal()
+      await sleep(300)
+    }
+    return false
+  }
+
+  const ensureIdleOrPaused = (runState) => runState.state === StateEnum.IDLE || runState.state === StateEnum.PAUSED
+
+  const createPanel = async () => {
+    if (q('#liepin-crawler-panel')) return
+    addStyle(`
+      #liepin-crawler-panel{position:fixed;right:16px;bottom:16px;z-index:999999;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+      #liepin-crawler-panel .lpbox{width:320px;background:rgba(20,20,20,.92);color:#fff;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.35);overflow:hidden}
+      #liepin-crawler-panel .lphd{padding:10px 12px;font-size:14px;font-weight:600;border-bottom:1px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:space-between}
+      #liepin-crawler-panel .lpbd{padding:10px 12px;font-size:12px}
+      #liepin-crawler-panel .row{display:flex;gap:8px;align-items:center;margin:8px 0}
+      #liepin-crawler-panel input,#liepin-crawler-panel select{flex:1;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);color:#fff;border-radius:8px;padding:6px 8px;font-size:12px;outline:none}
+      #liepin-crawler-panel button{background:#2f6fed;border:0;color:#fff;border-radius:8px;padding:7px 10px;font-size:12px;cursor:pointer}
+      #liepin-crawler-panel button.secondary{background:rgba(255,255,255,.12)}
+      #liepin-crawler-panel button.danger{background:#e34848}
+      #liepin-crawler-panel .muted{opacity:.8}
+      #liepin-crawler-panel .mini{font-size:11px;opacity:.85}
+      #liepin-crawler-panel .log{max-height:110px;overflow:auto;background:rgba(255,255,255,.06);border-radius:8px;padding:8px;margin-top:8px;line-height:1.45}
+      #liepin-crawler-panel .pill{display:inline-block;background:rgba(255,255,255,.12);padding:2px 8px;border-radius:999px;font-size:11px}
+    `)
+
+    const el = document.createElement('div')
+    el.id = 'liepin-crawler-panel'
+    el.innerHTML = `
+      <div class="lpbox">
+        <div class="lphd">
+          <span>猎聘列表采集助手</span>
+          <span class="pill" id="lp-state">IDLE</span>
+        </div>
+        <div class="lpbd">
+          <div class="row">
+            <button id="lp-start">开始</button>
+            <button id="lp-pause" class="secondary">暂停</button>
+            <button id="lp-resume" class="secondary">继续</button>
+            <button id="lp-stop" class="danger">停止</button>
+          </div>
+          <div class="row">
+            <span class="mini muted" style="width:64px;">结束页</span>
+            <input id="lp-endPage" type="number" min="1" max="1000" />
+            <span class="mini muted" style="width:64px;">每页上限</span>
+            <input id="lp-perPageLimit" type="number" min="0" max="200" />
+          </div>
+          <div class="row">
+            <span class="mini muted" style="width:64px;">延迟</span>
+            <select id="lp-delayMode">
+              <option value="random">随机</option>
+              <option value="fixed">固定</option>
+            </select>
+            <input id="lp-delayA" type="number" min="0" max="60000" />
+            <input id="lp-delayB" type="number" min="0" max="60000" />
+          </div>
+          <div class="row">
+            <button id="lp-export-json" class="secondary">导出JSON</button>
+            <button id="lp-export-csv" class="secondary">导出CSV</button>
+            <button id="lp-clear" class="secondary">清空缓存</button>
+          </div>
+          <div class="row muted mini">
+            <span>页：<span id="lp-page">-</span></span>
+            <span>索引：<span id="lp-index">-</span></span>
+            <span>已采集：<span id="lp-ok">0</span></span>
+            <span>失败：<span id="lp-fail">0</span></span>
+          </div>
+          <div class="log" id="lp-log"></div>
+        </div>
+      </div>
+    `
+    document.body.appendChild(el)
+
+    let runState = await loadRunState()
+
+    const ui = {
+      state: q('#lp-state', el),
+      page: q('#lp-page', el),
+      index: q('#lp-index', el),
+      ok: q('#lp-ok', el),
+      fail: q('#lp-fail', el),
+      log: q('#lp-log', el),
+      endPage: q('#lp-endPage', el),
+      perPageLimit: q('#lp-perPageLimit', el),
+      delayMode: q('#lp-delayMode', el),
+      delayA: q('#lp-delayA', el),
+      delayB: q('#lp-delayB', el),
+      start: q('#lp-start', el),
+      pause: q('#lp-pause', el),
+      resume: q('#lp-resume', el),
+      stop: q('#lp-stop', el),
+      exportJson: q('#lp-export-json', el),
+      exportCsv: q('#lp-export-csv', el),
+      clear: q('#lp-clear', el),
+    }
+
+    const logs = []
+    const logLine = (t) => {
+      const line = `${new Date().toLocaleTimeString()} ${t}`
+      logs.push(line)
+      while (logs.length > 80) logs.shift()
+      ui.log.textContent = logs.join('\n')
+    }
+
+    const syncUI = () => {
+      ui.state.textContent = runState.state
+      ui.page.textContent = String(runState.meta.currentPage ?? '-')
+      ui.index.textContent = String(runState.meta.currentIndex ?? '-')
+      ui.ok.textContent = String(runState.stats.ok ?? 0)
+      ui.fail.textContent = String(runState.stats.fail ?? 0)
+      ui.endPage.value = String(runState.config.endPage ?? DefaultConfig.endPage)
+      ui.perPageLimit.value = String(runState.config.perPageLimit ?? 0)
+      ui.delayMode.value = runState.config.delayMode || 'random'
+      if (ui.delayMode.value === 'fixed') {
+        ui.delayA.value = String(runState.config.delayFixedMs ?? DefaultConfig.delayFixedMs)
+        ui.delayB.value = ''
+        ui.delayB.disabled = true
+      } else {
+        ui.delayA.value = String(runState.config.delayMinMs ?? DefaultConfig.delayMinMs)
+        ui.delayB.value = String(runState.config.delayMaxMs ?? DefaultConfig.delayMaxMs)
+        ui.delayB.disabled = false
+      }
+    }
+
+    const applyConfigFromUI = () => {
+      runState.config.endPage = Math.max(1, Number(ui.endPage.value) || DefaultConfig.endPage)
+      runState.config.perPageLimit = Math.max(0, Number(ui.perPageLimit.value) || 0)
+      runState.config.delayMode = ui.delayMode.value === 'fixed' ? 'fixed' : 'random'
+      if (runState.config.delayMode === 'fixed') {
+        runState.config.delayFixedMs = Math.max(0, Number(ui.delayA.value) || DefaultConfig.delayFixedMs)
+      } else {
+        runState.config.delayMinMs = Math.max(0, Number(ui.delayA.value) || DefaultConfig.delayMinMs)
+        runState.config.delayMaxMs = Math.max(0, Number(ui.delayB.value) || DefaultConfig.delayMaxMs)
+      }
+    }
+
+    ui.delayMode.addEventListener('change', () => {
+      applyConfigFromUI()
+      syncUI()
+      persistRunState(runState)
+    })
+
+    ;[ui.endPage, ui.perPageLimit, ui.delayA, ui.delayB].forEach((inp) => {
+      inp.addEventListener('change', () => {
+        applyConfigFromUI()
+        persistRunState(runState)
+      })
+    })
+
+    const startRun = async () => {
+      runState = await loadRunState()
+      applyConfigFromUI()
+      if (!ensureIdleOrPaused(runState) && runState.state !== StateEnum.DONE) return
+      runState.state = StateEnum.RUNNING
+      runState.meta.startTime = runState.meta.startTime || nowIso()
+      runState.meta.endPage = runState.config.endPage
+      runState.meta.currentPage = computeCurrentPage(runState)
+      runState.meta.startPage = runState.meta.startPage ?? runState.meta.currentPage
+      runState.meta.currentIndex = runState.meta.currentIndex || 0
+      await persistRunState(runState)
+      syncUI()
+      logLine(`开始：第 ${runState.meta.currentPage} 页 → ${runState.meta.endPage} 页`)
+      await loopRun()
+    }
+
+    const pauseRun = async () => {
+      runState = await loadRunState()
+      if (runState.state !== StateEnum.RUNNING) return
+      runState.state = StateEnum.PAUSED
+      await persistRunState(runState)
+      syncUI()
+      logLine('已暂停（当前动作完成后停）')
+    }
+
+    const resumeRun = async () => {
+      runState = await loadRunState()
+      if (runState.state !== StateEnum.PAUSED) return
+      runState.state = StateEnum.RUNNING
+      await persistRunState(runState)
+      syncUI()
+      logLine('继续运行')
+      await loopRun()
+    }
+
+    const stopRun = async () => {
+      runState = await loadRunState()
+      if (runState.state !== StateEnum.RUNNING && runState.state !== StateEnum.PAUSED) return
+      runState.state = StateEnum.STOPPING
+      await persistRunState(runState)
+      syncUI()
+      logLine('停止中（等待收尾）')
+    }
+
+    const exportJson = async () => {
+      runState = await loadRunState()
+      const filename = `liepin_records_${fmtStamp()}.json`
+      downloadText(filename, JSON.stringify(runState.records || [], null, 2), 'application/json;charset=utf-8')
+      logLine(`已导出 JSON：${filename}`)
+    }
+
+    const exportCsv = async () => {
+      runState = await loadRunState()
+      const rows = flattenForCsv(runState.records || [])
+      const filename = `liepin_records_${fmtStamp()}.csv`
+      downloadText(filename, toCsv(rows), 'text/csv;charset=utf-8')
+      logLine(`已导出 CSV：${filename}`)
+    }
+
+    const clearAll = async () => {
+      await clearRunState()
+      runState = createEmptyRunState()
+      syncUI()
+      logs.length = 0
+      ui.log.textContent = ''
+      logLine('已清空缓存')
+    }
+
+    ui.start.addEventListener('click', startRun)
+    ui.pause.addEventListener('click', pauseRun)
+    ui.resume.addEventListener('click', resumeRun)
+    ui.stop.addEventListener('click', stopRun)
+    ui.exportJson.addEventListener('click', exportJson)
+    ui.exportCsv.addEventListener('click', exportCsv)
+    ui.clear.addEventListener('click', clearAll)
+
+    const onDemo = isDemo()
+    if (onDemo) logLine('检测到 demo.html：将只解析当前页面已存在的弹窗内容（不执行真实点击/关闭/翻页）')
+
+    const loopRun = async () => {
+      runState = await loadRunState()
+      if (runState.state !== StateEnum.RUNNING) return
+
+      const seen = new Set(runState.seen || [])
+
+      while (true) {
+        runState = await loadRunState()
+        syncUI()
+        if (runState.state === StateEnum.PAUSED) return
+        if (runState.state === StateEnum.STOPPING) {
+          runState.state = StateEnum.DONE
+          await persistRunState(runState)
+          syncUI()
+          logLine('已停止')
+          return
+        }
+        if (runState.meta.currentPage > runState.meta.endPage) {
+          runState.state = StateEnum.DONE
+          await persistRunState(runState)
+          syncUI()
+          logLine('已到达结束页')
+          return
+        }
+
+        let items = getListItems()
+        if (!items.length) {
+          const appeared = await waitFor(() => getListItems().length > 0, 8000, 150)
+          if (appeared) items = getListItems()
+        }
+        if (!items.length) {
+          runState.failures.push({ page: runState.meta.currentPage, index: -1, reason: 'LIST_EMPTY', capturedAt: nowIso() })
+          runState.stats.fail += 1
+          await persistRunState(runState)
+          logLine('未找到列表条目，停止')
+          runState.state = StateEnum.DONE
+          await persistRunState(runState)
+          syncUI()
+          return
+        }
+
+        const limit = Math.max(0, Number(runState.config.perPageLimit) || 0)
+        const pageItems = limit ? items.slice(0, limit) : items
+
+        for (let i = runState.meta.currentIndex; i < pageItems.length; i++) {
+          runState = await loadRunState()
+          syncUI()
+          if (runState.state !== StateEnum.RUNNING) return
+          runState.meta.currentIndex = i
+          runState.meta.currentPage = computeCurrentPage(runState)
+          await persistRunState(runState)
+
+          const li = pageItems[i]
+          const resumeId = li.getAttribute('data-resumeidencode') || ''
+          const fallbackResumeUrl = toAbsUrl(li.getAttribute('data-resumeurl') || '')
+          const weakName = normalizeSpace(getText('.nest-resume-personal-name', li))
+          const uniqueKey = buildUniqueKey({ resumeId, fullscreenUrl: fallbackResumeUrl, name: weakName, city: '', workYears: '' })
+          if (seen.has(uniqueKey)) continue
+
+          const delay = getDelayMs(runState.config)
+          await sleep(delay)
+
+          const opened = onDemo
+            ? true
+            : await openPopupForListItem(li, {
+                timeoutMs: runState.config.popupTimeoutMs,
+                retry: runState.config.retryOpenPopup,
+              })
+
+          if (!opened) {
+            runState.failures.push({ page: runState.meta.currentPage, index: i, reason: 'POPUP_OPEN_FAILED', capturedAt: nowIso() })
+            runState.stats.fail += 1
+            await persistRunState(runState)
+            logLine(`弹窗打开失败：第${runState.meta.currentPage}页 第${i + 1}个`)
+            continue
+          }
+
+          const { record, error } = await extractFromModal({
+            page: runState.meta.currentPage,
+            indexInPage: i,
+            sourceListUrl: location.href,
+            fallbackResumeUrl,
+          })
+
+          if (!record) {
+            runState.failures.push({ page: runState.meta.currentPage, index: i, reason: error?.code || 'UNKNOWN', capturedAt: nowIso() })
+            runState.stats.fail += 1
+            await persistRunState(runState)
+            logLine(`采集失败：${error?.code || 'UNKNOWN'}`)
+            if (!onDemo) await closeModal()
+            continue
+          }
+
+          if (!seen.has(record.meta.uniqueKey)) {
+            seen.add(record.meta.uniqueKey)
+            runState.seen = Array.from(seen)
+            runState.records.push(record)
+            runState.stats.ok += 1
+            await persistRunState(runState)
+            logLine(`已采集：${record.basic.name || record.meta.resumeId || record.meta.uniqueKey}`)
+          }
+
+          if (!onDemo) await closeModal()
+          if (onDemo) {
+            runState.state = StateEnum.DONE
+            await persistRunState(runState)
+            syncUI()
+            logLine('demo 解析完成')
+            return
+          }
+        }
+
+        if (onDemo) {
+          runState.state = StateEnum.DONE
+          await persistRunState(runState)
+          syncUI()
+          return
+        }
+
+        runState = await loadRunState()
+        runState.meta.currentIndex = 0
+        runState.meta.currentPage = computeCurrentPage(runState)
+        await persistRunState(runState)
+
+        if (runState.meta.currentPage >= runState.meta.endPage) {
+          runState.state = StateEnum.DONE
+          await persistRunState(runState)
+          syncUI()
+          logLine('已完成（到达结束页）')
+          return
+        }
+
+        const fingerprintBefore = pageItems.slice(0, 3).map((x) => x.getAttribute('data-resumeidencode') || x.getAttribute('data-resumeurl') || '').join('|')
+        const nextBtn = findNextPageButton()
+        if (nextBtn) {
+          safeClick(nextBtn)
+          const refreshed = await waitListRefreshed(fingerprintBefore, runState.config.pageTimeoutMs)
+          if (!refreshed) {
+            runState.failures.push({ page: runState.meta.currentPage, index: -1, reason: 'NEXT_PAGE_FAILED', capturedAt: nowIso() })
+            runState.stats.fail += 1
+            await persistRunState(runState)
+            logLine('翻页失败（按钮点击后未刷新），停止')
+            runState.state = StateEnum.DONE
+            await persistRunState(runState)
+            syncUI()
+            return
+          }
+          runState.meta.currentPage = computeCurrentPage(runState) || (runState.meta.currentPage + 1)
+          await persistRunState(runState)
+          logLine(`翻到第 ${runState.meta.currentPage} 页`)
+          continue
+        }
+
+        const navOk = navigateToPage(runState.meta.currentPage + 1)
+        if (navOk) {
+          logLine(`跳转到第 ${runState.meta.currentPage + 1} 页`)
+          return
+        }
+
+        runState.failures.push({ page: runState.meta.currentPage, index: -1, reason: 'NEXT_PAGE_NOT_FOUND', capturedAt: nowIso() })
+        runState.stats.fail += 1
+        runState.state = StateEnum.DONE
+        await persistRunState(runState)
+        syncUI()
+        logLine('未找到翻页入口，停止')
+        return
+      }
+    }
+
+    syncUI()
+  }
+
+  const boot = async () => {
+    if (isTargetRoute()) {
+      await createPanel()
+      return
+    }
+
+    let lastHref = location.href
+    const tick = async () => {
+      if (location.href === lastHref) return
+      lastHref = location.href
+      if (isTargetRoute()) await createPanel()
+    }
+    window.addEventListener('hashchange', tick, { passive: true })
+    window.addEventListener('popstate', tick, { passive: true })
+    setInterval(tick, 500)
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true })
+  } else {
+    boot()
+  }
+})()

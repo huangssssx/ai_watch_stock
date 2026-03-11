@@ -1,0 +1,2 @@
+ts_code,name,trade_date,asof_time,strategy_type,open,low_0930_1000,low_0930_1000_pct,close_0959,close_0959_pct,cross_time,cross_minutes,last_close,pct_from_open,recent_deepdrop_rebound_total,recent_deepdrop_rebound_yesterday,recent_deepdrop_rebound_daybefore,bonus_points,score,reason
+000400.SZ,许继电气,20260311,10:09,standard,33.54,32.82,-2.146690518783539,33.29,-0.7453786523553966,10:03,33,33.77,0.6857483601669767,0.0,0.0,0.0,0.0,0.6857483601669767,"standard策略:前30分钟回撤-2.15%,随后站上开盘价并稳住"

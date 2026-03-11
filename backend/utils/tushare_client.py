@@ -113,6 +113,31 @@ def test_tushare_rate_limit(max_requests: int = 200, sleep: float = 0.0):
     )
 
 
+def get_chip_performance(ts_code: str, trade_date: str = None):
+    """
+    获取股票筹码平均成本和胜率数据
+    
+    参数：
+        ts_code: 股票代码
+        trade_date: 交易日期 (YYYYMMDD)，如果不指定则获取最新数据
+    
+    返回：
+        DataFrame 包含筹码成本和胜率数据
+    """
+    if pro is None:
+        return None
+    
+    try:
+        if trade_date:
+            df = pro.cyq_perf(ts_code=ts_code, trade_date=trade_date)
+        else:
+            df = pro.cyq_perf(ts_code=ts_code)
+        return df
+    except Exception as e:
+        print(f"获取筹码数据失败 {ts_code}: {e}", flush=True)
+        return None
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, default=os.getenv("MODE", "test"))

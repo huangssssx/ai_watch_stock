@@ -1,0 +1,2 @@
+﻿symbol,name,score,reason,signal_date,limitup_date,pullback_days,limitup_open,limitup_start,pullback_low_min,ma20,pullback_max_vol_ratio,stopday_vol_ratio,hold_limit_start,hold_ma20,rsi_now,rsi_pullback_min,macd_hist
+001337,四川黄金,43.21,近10日涨停=20260224；回调3天缩量(MaxVol/参考Vol=0.75)；止跌日放量(Vol/回调均量=1.15)；形态=阳包阴；MACD绿柱缩短(1连升)；RSI 54.3->55.4,20260227,20260224,3,48.18,46.04,48.84,53.459,0.747,1.151,1,0,55.37,54.3,-1.055467

@@ -1,0 +1,2 @@
+﻿symbol,name,ts_code,trade_date,limitup_date,pullback_days,score,reason,close,open,high,low,vol,limit_start_price,pullback_low_min,pullback_max_vol_ratio,pivot_vol_ratio_pullback,pivot_vol_ratio_ref,pivot_close_pct,pivot_breakout_pct
+001896,豫能控股,001896.SZ,20260225,20260211,3,993.315,涨停后缩量回调3天，20260225放量转强,11.03,10.5,11.03,9.88,3204863.0,6.85,8.29,0.31,27.064,3.816,0.0997,0.0997
