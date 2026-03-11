@@ -1,2 +1,0 @@
-ts_code,name,trade_date,asof_time,strategy_type,open,low_0930_1000,low_0930_1000_pct,close_0959,close_0959_pct,cross_time,cross_minutes,last_close,pct_from_open,recent_deepdrop_rebound_total,recent_deepdrop_rebound_yesterday,recent_deepdrop_rebound_daybefore,bonus_points,score,reason
-002300.SZ,太阳电缆,20260311,10:09,standard,11.66,11.2,-3.9451114922813106,11.64,-0.17152658662092257,10:02,32,11.87,1.8010291595197176,1.0,1.0,0.0,1.2,3.0010291595197174,"standard策略:前30分钟回撤-3.95%,随后站上开盘价并稳住"
