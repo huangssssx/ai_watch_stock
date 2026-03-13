@@ -11,10 +11,10 @@
 - 输出：默认写到脚本同目录 CSV，按 score=pct_from_open+bonus_points 综合得分排序，输出 Top200
 
 典型用法（盘中任意时刻运行，asof_time 默认取当前时间）：
-python3 "/Users/huangchuanjian/workspace/我的项目/ai_watch_stock/backend/scripts/(高胜率)开盘半小时下跌后反弹站上开盘价/优化/早盘预判上涨股票.py"
+python3 "/Users/huangchuanjian/workspace/my_projects/ai_watch_stock/backend/scripts/(高胜率)开盘半小时下跌后反弹站上开盘价/优化/早盘预判上涨股票.py"
 
 更严格/更快：
-python3 "/Users/huangchuanjian/workspace/我的项目/ai_watch_stock/backend/scripts/(高胜率)开盘半小时下跌后反弹站上开盘价/优化/早盘预判上涨股票.py" --prefilter-pct-from-open 0.8 --max-stocks 2000
+python3 "/Users/huangchuanjian/workspace/my_projects/ai_watch_stock/backend/scripts/(高胜率)开盘半小时下跌后反弹站上开盘价/优化/早盘预判上涨股票.py" --prefilter-pct-from-open 0.8 --max-stocks 2000
 """
 
 import argparse
@@ -144,6 +144,109 @@ def _trade_date_default() -> str:
 
 def _asof_time_default_hhmm() -> str:
     return datetime.now().strftime("%H:%M")
+
+
+def _resolve_chip_trade_date(base_date: str) -> str:
+    if not _tushare_available:
+        return str(base_date or "").strip() or datetime.now().strftime("%Y%m%d")
+    base_date = str(base_date or "").strip()
+    if not base_date:
+        base_date = datetime.now().strftime("%Y%m%d")
+    try:
+        end_dt = datetime.strptime(base_date, "%Y%m%d")
+    except Exception:
+        return base_date
+    start_dt = end_dt - timedelta(days=120)
+    cal = pro.trade_cal(
+        exchange="SSE",
+        start_date=start_dt.strftime("%Y%m%d"),
+        end_date=base_date,
+        fields="cal_date,is_open",
+    )
+    if cal is None or cal.empty:
+        return base_date
+    cal = cal[cal["is_open"] == 1]
+    if cal.empty:
+        return base_date
+    open_dates = sorted(cal["cal_date"].astype(str).unique())
+    if not open_dates:
+        return base_date
+    open_dates = [d for d in open_dates if d <= base_date]
+    if not open_dates:
+        return base_date
+    resolved = open_dates[-1]
+    now = datetime.now()
+    today = now.strftime("%Y%m%d")
+    if base_date == today and resolved == today and now.time().strftime("%H%M") < "1630":
+        if len(open_dates) >= 2:
+            resolved = open_dates[-2]
+    return resolved
+
+
+def _resolve_daily_basic_trade_date(base_date: str) -> str:
+    if not _tushare_available:
+        return str(base_date or "").strip() or datetime.now().strftime("%Y%m%d")
+    base_date = str(base_date or "").strip()
+    if not base_date:
+        base_date = datetime.now().strftime("%Y%m%d")
+    try:
+        end_dt = datetime.strptime(base_date, "%Y%m%d")
+    except Exception:
+        return base_date
+    start_dt = end_dt - timedelta(days=120)
+    cal = pro.trade_cal(
+        exchange="SSE",
+        start_date=start_dt.strftime("%Y%m%d"),
+        end_date=base_date,
+        fields="cal_date,is_open",
+    )
+    if cal is None or cal.empty:
+        return base_date
+    cal = cal[cal["is_open"] == 1]
+    if cal.empty:
+        return base_date
+    open_dates = sorted(cal["cal_date"].astype(str).unique())
+    if not open_dates:
+        return base_date
+    open_dates = [d for d in open_dates if d <= base_date]
+    if not open_dates:
+        return base_date
+    resolved = open_dates[-1]
+    now = datetime.now()
+    today = now.strftime("%Y%m%d")
+    if base_date == today and resolved == today and now.time().strftime("%H%M") < "1630":
+        if len(open_dates) >= 2:
+            resolved = open_dates[-2]
+    for d in reversed(open_dates[-20:]):
+        try:
+            chk = pro.daily_basic(trade_date=d, fields="ts_code,circ_mv,total_mv")
+        except Exception:
+            chk = None
+        if chk is not None and not chk.empty:
+            resolved = d
+            break
+    return resolved
+
+
+def _calc_drop_pct_by_mv(
+    base_pct: float,
+    circ_mv: float,
+    mv_min: float,
+    mv_max: float,
+    mult_min: float,
+    mult_max: float,
+) -> float:
+    base_pct = float(base_pct)
+    mv = float(circ_mv or 0.0)
+    if mv <= 0:
+        return base_pct
+    mv_yi = mv / 1e4
+    if mv_max <= mv_min:
+        return base_pct * float(mult_min)
+    ratio = (mv_yi - float(mv_min)) / (float(mv_max) - float(mv_min))
+    ratio = min(1.0, max(0.0, ratio))
+    mult = float(mult_min) + ratio * (float(mult_max) - float(mult_min))
+    return base_pct * mult
 
 
 def _parse_markets(s: str) -> List[int]:
@@ -753,6 +856,11 @@ def main() -> int:
     parser.add_argument("--prefilter-pct-from-open", type=float, default=0.2, help="快照预筛：当前价相对开盘涨幅下限(%%)")
     parser.add_argument("--first30-drop-pct", type=float, default=0.4, help="前30分钟最低价相对开盘的跌幅下限(%%)")
     parser.add_argument("--first30-close-below-open-pct", type=float, default=0.05, help="前30分钟结束时(≈09:59)收盘低于开盘的跌幅下限(%%)")
+    parser.add_argument("--first30-drop-pct-mode", type=str, default="cap", help="前30分钟回撤阈值模式：fixed/cap，默认cap")
+    parser.add_argument("--cap-mv-min", type=float, default=50.0, help="市值缩放下限(亿)")
+    parser.add_argument("--cap-mv-max", type=float, default=1000.0, help="市值缩放上限(亿)")
+    parser.add_argument("--cap-mult-min", type=float, default=1.0, help="小市值倍率")
+    parser.add_argument("--cap-mult-max", type=float, default=2.0, help="大市值倍率")
     parser.add_argument("--min-rebound-pct", type=float, default=0.9, help="截至时刻相对开盘涨幅下限(%%)")
     parser.add_argument("--cross-above-open-pct", type=float, default=0.1, help="站上开盘价的阈值(%%)")
     parser.add_argument("--max-cross-minutes", type=int, default=75, help="必须在开盘后多少分钟内站上开盘价")
@@ -801,6 +909,11 @@ def main() -> int:
     enable_chip_concentrated = bool(args.enable_chip_concentrated)
     chip_concentration_threshold = float(args.chip_concentration_threshold)
     min_winner_rate = float(args.min_winner_rate)
+    first30_drop_pct_mode = str(args.first30_drop_pct_mode or "").strip().lower()
+    cap_mv_min = float(args.cap_mv_min)
+    cap_mv_max = float(args.cap_mv_max)
+    cap_mult_min = float(args.cap_mult_min)
+    cap_mult_max = float(args.cap_mult_max)
 
     with tdx:
         ep = connected_endpoint()
@@ -832,6 +945,26 @@ def main() -> int:
             df_codes = df_codes.head(int(args.max_stocks)).copy()
 
         print(f"{_now_ts()} 股票池: {len(df_codes)}", flush=True)
+
+        mv_map: Dict[str, float] = {}
+        if first30_drop_pct_mode == "cap":
+            if not _tushare_available:
+                print(f"{_now_ts()} 警告：tushare 不可用，回撤阈值退化为 fixed", flush=True)
+            else:
+                mv_trade_date = _resolve_daily_basic_trade_date(trade_date)
+                if mv_trade_date != trade_date:
+                    print(f"{_now_ts()} 市值基准日已调整: {trade_date} -> {mv_trade_date}", flush=True)
+                mv_df = pro.daily_basic(trade_date=mv_trade_date, fields="ts_code,circ_mv,total_mv")
+                if mv_df is None or mv_df.empty:
+                    print(f"{_now_ts()} 市值数据为空，回撤阈值退化为 fixed", flush=True)
+                else:
+                    for _, r in mv_df.iterrows():
+                        ts_code = str(r.get("ts_code") or "").strip()
+                        circ_mv = float(r.get("circ_mv") or 0.0)
+                        total_mv = float(r.get("total_mv") or 0.0)
+                        mv = circ_mv if circ_mv > 0 else total_mv
+                        if ts_code and mv > 0:
+                            mv_map[ts_code] = mv
 
         start_offset_hint: Optional[int] = None
         if trade_date != today:
@@ -875,6 +1008,12 @@ def main() -> int:
             if not _tushare_available:
                 print(f"{_now_ts()} 警告：tushare 不可用，跳过筹码聚集筛选", flush=True)
             else:
+                chip_trade_date = _resolve_chip_trade_date(trade_date)
+                if chip_trade_date != trade_date:
+                    print(
+                        f"{_now_ts()} 筹码基准日已调整: {trade_date} -> {chip_trade_date}",
+                        flush=True,
+                    )
                 chip_before = len(df_quotes)
                 chip_passed = []
                 for i, r in df_quotes.iterrows():
@@ -885,7 +1024,7 @@ def main() -> int:
                     
                     chip_signal = _check_chip_concentration(
                         ts_code=ts_code,
-                        trade_date=trade_date,
+                        trade_date=chip_trade_date,
                         current_price=price,
                         chip_concentration_threshold=chip_concentration_threshold,
                         min_winner_rate=min_winner_rate,
@@ -1011,7 +1150,16 @@ def main() -> int:
             sig = _detect_signal(
                 df_1m=df_1m,
                 trade_date=trade_date,
-                first30_drop_pct=float(args.first30_drop_pct),
+                first30_drop_pct=_calc_drop_pct_by_mv(
+                    base_pct=float(args.first30_drop_pct),
+                    circ_mv=mv_map.get(f"{code}.SZ" if market == 0 else f"{code}.SH"),
+                    mv_min=cap_mv_min,
+                    mv_max=cap_mv_max,
+                    mult_min=cap_mult_min,
+                    mult_max=cap_mult_max,
+                )
+                if first30_drop_pct_mode == "cap" and mv_map
+                else float(args.first30_drop_pct),
                 first30_close_below_open_pct=float(args.first30_close_below_open_pct),
                 min_rebound_pct=float(args.min_rebound_pct),
                 cross_above_open_pct=float(args.cross_above_open_pct),

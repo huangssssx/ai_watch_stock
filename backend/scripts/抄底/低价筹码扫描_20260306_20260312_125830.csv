@@ -1,0 +1,2 @@
+﻿symbol,name,ts_code,trade_date,score,reason,patterns_core,patterns_extra,close,open,drawdown_120d,price_pos_year,box_range_60d,vol_shrink_ratio_20_20,ma20_slope_1d,close_pct_1d,pb,pe_ttm,turnover_rate,total_mv_wanyuan,circ_mv_wanyuan,chip_concentration_pct,winner_rate_pct,chip_price_pos_pct,cost_5pct,cost_95pct,weight_avg_cost
+605580,恒盛能源,605580.SH,20260306,61.38,地量地价、短期止跌,地量地价,短期止跌,23.4,23.3,0.48,0.1318,1.0081,0.3347,-0.0008,-0.0081,,,,,,,,,,,
