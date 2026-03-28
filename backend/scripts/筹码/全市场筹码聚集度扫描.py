@@ -41,28 +41,56 @@ def _safe_call(fn, sleep_s: float, what: str) -> Optional[pd.DataFrame]:
         return None
 
 
-def _pick_last_trade_date(pro, end_date: str) -> str:
-    start = _as_yyyymmdd(datetime.strptime(end_date, "%Y%m%d") - timedelta(days=60))
-    df = pro.trade_cal(exchange="SSE", start_date=start, end_date=end_date, fields="cal_date,is_open")
+def _load_trade_dates_by_trade_cal(pro, end_date: str, lookback: int) -> list[str]:
+    start = _as_yyyymmdd(datetime.strptime(end_date, "%Y%m%d") - timedelta(days=max(60, int(lookback) * 3)))
+    df = _safe_call(
+        lambda: pro.trade_cal(exchange="SSE", start_date=start, end_date=end_date, fields="cal_date,is_open"),
+        sleep_s=0.0,
+        what=f"trade_cal({start}-{end_date})",
+    )
     if df is None or df.empty:
-        raise RuntimeError("trade_cal 返回为空，无法确定最近交易日")
+        return []
+    if "cal_date" not in df.columns or "is_open" not in df.columns:
+        return []
     df = df[df["is_open"].astype(str) == "1"].copy()
     if df.empty:
-        raise RuntimeError("trade_cal 无开市日期，无法确定最近交易日")
-    dates = sorted(df["cal_date"].astype(str).tolist())
+        return []
+    dates = sorted(df["cal_date"].astype(str).str.strip().tolist())
+    return dates[-int(lookback):] if len(dates) >= int(lookback) else dates
+
+
+def _load_trade_dates_by_daily(pro, end_date: str, lookback: int) -> list[str]:
+    start = _as_yyyymmdd(datetime.strptime(end_date, "%Y%m%d") - timedelta(days=max(90, int(lookback) * 5)))
+    df = _safe_call(
+        lambda: pro.daily(ts_code="000001.SZ", start_date=start, end_date=end_date, fields="trade_date"),
+        sleep_s=0.0,
+        what=f"daily_trade_dates({start}-{end_date})",
+    )
+    if df is None or df.empty or "trade_date" not in df.columns:
+        return []
+    dates = sorted(df["trade_date"].astype(str).str.strip().unique().tolist())
+    return dates[-int(lookback):] if len(dates) >= int(lookback) else dates
+
+
+def _pick_last_trade_date(pro, end_date: str) -> str:
+    dates = _load_trade_dates_by_trade_cal(pro, end_date=end_date, lookback=1)
+    if not dates:
+        print(f"{_now_ts()} trade_cal 为空，改用 daily 回退获取最近交易日", flush=True)
+        dates = _load_trade_dates_by_daily(pro, end_date=end_date, lookback=1)
+    if not dates:
+        raise RuntimeError("无法确定最近交易日：trade_cal 和 daily 都返回空")
     return str(dates[-1])
 
 
 def _load_trade_dates(pro, end_date: str, lookback: int) -> list[str]:
-    start = _as_yyyymmdd(datetime.strptime(end_date, "%Y%m%d") - timedelta(days=int(lookback) * 3))
-    df = pro.trade_cal(exchange="SSE", start_date=start, end_date=end_date, fields="cal_date,is_open")
-    if df is None or df.empty:
-        raise RuntimeError("trade_cal 返回为空，无法获取交易日序列")
-    df = df[df["is_open"].astype(str) == "1"].copy()
-    dates = sorted(df["cal_date"].astype(str).tolist())
-    if len(dates) < int(lookback):
+    dates = _load_trade_dates_by_trade_cal(pro, end_date=end_date, lookback=lookback)
+    if dates:
         return dates
-    return dates[-int(lookback):]
+    print(f"{_now_ts()} trade_cal 为空，改用 daily 回退获取交易日序列", flush=True)
+    dates = _load_trade_dates_by_daily(pro, end_date=end_date, lookback=lookback)
+    if dates:
+        return dates
+    raise RuntimeError("无法获取交易日序列：trade_cal 和 daily 都返回空")
 
 
 def _pick_last_chip_trade_date(pro, end_date: str, sleep_s: float) -> str:
@@ -196,6 +224,7 @@ def _calc_mann_kendall_trend(band_series: np.ndarray) -> tuple[float, float, flo
     return float(tau), float(p_value), float(change_rate)
 
 
+
 def _fetch_daily_close(pro, ts_code: str, trade_date: str, sleep_s: float) -> Optional[float]:
     fields = "ts_code,trade_date,close"
     df = _safe_call(
@@ -211,8 +240,74 @@ def _fetch_daily_close(pro, ts_code: str, trade_date: str, sleep_s: float) -> Op
     return float(close) if np.isfinite(close) else None
 
 
+STAGE_DEFINITIONS = {
+    1: {"name": "底部吸筹", "winner_rate_min": 0.0, "winner_rate_max": 20.0},
+    2: {"name": "低位蓄势", "winner_rate_min": 20.0, "winner_rate_max": 40.0},
+    3: {"name": "中继收敛", "winner_rate_min": 40.0, "winner_rate_max": 60.0},
+    4: {"name": "主升锁仓", "winner_rate_min": 60.0, "winner_rate_max": 85.0},
+    5: {"name": "高位锁仓", "winner_rate_min": 85.0, "winner_rate_max": 100.0},
+}
+
+STAGE_QUALITY_FILTERS = {
+    1: {"chip_band_max": 0.30, "close_vs_cost_min": 0.90, "close_vs_cost_max": None, "trend_change_rate_max": -0.08},
+    2: {"chip_band_max": 0.32, "close_vs_cost_min": 0.95, "close_vs_cost_max": None, "trend_change_rate_max": -0.03},
+    3: {"chip_band_max": 0.28, "close_vs_cost_min": 0.99, "close_vs_cost_max": 1.08, "trend_change_rate_max": -0.06},
+    4: {"chip_band_max": 0.33, "close_vs_cost_min": 1.00, "close_vs_cost_max": None, "trend_change_rate_max": 0.00},
+    5: {"chip_band_max": 0.32, "close_vs_cost_min": 1.02, "close_vs_cost_max": None, "trend_change_rate_max": 0.03},
+}
+
+
+def _classify_stage(row: dict) -> tuple[int, str]:
+    winner_rate = pd.to_numeric(pd.Series([row.get("winner_rate")]), errors="coerce").iloc[0]
+    if not np.isfinite(winner_rate):
+        winner_rate = 0.0
+    winner_rate = min(max(float(winner_rate), 0.0), 100.0)
+    for stage_id in range(1, 6):
+        stage = STAGE_DEFINITIONS[stage_id]
+        lower = float(stage["winner_rate_min"])
+        upper = float(stage["winner_rate_max"])
+        if stage_id < 5:
+            if lower <= winner_rate < upper:
+                return stage_id, str(stage["name"])
+        else:
+            if lower <= winner_rate <= upper:
+                return stage_id, str(stage["name"])
+    return 1, str(STAGE_DEFINITIONS[1]["name"])
+
+
+def _stage_quality_pass(stage_id: int, row: dict) -> tuple[bool, dict]:
+    config = STAGE_QUALITY_FILTERS.get(stage_id, {})
+    chip_band = pd.to_numeric(pd.Series([row.get("chip_band")]), errors="coerce").iloc[0]
+    close = pd.to_numeric(pd.Series([row.get("close")]), errors="coerce").iloc[0]
+    weight_avg = pd.to_numeric(pd.Series([row.get("weight_avg")]), errors="coerce").iloc[0]
+    trend_change_rate = pd.to_numeric(pd.Series([row.get("trend_change_rate")]), errors="coerce").iloc[0]
+    close_vs_cost = float("nan")
+    if np.isfinite(close) and np.isfinite(weight_avg) and weight_avg > 0:
+        close_vs_cost = float(close) / float(weight_avg)
+    metrics = {
+        "close_vs_cost": round(close_vs_cost, 4) if np.isfinite(close_vs_cost) else None,
+        "stage_quality_chip_band_max": config.get("chip_band_max"),
+        "stage_quality_close_vs_cost_min": config.get("close_vs_cost_min"),
+        "stage_quality_close_vs_cost_max": config.get("close_vs_cost_max"),
+        "stage_quality_trend_change_rate_max": config.get("trend_change_rate_max"),
+    }
+    chip_band_max = config.get("chip_band_max")
+    close_vs_cost_min = config.get("close_vs_cost_min")
+    close_vs_cost_max = config.get("close_vs_cost_max")
+    trend_change_rate_max = config.get("trend_change_rate_max")
+    if chip_band_max is not None and (not np.isfinite(chip_band) or chip_band > chip_band_max):
+        return False, metrics
+    if close_vs_cost_min is not None and (not np.isfinite(close_vs_cost) or close_vs_cost < close_vs_cost_min):
+        return False, metrics
+    if close_vs_cost_max is not None and (not np.isfinite(close_vs_cost) or close_vs_cost > close_vs_cost_max):
+        return False, metrics
+    if trend_change_rate_max is not None and (not np.isfinite(trend_change_rate) or trend_change_rate > trend_change_rate_max):
+        return False, metrics
+    return True, metrics
+
+
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="全市场筹码聚集度扫描 - 仅保留筹码带宽整体下降标的，并映射到生命周期阶段")
     parser.add_argument("--end-date", default=_as_yyyymmdd(datetime.now()))
     parser.add_argument("--lookback", type=int, default=60)
     parser.add_argument("--min-band", type=float, default=0.10)
@@ -221,11 +316,13 @@ def main():
     parser.add_argument("--trend-min-tau", type=float, default=-0.3)
     parser.add_argument("--trend-max-pvalue", type=float, default=0.05)
     parser.add_argument("--no-trend-filter", action="store_true")
-    parser.add_argument("--exclude-st", action="store_true", default=True)
+    parser.add_argument("--exclude-st", dest="exclude_st", action="store_true", default=True)
+    parser.add_argument("--include-st", dest="exclude_st", action="store_false")
     parser.add_argument("--min-list-days", type=int, default=60)
     parser.add_argument("--max-stocks", type=int, default=0)
     parser.add_argument("--ts-sleep-s", type=float, default=0.12)
     parser.add_argument("--out", default="")
+    parser.add_argument("--stage", default="", help="生命周期阶段筛选: 1底部吸筹,2低位蓄势,3中继收敛,4主升锁仓,5高位锁仓. 多个用逗号分隔,如 1,2,3")
     args = parser.parse_args()
 
     root = _project_root()
@@ -237,10 +334,34 @@ def main():
     lookback = int(args.lookback)
     sleep_s = float(args.ts_sleep_s)
 
-    print(f"{_now_ts()} 开始：筹码带宽扫描 + Mann-Kendall 趋势检验", flush=True)
+    stage_filter = []
+    if args.stage:
+        try:
+            stage_filter = [int(s.strip()) for s in args.stage.split(",") if s.strip().isdigit()]
+            invalid = [s for s in stage_filter if s not in STAGE_DEFINITIONS]
+            if invalid:
+                print(f"{_now_ts()} 警告: 无效的阶段编号 {invalid}，有效值为 1-5", flush=True)
+                stage_filter = [s for s in stage_filter if s in STAGE_DEFINITIONS]
+            if stage_filter:
+                stage_names = [STAGE_DEFINITIONS[s]["name"] for s in stage_filter]
+                print(f"{_now_ts()} 阶段筛选: {stage_filter} ({', '.join(stage_names)})", flush=True)
+        except Exception:
+            stage_filter = []
+
+    print(f"{_now_ts()} 开始：筹码带宽整体下降扫描 + 生命周期阶段映射", flush=True)
     print(f"{_now_ts()} end_date={end_date} lookback={lookback}", flush=True)
-    print(f"{_now_ts()} min_band={args.min_band} max_band={args.max_band}", flush=True)
     print(f"{_now_ts()} trend_lookback={args.trend_lookback} min_tau={args.trend_min_tau} max_pvalue={args.trend_max_pvalue}", flush=True)
+    quality_parts = []
+    for stage_id in sorted(STAGE_QUALITY_FILTERS):
+        cfg = STAGE_QUALITY_FILTERS[stage_id]
+        quality_parts.append(
+            f"{stage_id}:{cfg['chip_band_max']}/{cfg['close_vs_cost_min']}/{cfg['close_vs_cost_max']}/{cfg['trend_change_rate_max']}"
+        )
+    print(f"{_now_ts()} stage_quality_filter chip_band_max/close_vs_cost_min/close_vs_cost_max/trend_change_rate_max => {' ; '.join(quality_parts)}", flush=True)
+    if args.min_band != 0.10 or args.max_band != 0.20:
+        print(f"{_now_ts()} 提示: T日筹码带宽区间限制已关闭，忽略 min_band/max_band 参数", flush=True)
+    if args.no_trend_filter:
+        print(f"{_now_ts()} 提示: 当前脚本固定保留筹码带宽整体下降标的，忽略 --no-trend-filter", flush=True)
 
     t_date = _pick_last_chip_trade_date(pro, end_date=end_date, sleep_s=sleep_s)
     t_dates = _load_trade_dates(pro, end_date=t_date, lookback=lookback)
@@ -267,7 +388,7 @@ def main():
     trend_lookback = int(args.trend_lookback)
     min_tau = float(args.trend_min_tau)
     max_pvalue = float(args.trend_max_pvalue)
-    use_trend_filter = not bool(args.no_trend_filter)
+    use_trend_filter = True
 
     for _, r in pool.iterrows():
         ts_code = str(r["ts_code"]).strip()
@@ -305,9 +426,6 @@ def main():
         if not np.isfinite(t_band):
             continue
 
-        if t_band < float(args.min_band) or t_band > float(args.max_band):
-            continue
-
         if use_trend_filter and trend_lookback >= 3:
             recent_df = df_band.tail(trend_lookback)
             band_series = pd.to_numeric(recent_df["chip_band"], errors="coerce").to_numpy(dtype=float)
@@ -324,8 +442,6 @@ def main():
                 tau, pvalue, change_rate = _calc_mann_kendall_trend(band_series)
 
         close = _fetch_daily_close(pro, ts_code=ts_code, trade_date=t_date, sleep_s=sleep_s)
-
-        matched += 1
         row = {
             "ts_code": ts_code,
             "name": name,
@@ -340,6 +456,25 @@ def main():
             "trend_change_rate": round(change_rate, 4) if np.isfinite(change_rate) else None,
             "trade_date": t_date,
         }
+
+        stage_id, stage_name = _classify_stage(row)
+        row["stage"] = stage_id
+        row["stage_name"] = stage_name
+        row["stages"] = str(stage_id)
+        row["stage_names"] = stage_name
+        row["stage_quality_pass"] = None
+        row["close_vs_cost"] = None
+
+        stage_quality_pass, stage_quality_metrics = _stage_quality_pass(stage_id, row)
+        row.update(stage_quality_metrics)
+        row["stage_quality_pass"] = int(stage_quality_pass)
+        if not stage_quality_pass:
+            continue
+
+        if stage_filter and stage_id not in stage_filter:
+            continue
+
+        matched += 1
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -352,14 +487,14 @@ def main():
         print(f"{_now_ts()} 输出: {out}", flush=True)
         return
 
-    df = df.sort_values(["chip_band"], ascending=True).reset_index(drop=True)
+    df = df.sort_values(["stage", "winner_rate", "chip_band"], ascending=[True, True, True]).reset_index(drop=True)
 
     out = str(args.out).strip()
     if not out:
         out = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"筹码聚集度扫描_{len(df)}_{t_date}_{datetime.now().strftime('%H%M%S')}.csv")
     df.to_csv(out, index=False, encoding="utf-8-sig")
 
-    show_cols = ["ts_code", "name", "chip_band", "close", "cost_5pct", "cost_95pct", "weight_avg", "winner_rate", "trend_tau", "trend_pvalue", "trend_change_rate"]
+    show_cols = ["ts_code", "name", "stage", "stage_name", "chip_band", "close_vs_cost", "close", "cost_5pct", "cost_95pct", "weight_avg", "winner_rate", "trend_tau", "trend_pvalue", "trend_change_rate", "stage_quality_pass"]
     show_cols = [c for c in show_cols if c in df.columns]
     print(f"{_now_ts()} 完成：checked={checked} 命中={len(df)} 输出={out}", flush=True)
     print(df[show_cols].head(30).to_string(index=False), flush=True)

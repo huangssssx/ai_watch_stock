@@ -1,0 +1,27 @@
+Tushare client initialized successfully with custom config.
+2026-03-27 22:06:08 开始：筹码带宽扫描 + Mann-Kendall 趋势检验
+2026-03-27 22:06:08 end_date=20260327 lookback=60
+2026-03-27 22:06:08 min_band=0.1 max_band=0.2
+2026-03-27 22:06:08 trend_lookback=20 min_tau=-0.3 max_pvalue=0.05
+2026-03-27 22:06:08 脚本异常: RuntimeError:trade_cal 返回为空，无法确定最近交易日
+Traceback (most recent call last):
+  File "/Users/huangchuanjian/workspace/我的项目/ai_watch_stock/backend/scripts/筹码/全市场筹码聚集度扫描.py", line 370, in <module>
+    main()
+  File "/Users/huangchuanjian/workspace/我的项目/ai_watch_stock/backend/scripts/筹码/全市场筹码聚集度扫描.py", line 245, in main
+    t_date = _pick_last_chip_trade_date(pro, end_date=end_date, sleep_s=sleep_s)
+  File "/Users/huangchuanjian/workspace/我的项目/ai_watch_stock/backend/scripts/筹码/全市场筹码聚集度扫描.py", line 69, in _pick_last_chip_trade_date
+    td = _pick_last_trade_date(pro, end_date=end_date)
+  File "/Users/huangchuanjian/workspace/我的项目/ai_watch_stock/backend/scripts/筹码/全市场筹码聚集度扫描.py", line 48, in _pick_last_trade_date
+    raise RuntimeError("trade_cal 返回为空，无法确定最近交易日")
+RuntimeError: trade_cal 返回为空，无法确定最近交易日
+
+Traceback (most recent call last):
+  File "/Users/huangchuanjian/workspace/我的项目/ai_watch_stock/backend/scripts/筹码/全市场筹码聚集度扫描.py", line 370, in <module>
+    main()
+  File "/Users/huangchuanjian/workspace/我的项目/ai_watch_stock/backend/scripts/筹码/全市场筹码聚集度扫描.py", line 245, in main
+    t_date = _pick_last_chip_trade_date(pro, end_date=end_date, sleep_s=sleep_s)
+  File "/Users/huangchuanjian/workspace/我的项目/ai_watch_stock/backend/scripts/筹码/全市场筹码聚集度扫描.py", line 69, in _pick_last_chip_trade_date
+    td = _pick_last_trade_date(pro, end_date=end_date)
+  File "/Users/huangchuanjian/workspace/我的项目/ai_watch_stock/backend/scripts/筹码/全市场筹码聚集度扫描.py", line 48, in _pick_last_trade_date
+    raise RuntimeError("trade_cal 返回为空，无法确定最近交易日")
+RuntimeError: trade_cal 返回为空，无法确定最近交易日
