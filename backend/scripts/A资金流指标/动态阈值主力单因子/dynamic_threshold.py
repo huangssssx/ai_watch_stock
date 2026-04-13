@@ -17,20 +17,22 @@ def _time_in_session(time_str: str, start: str, end: str) -> bool:
     return start <= time_str < end
 
 
-def _calc_session_threshold(volumes: list, threshold_base: float) -> dict:
+def _calc_session_threshold(volumes: list) -> dict:
     if not volumes:
         return {
-            "95分位数阈值(元)": threshold_base,
-            "动态阈值(元)": threshold_base,
+            "买入阈值(元)": 0,
+            "卖出阈值(元)": 0,
             "逐笔成交笔数": 0,
             "均值(元)": 0,
             "最大单笔(元)": 0,
         }
     p95 = np.percentile(volumes, 95)
-    dynamic = max(threshold_base, p95 * 1.5)
+    p90 = np.percentile(volumes, 90)
+    buy_threshold = p95 * 1.5
+    sell_threshold = p90 * 1.2
     return {
-        "95分位数阈值(元)": float(p95),
-        "动态阈值(元)": float(dynamic),
+        "买入阈值(元)": float(buy_threshold),
+        "卖出阈值(元)": float(sell_threshold),
         "逐笔成交笔数": len(volumes),
         "均值(元)": float(np.mean(volumes)),
         "最大单笔(元)": float(max(volumes)),
@@ -72,7 +74,6 @@ def calculate_dynamic_threshold(market: int, code: str, date: int = None, tdx=No
                 raise ValueError(f"未找到 {code} 在 {date} 的日线数据")
 
         free_market_cap = liutongguben * price
-        threshold_base = free_market_cap * 0.00001 / 100
 
         all_volumes = []
         session_volumes = {name: [] for name, _, _ in SESSIONS}
@@ -111,17 +112,19 @@ def calculate_dynamic_threshold(market: int, code: str, date: int = None, tdx=No
                             break
 
         if not all_volumes:
-            threshold_percentile = threshold_base
+            buy_threshold = 0
+            sell_threshold = 0
+            p95_val = 0
+            p90_val = 0
         else:
-            threshold_percentile = np.percentile(all_volumes, 95)
-
-        dynamic_threshold = max(threshold_base, threshold_percentile * 1.5)
+            p95_val = float(np.percentile(all_volumes, 95))
+            p90_val = float(np.percentile(all_volumes, 90))
+            buy_threshold = p95_val * 1.5
+            sell_threshold = p90_val * 1.2
 
         session_thresholds = {}
         for name, _, _ in SESSIONS:
-            session_thresholds[name] = _calc_session_threshold(
-                session_volumes[name], threshold_base
-            )
+            session_thresholds[name] = _calc_session_threshold(session_volumes[name])
 
         return {
             "code": code,
@@ -131,9 +134,11 @@ def calculate_dynamic_threshold(market: int, code: str, date: int = None, tdx=No
             "流通股本(股)": liutongguben,
             "当前价格(元)": price,
             "自由流通市值(元)": free_market_cap,
-            "阈值基础(市值*0.00001%)": threshold_base,
-            "95分位数阈值(元)": threshold_percentile,
-            "动态阈值(元)": dynamic_threshold,
+            "95分位数阈值(元)": p95_val,
+            "90分位数阈值(元)": p90_val,
+            "动态阈值(元)": buy_threshold,
+            "买入阈值(元)": float(buy_threshold),
+            "卖出阈值(元)": float(sell_threshold),
             "逐笔成交笔数": len(all_volumes),
             "分时段阈值": session_thresholds,
         }
@@ -154,10 +159,11 @@ if __name__ == "__main__":
     print(f"流通股本: {result['流通股本(股)']:,.0f} 股")
     print(f"当前价格: {result['当前价格(元)']:.2f} 元")
     print(f"自由流通市值: {result['自由流通市值(元)']:,.2f} 元")
-    print(f"阈值基础(市值*0.00001%): {result['阈值基础(市值*0.00001%)']:,.2f} 元")
-    print(f"95分位数阈值: {result['95分位数阈值(元)']:,.2f} 元")
+    print(f"P95 阈值: {result['95分位数阈值(元)']:,.2f} 元")
+    print(f"P90 阈值: {result['90分位数阈值(元)']:,.2f} 元")
     print(f"{'='*60}")
-    print(f">>> 动态阈值: {result['动态阈值(元)']:,.2f} 元 <<<")
+    print(f">>> 买入阈值 (P95×1.5): {result['买入阈值(元)']:,.2f} 元 <<<")
+    print(f">>> 卖出阈值 (P90×1.2): {result['卖出阈值(元)']:,.2f} 元 <<<")
     print(f"{'='*60}")
     print(f"逐笔成交笔数: {result['逐笔成交笔数']}")
 
@@ -165,4 +171,4 @@ if __name__ == "__main__":
     for name, _, _ in SESSIONS:
         s = result["分时段阈值"][name]
         label = {"early": "早盘(09:25-10:30)", "mid": "盘中(10:30-13:00)", "late": "尾盘(13:00-15:00)"}
-        print(f"  {label[name]}: {s['逐笔成交笔数']}笔, P95={s['95分位数阈值(元)']:,.0f}元, 阈值={s['动态阈值(元)']:,.0f}元")
+        print(f"  {label[name]}: {s['逐笔成交笔数']}笔, 买入={s['买入阈值(元)']:,.0f}元, 卖出={s['卖出阈值(元)']:,.0f}元")
