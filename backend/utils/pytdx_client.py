@@ -10,7 +10,7 @@ from typing import Optional, Tuple, List, Dict, Any
 
 from pytdx.hq import TdxHq_API
 # [{'rank': 1, 'ip': '180.153.18.170', 'port': 7709, 'tcp_elapsed_s': 0.027932791000000012, 'confirm_ok': True, 'confirm_elapsed_s': 0.16914895799999985}, {'rank': 2, 'ip': '115.238.56.198', 'port': 7709, 'tcp_elapsed_s': 0.028577917000000064, 'confirm_ok': True, 'confirm_elapsed_s': 0.16183091699999985}, {'rank': 3, 'ip': '115.238.90.165', 'port': 7709, 'tcp_elapsed_s': 0.029971000000000025, 'confirm_ok': True, 'confirm_elapsed_s': 0.191138708}]
-DEFAULT_IP = "180.153.18.170"
+DEFAULT_IP = "115.238.90.165"
 DEFAULT_PORT = 7709
 
 AUTO_SELECT_IP_ON_FAIL = os.getenv("PYTDX_AUTO_SELECT_IP_ON_FAIL", "1") not in ("0", "false", "False")

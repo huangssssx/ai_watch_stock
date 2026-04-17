@@ -11,7 +11,7 @@ project_root = os.path.abspath(os.path.join(here, "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from backend.utils.tushare_client import pro
+from backend.utils. import pro
 
 print("开始运行：寻找今日龙头股")
 
